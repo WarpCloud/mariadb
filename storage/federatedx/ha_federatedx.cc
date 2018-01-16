@@ -2744,7 +2744,8 @@ int ha_federatedx::read_range_first(const key_range *start_key,
   DBUG_ASSERT(!(start_key == NULL && end_key == NULL));
 
   sql_query.length(0);
-  sql_query.append(share->select_query);
+  //sql_query.append(share->select_query);
+  append_select_from(sql_query);
   create_where_from_key(&sql_query,
                         &table->key_info[active_index],
                         start_key, end_key, 0, eq_range_arg);
@@ -2880,6 +2881,33 @@ int ha_federatedx::rnd_init(bool scan)
 
 error:
   DBUG_RETURN(stash_remote_error());
+}
+
+// zqdai add support for column pruning
+void ha_federatedx::append_select_from(String& sql_query)
+{
+    sql_query.set_charset(system_charset_info);
+    sql_query.append(STRING_WITH_LEN("SELECT "));
+    uint field_idx = 1;
+    for (Field **field = table->field; *field; field++, field_idx++) {
+        if (bitmap_is_set(table->read_set,(*field)->field_index)) {
+            append_ident(&sql_query, (*field)->field_name.str,
+                         (*field)->field_name.length, ident_quote_char);
+            sql_query.append(STRING_WITH_LEN(", "));
+        } else {
+            sql_query.append(STRING_WITH_LEN(" NULL AS "));
+            append_ident(&sql_query, (*field)->field_name.str,
+                         (*field)->field_name.length, ident_quote_char);
+            sql_query.append(STRING_WITH_LEN(", "));
+        }
+    }
+    /* chops off trailing comma */
+    sql_query.length(sql_query.length() - sizeof_trailing_comma);
+
+    sql_query.append(STRING_WITH_LEN(" FROM "));
+
+    append_ident(&sql_query, share->table_name,
+                 share->table_name_length, ident_quote_char);
 }
 
 // zqdai add support for column pruning
