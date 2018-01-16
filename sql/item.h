@@ -674,6 +674,8 @@ public:
   */
   String *val_str() { return val_str(&str_value); }
 
+  virtual String *to_str(String *str) const {return 0;};
+  virtual String *partial_to_str(String *str) const {return 0;};
   const MY_LOCALE *locale_from_val_str();
 
   LEX_CSTRING name;			/* Name of item */
@@ -2890,6 +2892,13 @@ public:
     }
     return 0;
   }
+    virtual String *to_str(String *str) const {
+      str->append(STRING_WITH_LEN("`"));
+      str->append(field_name.str, field_name.length);
+      str->append(STRING_WITH_LEN("`"));
+      return str;
+    }
+
   void cleanup();
   Item_equal *get_item_equal() { return item_equal; }
   void set_item_equal(Item_equal *item_eq) { item_equal= item_eq; }
@@ -3487,6 +3496,10 @@ public:
   { return int_eq(value, item); }
   Item *get_copy(THD *thd)
   { return get_item_copy<Item_int>(thd, this); }
+    virtual String *to_str(String *str) const {
+      str->append_longlong(value);
+      return str;
+    }
 };
 
 
@@ -3718,7 +3731,14 @@ public:
     fix_from_value(dv, Metadata(&str_value, repertoire));
     set_name(thd, name_par, (uint) safe_strlen(name_par), system_charset_info);
   }
-  void print_value(String *to) const
+    virtual String *to_str(String *str) const {
+      str->append("'");
+      str->append(str_value.ptr(), str_value.length());
+      str->append("'");
+      return str;
+    }
+
+    void print_value(String *to) const
   {
     str_value.print(to);
   }
@@ -4471,6 +4491,7 @@ public:
   Item* build_clone(THD *thd);
 };
 
+extern bool is_component_item(const Item *item);
 class sp_head;
 class sp_name;
 struct st_sp_security_context;
@@ -4635,11 +4656,12 @@ public:
   {
     (*ref)->restore_to_before_no_rows_in_result();
   }
+    virtual String* to_str(String *str) const;
   virtual void print(String *str, enum_query_type query_type);
   void cleanup();
   Item_field *field_for_view_update()
     { return (*ref)->field_for_view_update(); }
-  virtual Ref_Type ref_type() { return REF; }
+  virtual Ref_Type ref_type() const { return REF; }
 
   // Row emulation: forwarding of ROW-related calls to ref
   uint cols() const
@@ -4757,7 +4779,7 @@ public:
   bool val_bool();
   bool is_null();
   bool get_date(MYSQL_TIME *ltime, ulonglong fuzzydate);
-  virtual Ref_Type ref_type() { return DIRECT_REF; }
+  virtual Ref_Type ref_type() const { return DIRECT_REF; }
   Item *get_copy(THD *thd)
   { return get_item_copy<Item_direct_ref>(thd, this); }
 };
@@ -4984,7 +5006,7 @@ public:
     item->name= name;
     return item;
   }
-  virtual Ref_Type ref_type() { return VIEW_REF; }
+  virtual Ref_Type ref_type() const { return VIEW_REF; }
   Item_equal *get_item_equal() { return item_equal; }
   void set_item_equal(Item_equal *item_eq) { item_equal= item_eq; }
   Item_equal *find_item_equal(COND_EQUAL *cond_equal);
@@ -5151,7 +5173,7 @@ public:
     return (*ref)->const_item() ? 0 : OUTER_REF_TABLE_BIT;
   }
   table_map not_null_tables() const { return 0; }
-  virtual Ref_Type ref_type() { return OUTER_REF; }
+  virtual Ref_Type ref_type() const { return OUTER_REF; }
   bool check_inner_refs_processor(void * arg); 
 };
 

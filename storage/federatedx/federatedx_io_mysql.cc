@@ -385,6 +385,10 @@ int federatedx_io_mysql::query(const char *buffer, uint length)
 
   if (!wants_autocommit && test_all_restrict())
     wants_autocommit= TRUE;
+    if (is_active()) {
+      // if we are inside a transaction, we should never want autocommit, even if the query is read only
+      wants_autocommit = false;
+    }
 
   if (wants_autocommit != actual_autocommit)
   {

@@ -24737,12 +24737,16 @@ bool JOIN_TAB::save_explain_data(Explain_table_access *eta,
                (cache_select && cache_select->cond))
       {
         const COND *pushed_cond= table->file->pushed_cond;
+        const DYNAMIC_STRING *pushed_cond_string = table->file->ha_pushed_condition();
 
         if ((table->file->ha_table_flags() &
               HA_CAN_TABLE_CONDITION_PUSHDOWN) &&
-            pushed_cond)
+                (pushed_cond || (pushed_cond_string != 0 && pushed_cond_string->length > 0)))
         {
           eta->push_extra(ET_USING_WHERE_WITH_PUSHED_CONDITION);
+          if (pushed_cond_string != 0 && pushed_cond_string->length > 0) {
+            eta->pushed_cond_string = pushed_cond_string;
+          }
         }
         else
         {

@@ -127,6 +127,20 @@ longlong Item::val_datetime_packed_result()
   return pack_time(&tmp);
 }
 
+bool is_component_item(const Item *item) {
+  switch (item->type()) {
+    case Item::FIELD_ITEM:
+    case Item::STRING_ITEM:
+    case Item::INT_ITEM:
+    case Item::REAL_ITEM:
+    case Item::NULL_ITEM:
+    case Item::VARBIN_ITEM:
+    case Item::DECIMAL_ITEM:
+      return TRUE;
+    default:
+      return FALSE;
+  }
+}
 
 /**
   Get date/time/datetime.
@@ -2242,7 +2256,7 @@ public:
     else
       Item_ident::print(str, query_type);
   }
-  virtual Ref_Type ref_type() { return AGGREGATE_REF; }
+  virtual Ref_Type ref_type() const { return AGGREGATE_REF; }
 };
 
 
@@ -8062,6 +8076,22 @@ error:
   return TRUE;
 }
 
+String* Item_ref::to_str(String *str) const
+{
+  if (ref)
+  {
+    if ((*ref)->type() != Item::CACHE_ITEM && ref_type() != VIEW_REF &&
+        !table_name && name.str && alias_name_used) {
+      str->append((*ref)->real_item()->name.str, (*ref)->real_item()->name.length);
+      return str;
+    }
+    else {
+      return (*ref)->to_str(str);
+    }
+  }
+  else
+    return 0;
+}
 
 void Item_ref::set_properties()
 {
