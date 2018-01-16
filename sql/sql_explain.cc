@@ -1888,6 +1888,14 @@ void Explain_table_access::append_tag_name(String *str, enum explain_extra_tag t
         str->append(" (scanning)");
       break;
     }
+    case ET_USING_WHERE_WITH_PUSHED_CONDITION:
+    {
+      str->append(extra_tag_text[tag]);
+      if (pushed_cond_string && pushed_cond_string->length > 0) {
+        str->append(pushed_cond_string->str, pushed_cond_string->length);
+      }
+      break;
+    }
     default:
      str->append(extra_tag_text[tag]);
   }

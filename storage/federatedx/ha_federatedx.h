@@ -276,6 +276,7 @@ class ha_federatedx: public handler
   bool ignore_duplicates, replace_duplicates;
   bool insert_dup_update, table_will_be_deleted;
   DYNAMIC_STRING bulk_insert;
+  DYNAMIC_STRING additionalFilter;
 
 private:
   /*
@@ -313,14 +314,19 @@ private:
   int real_connect(FEDERATEDX_SHARE *my_share, uint create_flag);
 public:
   ha_federatedx(handlerton *hton, TABLE_SHARE *table_arg);
-  ~ha_federatedx() {}
+  ~ha_federatedx() { dynstr_free(&additionalFilter);}
   /*
     The name of the index type that will be used for display
     don't implement this method unless you really have indexes
    */
   // perhaps get index type
   const char *index_type(uint inx) { return "REMOTE"; }
-  /*
+
+    const COND *cond_push(const Item *cond);
+    const DYNAMIC_STRING *ha_pushed_condition() const;
+    // zqdai add column pruning logic
+    void append_select_from(String& query);
+    /*
     This is a list of flags that says what the storage engine
     implements. The current table flags are documented in
     handler.h
@@ -332,7 +338,8 @@ public:
             | HA_REC_NOT_IN_SEQ | HA_AUTO_PART_KEY | HA_CAN_INDEX_BLOBS |
             HA_BINLOG_ROW_CAPABLE | HA_BINLOG_STMT_CAPABLE | HA_CAN_REPAIR |
             HA_PRIMARY_KEY_REQUIRED_FOR_DELETE |
-            HA_PARTIAL_COLUMN_READ | HA_NULL_IN_KEY);
+            HA_PARTIAL_COLUMN_READ | HA_NULL_IN_KEY
+            | HA_CAN_TABLE_CONDITION_PUSHDOWN);
   }
   /*
     This is a bitmap of flags that says how the storage engine

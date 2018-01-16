@@ -314,6 +314,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #define MYSQL_SERVER 1
 #include <my_global.h>
 #include <mysql/plugin.h>
+//#include <sql_test.h>
 #include "ha_federatedx.h"
 #include "sql_servers.h"
 #include "sql_analyse.h"                        // append_escaped()
@@ -829,6 +830,8 @@ ha_federatedx::ha_federatedx(handlerton *hton,
    txn(0), io(0), stored_result(0)
 {
   bzero(&bulk_insert, sizeof(bulk_insert));
+  bzero(&additionalFilter, sizeof(additionalFilter));
+  init_dynamic_string(&additionalFilter, NULL, FEDERATEDX_QUERY_BUFFER_SIZE, FEDERATEDX_QUERY_BUFFER_SIZE);
 }
 
 
@@ -1407,6 +1410,21 @@ prepare_for_next_key_part:
 
   if (to->append(tmp))
     DBUG_RETURN(1);
+  if (additionalFilter.length != 0) {
+    if (to->append(STRING_WITH_LEN(" AND ("))) {
+        dynstr_trunc(&additionalFilter, additionalFilter.length);
+      DBUG_RETURN(1);
+    }
+    if (to->append(additionalFilter.str, additionalFilter.length)) {
+      dynstr_trunc(&additionalFilter, additionalFilter.length);
+      DBUG_RETURN(1);
+    }
+    if (to->append(STRING_WITH_LEN(")"))) {
+      dynstr_trunc(&additionalFilter, additionalFilter.length);
+      DBUG_RETURN(1);
+    }
+  }
+
 
   DBUG_RETURN(0);
 
@@ -1414,6 +1432,57 @@ err:
   dbug_tmp_restore_column_map(table->write_set, old_map);
   DBUG_RETURN(1);
 }
+
+const COND *ha_federatedx::cond_push(const Item *cond) {
+  // convert cond to string
+  DBUG_ENTER("ha_federated::cond_push");
+
+#if 1
+  if (cond->used_tables() & ~table->pos_in_table_list->get_map())
+  {
+    /**
+     * 'cond' refers fields from other tables, or other instances
+     * of this table, -> reject it.
+     * (Optimizer need to have a better understanding of what is
+     *  pushable by each handler.)
+     */
+//    DBUG_EXECUTE("where",print_where((COND *)cond, "Rejected cond_push", QT_ORDINARY););
+    DBUG_RETURN(cond);
+  }
+#else
+  /*
+    Make sure that 'cond' does not refer field(s) from other tables
+    or other instances of this table.
+    (This was a legacy bug in optimizer)
+  */
+  DBUG_ASSERT(!(cond->used_tables() & ~table->pos_in_table_list->map()));
+#endif
+  if (additionalFilter.length == 0) {
+    char buff[1024];
+    String *res;
+    String filter(buff, sizeof(buff), system_charset_info);
+    filter.length(0);
+    res = cond->to_str(&filter);
+    if (res != 0 && res->length() > 0) {
+        dynstr_append_mem(&additionalFilter, res->ptr(), res->length());
+    }
+    //filter.length(0);
+    //((Item *)cond)->print(&filter, QT_ORDINARY);
+    //filter.length();
+    if (additionalFilter.length != 0) {
+      DBUG_RETURN(0);
+    }
+    filter.length(0);
+    res = cond->partial_to_str(&filter);
+    if (res != 0 && res->length() > 0) {
+      dynstr_append_mem(&additionalFilter, res->ptr(), res->length());
+    }
+  }
+  DBUG_RETURN(cond);
+}
+
+const DYNAMIC_STRING *ha_federatedx::ha_pushed_condition() const { return &additionalFilter;}
+
 
 static void fill_server(MEM_ROOT *mem_root, FEDERATEDX_SERVER *server,
                         FEDERATEDX_SHARE *share, CHARSET_INFO *table_charset)
@@ -2586,7 +2655,10 @@ int ha_federatedx::index_read_idx_with_result_set(uchar *buf, uint index,
   index_string.length(0);
   sql_query.length(0);
 
-  sql_query.append(share->select_query);
+  //sql_query.append(share->select_query);
+  // zqdai add support for column pruning, share->select_query was used in original logic
+  append_select_from(sql_query);
+
 
   range.key= key;
   range.length= key_len;
@@ -2783,8 +2855,21 @@ int ha_federatedx::rnd_init(bool scan)
     if (stored_result)
       (void) free_result();
 
-    if (io->query(share->select_query,
-                  strlen(share->select_query)))
+    char sql_query_buffer[FEDERATEDX_QUERY_BUFFER_SIZE];
+    String sql_query(sql_query_buffer,
+                     sizeof(sql_query_buffer),
+                     &my_charset_bin);
+    sql_query.length(0);
+    //sql_query.append(share->select_query, strlen(share->select_query));
+    append_select_from(sql_query);
+
+    if (additionalFilter.length > 0) {
+      sql_query.append(STRING_WITH_LEN(" WHERE "));
+      sql_query.append(additionalFilter.str, additionalFilter.length);
+    }
+
+    if (io->query(sql_query.ptr(),
+                  strlen(sql_query.ptr())))
       goto error;
 
     stored_result= io->store_result();
@@ -2795,6 +2880,33 @@ int ha_federatedx::rnd_init(bool scan)
 
 error:
   DBUG_RETURN(stash_remote_error());
+}
+
+// zqdai add support for column pruning
+void ha_federatedx::append_select_from(String& sql_query)
+{
+    sql_query.set_charset(system_charset_info);
+    sql_query.append(STRING_WITH_LEN("SELECT "));
+    uint field_idx = 1;
+    for (Field **field = table->field; *field; field++, field_idx++) {
+        if (bitmap_is_set(table->read_set,(*field)->field_index)) {
+            append_ident(&sql_query, (*field)->field_name.str,
+                         (*field)->field_name.length, ident_quote_char);
+            sql_query.append(STRING_WITH_LEN(", "));
+        } else {
+            sql_query.append(STRING_WITH_LEN(" NULL AS "));
+            append_ident(&sql_query, (*field)->field_name.str,
+                         (*field)->field_name.length, ident_quote_char);
+            sql_query.append(STRING_WITH_LEN(", "));
+        }
+    }
+    /* chops off trailing comma */
+    sql_query.length(sql_query.length() - sizeof_trailing_comma);
+
+    sql_query.append(STRING_WITH_LEN(" FROM "));
+
+    append_ident(&sql_query, share->table_name,
+                 share->table_name_length, ident_quote_char);
 }
 
 
@@ -3160,6 +3272,7 @@ int ha_federatedx::reset(void)
   ignore_duplicates= FALSE;
   replace_duplicates= FALSE;
   position_called= FALSE;
+  dynstr_trunc(&additionalFilter, additionalFilter.length);
 
   if (stored_result)
     insert_dynamic(&results, (uchar*) &stored_result);

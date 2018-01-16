@@ -2940,6 +2940,12 @@ public:
     The cached_table_flags is set at ha_open and ha_external_lock
   */
   Table_flags ha_table_flags() const { return cached_table_flags; }
+
+    /**
+     * the ha_pushed_condition return a string representing the pushed condtions
+     * @return
+     */
+  virtual const DYNAMIC_STRING *ha_pushed_condition() const { return 0; }
   /**
     These functions represent the public interface to *users* of the
     handler class, hence they are *not* virtual. For the inheritance

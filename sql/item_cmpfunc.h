@@ -516,7 +516,33 @@ public:
                                       cond);
     return this;
   }
-  void fix_length_and_dec();
+    virtual String *to_str(String *str) const {
+      if (arg_count != 2) {
+        return 0;
+      }
+      char buff[1024];
+      String str1(buff, sizeof(buff), system_charset_info);
+      str1.length(0);
+      if (args[0]->to_str(&str1)) {
+        str->append(str1.ptr(), str1.length());
+        str1.length(0);
+      } else {
+        return 0;
+      }
+      const char * name = func_name();
+      str->append(STRING_WITH_LEN(" "));
+      str->append(name, strlen(name));
+      str->append(STRING_WITH_LEN(" "));
+      if (args[1]->to_str(&str1)) {
+        str->append(str1.ptr(), str1.length());
+        str1.length(0);
+      } else {
+        return 0;
+      }
+      return str;
+    }
+
+    void fix_length_and_dec();
   int set_cmp_func()
   {
     return cmp.set_cmp_func(this, tmp_arg, tmp_arg + 1, true);
@@ -594,6 +620,22 @@ public:
   virtual void print(String *str, enum_query_type query_type);
   Item *get_copy(THD *thd)
   { return get_item_copy<Item_func_not>(thd, this); }
+    virtual String *to_str(String *str) const {
+      if (arg_count != 1) {
+        return 0;
+      }
+      char buff[1024];
+      String str1(buff, sizeof(buff), system_charset_info);
+      str1.length(0);
+      if (!args[0]->to_str(&str1)) {
+        return 0;
+      }
+      str->append(STRING_WITH_LEN("not ("));
+      str->append(str1.ptr(), str1.length());
+      str->append(STRING_WITH_LEN(")"));
+      return str;
+    }
+
 };
 
 class Item_maxmin_subselect;
@@ -931,6 +973,33 @@ public:
   longlong val_int_cmp_int();
   longlong val_int_cmp_real();
   longlong val_int_cmp_decimal();
+    virtual String *to_str(String *str) const {
+      char buff[1024];
+      String str1(buff, sizeof(buff), system_charset_info);
+      str1.length(0);
+      if (!args[0]->to_str(&str1)) {
+        goto err;
+      }
+      str->append(str1.ptr(), str1.length());
+      str1.length(0);
+      if (negated)
+        str->append(STRING_WITH_LEN(" not"));
+      str->append(STRING_WITH_LEN(" between "));
+      if (!args[1]->to_str(&str1)) {
+        goto err;
+      }
+      str->append(str1.ptr(), str1.length());
+      str1.length(0);
+      str->append(STRING_WITH_LEN(" and "));
+      if (!args[2]->to_str(&str1)) {
+        goto err;
+      }
+      str->append(str1.ptr(), str1.length());
+      return str;
+        err:
+      return 0;
+    }
+
 };
 
 
@@ -2402,6 +2471,36 @@ public:
   bool to_be_transformed_into_in_subq(THD *thd);
   bool create_value_list_for_tvc(THD *thd, List< List<Item> > *values);
   Item *in_predicate_to_in_subs_transformer(THD *thd, uchar *arg);
+    virtual String *to_str(String *str) const {
+      char buff[1024];
+      String str1(buff, sizeof(buff), system_charset_info);
+      str1.length(0);
+      if (!args[0]->to_str(&str1)) {
+        goto err;
+      }
+      str->append(str1.ptr(), str1.length());
+      str1.length(0);
+      if (negated) {
+        str->append(STRING_WITH_LEN(" not in ("));
+      } else {
+        str->append(STRING_WITH_LEN(" in ("));
+      }
+      for (uint i = 1; i < arg_count; i++) {
+        if (!args[i]->to_str(&str1)) {
+          goto err;
+        }
+        if (i != 1) {
+          str->append(STRING_WITH_LEN(", "));
+        }
+        str->append(str1.ptr(), str1.length());
+        str1.length(0);
+      }
+      str->append(STRING_WITH_LEN(")"));
+      return str;
+        err:
+      return 0;
+    }
+
 };
 
 class cmp_item_row :public cmp_item
@@ -2483,7 +2582,25 @@ public:
   void print(String *str, enum_query_type query_type);
   enum precedence precedence() const { return CMP_PRECEDENCE; }
 
-  bool arg_is_datetime_notnull_field()
+    virtual String *to_str(String *str) const {
+      if (arg_count != 1) {
+        return 0;
+      }
+      char buff[1024];
+      String str1(buff, sizeof(buff), system_charset_info);
+      str1.length(0);
+      if (args[0]->to_str(&str1)) {
+        if (str->append(str1.ptr(), str1.length())) {
+          str->append(STRING_WITH_LEN(" IS NULL"));
+          str1.length(0);
+        }
+      } else {
+        return 0;
+      }
+      return str;
+    }
+
+    bool arg_is_datetime_notnull_field()
   {
     Item **args= arguments();
     if (args[0]->type() == Item::FIELD_ITEM)
@@ -2567,6 +2684,23 @@ public:
   void top_level_item() { abort_on_null=1; }
   Item *get_copy(THD *thd)
   { return get_item_copy<Item_func_isnotnull>(thd, this); }
+    virtual String *to_str(String *str) const {
+      if (arg_count != 1) {
+        return 0;
+      }
+      char buff[1024];
+      String str1(buff, sizeof(buff), system_charset_info);
+      str1.length(0);
+      if (args[0]->to_str(&str1)) {
+        str->append(str1.ptr(), str1.length());
+        str->append(STRING_WITH_LEN(" IS NOT NULL"));
+        str1.length(0);
+      } else {
+        return 0;
+      }
+      return str;
+    }
+
 };
 
 
@@ -2653,7 +2787,34 @@ public:
     */
     return compare_collation() == &my_charset_bin ? COND_TRUE : COND_OK;
   }
-  void add_key_fields(JOIN *join, KEY_FIELD **key_fields, uint *and_level,
+
+    virtual String *to_str(String *str) const {
+      if (arg_count != 2) {
+        return 0;
+      }
+      char buff[1024];
+      String str1(buff, sizeof(buff), system_charset_info);
+      str1.length(0);
+      if (args[0]->to_str(&str1)) {
+        str->append(str1.ptr(), str1.length());
+        str1.length(0);
+      } else {
+        return 0;
+      }
+      const char * name = func_name();
+      str->append(STRING_WITH_LEN(" "));
+      str->append(name, strlen(name));
+      str->append(STRING_WITH_LEN(" "));
+      if (args[1]->to_str(&str1)) {
+        str->append(str1.ptr(), str1.length());
+        str1.length(0);
+      } else {
+        return 0;
+      }
+      return str;
+    }
+
+    void add_key_fields(JOIN *join, KEY_FIELD **key_fields, uint *and_level,
                       table_map usable_tables, SARGABLE_PARAM **sargables);
   SEL_TREE *get_mm_tree(RANGE_OPT_PARAM *param, Item **cond_ptr);
   Item* propagate_equal_fields(THD *thd, const Context &ctx, COND_EQUAL *cond)
@@ -3276,6 +3437,56 @@ public:
   SEL_TREE *get_mm_tree(RANGE_OPT_PARAM *param, Item **cond_ptr);
   Item *get_copy(THD *thd)
   { return get_item_copy<Item_cond_and>(thd, this); }
+    virtual String *to_str(String *str) const {
+      char buff[1024];
+      String str1(buff, sizeof(buff), system_charset_info);
+      str1.length(0);
+      bool first = true;
+      list_node *first_node = list.first_node_const();
+      for(uint i = 0; i < list.elements; i++) {
+        if (first) {
+          str->append(STRING_WITH_LEN("("));
+          first = false;
+        } else {
+          str->append(STRING_WITH_LEN(") and ("));
+        }
+        if (((Item *)first_node->info)->to_str(&str1)) {
+          str->append(str1.ptr(), str1.length());
+          str1.length(0);
+          first_node = first_node->next;
+        } else {
+          return 0;
+        }
+      }
+      str->append(STRING_WITH_LEN(")"));
+      return str;
+    }
+
+    virtual String *partial_to_str(String *str) const {
+      char buff[1024];
+      String str1(buff, sizeof(buff), system_charset_info);
+      str1.length(0);
+      bool first = true;
+      list_node *first_node = list.first_node_const();
+      for(uint i = 0; i < list.elements; i++) {
+        if (!((Item *)first_node->info)->to_str(&str1)) {
+          first_node = first_node->next;
+          continue;
+        }
+        if (first) {
+          str->append(STRING_WITH_LEN("("));
+          first = false;
+        } else {
+          str->append(STRING_WITH_LEN(") and ("));
+        }
+        str->append(str1.ptr(), str1.length());
+        str1.length(0);
+        first_node = first_node->next;
+      }
+      str->append(STRING_WITH_LEN(")"));
+      return str;
+    }
+
 };
 
 inline bool is_cond_and(Item *item)
@@ -3303,6 +3514,31 @@ public:
   Item *neg_transformer(THD *thd);
   Item *get_copy(THD *thd)
   { return get_item_copy<Item_cond_or>(thd, this); }
+    virtual String *to_str(String *str) const {
+      char buff[1024];
+      String str1(buff, sizeof(buff), system_charset_info);
+      str1.length(0);
+      bool first = true;
+      list_node *first_node = list.first_node_const();
+      for(uint i = 0; i < list.elements; i++) {
+        if (first) {
+          str->append(STRING_WITH_LEN("("));
+          first = false;
+        } else {
+          str->append(STRING_WITH_LEN(") or ("));
+        }
+        if (((Item *)first_node->info)->to_str(&str1)) {
+          str->append(str1.ptr(), str1.length());
+          str1.length(0);
+          first_node = first_node->next;
+        } else {
+          return 0;
+        }
+      }
+      str->append(STRING_WITH_LEN(")"));
+      return str;
+    }
+
 };
 
 class Item_func_dyncol_check :public Item_bool_func
