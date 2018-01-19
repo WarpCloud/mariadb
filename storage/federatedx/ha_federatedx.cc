@@ -2916,6 +2916,230 @@ int ha_federatedx::rnd_end()
   DBUG_RETURN(index_end());
 }
 
+ha_rows ha_federatedx::multi_range_read_info_const(uint keyno, RANGE_SEQ_IF *seq,
+                                     void *seq_init_param, uint n_ranges_arg,
+                                     uint *bufsz, uint *flags, Cost_estimate *cost)
+{
+  ha_rows rows =
+          handler::multi_range_read_info_const(
+                  keyno,
+                  seq,
+                  seq_init_param,
+                  n_ranges_arg,
+                  bufsz,
+                  flags,
+                  cost
+          );
+  if (*flags & HA_MRR_FEDX_MRR && !(*flags & HA_MRR_SORTED)) {
+    *flags &= ~HA_MRR_USE_DEFAULT_IMPL;
+    *flags |= HA_MRR_NO_ASSOCIATION;
+    use_default_mrr = false;
+  } else {
+    *flags |= HA_MRR_USE_DEFAULT_IMPL;
+    use_default_mrr = true;
+  }
+  DBUG_PRINT("info",("federatedx rows=%llu", rows));
+  return rows;
+}
+
+int
+ha_federatedx::multi_range_read_init(RANGE_SEQ_IF *seq_funcs, void *seq_init_param,
+                               uint n_ranges, uint mode, HANDLER_BUFFER *buf)
+{
+  if (!(mode & HA_MRR_FEDX_MRR)) {
+    use_default_mrr = true;
+  }
+  return handler::multi_range_read_init(seq_funcs, seq_init_param, n_ranges, mode, buf);
+}
+
+ha_rows ha_federatedx::multi_range_read_info(uint keyno, uint n_ranges, uint n_rows,
+                              uint key_parts, uint *bufsz,
+                              uint *flags, Cost_estimate *cost) {
+  ha_rows rows = handler::multi_range_read_info(keyno, n_ranges, n_rows, key_parts, bufsz, flags, cost);
+  if (*flags & HA_MRR_FEDX_MRR && !(*flags & HA_MRR_SORTED)) {
+    *flags &= ~HA_MRR_USE_DEFAULT_IMPL;
+    *flags |= HA_MRR_NO_ASSOCIATION;
+    use_default_mrr = false;
+  } else {
+    *flags |= HA_MRR_USE_DEFAULT_IMPL;
+    use_default_mrr = true;
+  }
+  DBUG_PRINT("info",("federatedx rows=%llu", rows));
+  return rows;
+}
+
+int ha_federatedx::read_multi_in_first(String *in_filter_str)
+{
+  char sql_query_buffer[FEDERATEDX_QUERY_BUFFER_SIZE];
+  int retval;
+  String sql_query(sql_query_buffer,
+                   sizeof(sql_query_buffer),
+                   &my_charset_bin);
+  DBUG_ENTER("ha_federatedx::read_multi_in_first");
+
+  sql_query.length(0);
+  append_select_from(sql_query);
+  sql_query.append(STRING_WITH_LEN(" WHERE "));
+  sql_query.append(in_filter_str->ptr(), in_filter_str->length());
+  if (additionalFilter.length != 0) {
+      if (sql_query.append(STRING_WITH_LEN(" AND ("))) {
+          dynstr_trunc(&additionalFilter, additionalFilter.length);
+          DBUG_RETURN(1);
+      }
+      if (sql_query.append(additionalFilter.str, additionalFilter.length)) {
+          dynstr_trunc(&additionalFilter, additionalFilter.length);
+          DBUG_RETURN(1);
+      }
+      if (sql_query.append(STRING_WITH_LEN(")"))) {
+          dynstr_trunc(&additionalFilter, additionalFilter.length);
+          DBUG_RETURN(1);
+      }
+  }
+
+  if ((retval= txn->acquire(share, ha_thd(), TRUE, &io)))
+    DBUG_RETURN(retval);
+
+  if (stored_result)
+    (void) free_result();
+
+  if (io->query(sql_query.ptr(), sql_query.length()))
+  {
+    retval= ER_QUERY_ON_FOREIGN_DATA_SOURCE;
+    goto error;
+  }
+  sql_query.length(0);
+
+  if (!(stored_result= io->store_result()))
+  {
+    retval= HA_ERR_END_OF_FILE;
+    goto error;
+  }
+
+  retval= read_next(table->record[0], stored_result);
+  DBUG_RETURN(retval);
+
+error:
+  DBUG_RETURN(retval);
+}
+
+int ha_federatedx::multi_range_read_next(range_id_t *range_info)
+{
+  if (use_default_mrr) {
+    return handler::multi_range_read_next(range_info);
+  }
+  int result= HA_ERR_END_OF_FILE;
+  bool range_res;
+  DBUG_ENTER("ha_federatedx::multi_range_read_next");
+
+  if (!mrr_have_range)
+  {
+    mrr_have_range= TRUE;
+    goto start;
+  }
+
+  do
+  {
+    result= read_range_next();
+    /* On success or non-EOF errors jump to the end. */
+    if (result != HA_ERR_END_OF_FILE)
+      break;
+
+start:
+    char tmpbuff[FEDERATEDX_QUERY_BUFFER_SIZE];
+    char tmpbuff1[FEDERATEDX_QUERY_BUFFER_SIZE];
+    char tmpbuff2[FEDERATEDX_QUERY_BUFFER_SIZE];
+    String in_filter_str(tmpbuff, sizeof(tmpbuff), system_charset_info);
+    String column_names(tmpbuff1, sizeof(tmpbuff), system_charset_info);
+    String in_values(tmpbuff2, sizeof(tmpbuff), system_charset_info);
+    in_filter_str.length(0);
+    column_names.length(0);
+    in_values.length(0);
+    KEY *key_info = &(table->key_info[active_index]);
+    bool need_query = false;
+    bool need_construct_column_names = true;
+
+    for (uint i = 0;i < FEDERATEDX_MAX_IN_SIZE; i++) {
+      if (!(range_res = mrr_funcs.next(mrr_iter, &mrr_cur_range))) {
+
+        if (i > 0) {
+          in_values.append(STRING_WITH_LEN(", "));
+          if (need_construct_column_names) {
+            column_names.append(STRING_WITH_LEN(", "));
+          }
+        } else {
+          in_values.append(STRING_WITH_LEN("("));
+          if (need_construct_column_names) {
+            column_names.append(STRING_WITH_LEN("("));
+          }
+        }
+
+        bool needs_quotes;
+        KEY_PART_INFO *key_part;
+        key_range *key = &(mrr_cur_range.start_key);
+        uint remainder, length, value_index;
+        const uchar *ptr;
+
+        in_values.append(STRING_WITH_LEN("("));
+        for (key_part = key_info->key_part,
+                remainder = key_info->user_defined_key_parts,
+                length = key->length,
+                ptr = key->key,
+                value_index = 0; ;
+                remainder--, key_part++, value_index++) {
+
+          if (value_index != 0) {
+            in_values.append(STRING_WITH_LEN(", "));
+            if (need_construct_column_names) {
+              column_names.append(STRING_WITH_LEN(", "));
+            }
+          }
+
+          Field *field = key_part->field;
+          uint store_length = key_part->store_length;
+          uint part_length= MY_MIN(store_length, length);
+          needs_quotes = field->str_needs_quotes();
+
+          if (need_construct_column_names) {
+            emit_key_part_name(&column_names, key_part);
+          }
+          emit_key_part_element(&in_values, key_part, needs_quotes, 0, ptr, part_length);
+
+          if (store_length >= length) {
+            break;
+          }
+          DBUG_PRINT("info", ("remainder %d", remainder));
+          DBUG_ASSERT(remainder > 1);
+          length-= store_length;
+          ptr += store_length;
+        }
+        in_values.append(STRING_WITH_LEN(")"));
+
+        need_query = true;
+        need_construct_column_names = false;
+
+      } else {
+        // no more key
+        break;
+      }
+    }
+
+    if (need_query) {
+      column_names.append(STRING_WITH_LEN(")"));
+      in_values.append(STRING_WITH_LEN(")"));
+      in_filter_str.append(column_names.ptr(), column_names.length());
+      in_filter_str.append(STRING_WITH_LEN(" in "));
+      in_filter_str.append(in_values.ptr(), in_values.length());
+      result = read_multi_in_first(&in_filter_str);
+      if (result != HA_ERR_END_OF_FILE)
+        break;
+    }
+
+  }
+  while ((result == HA_ERR_END_OF_FILE) && !range_res);
+
+  DBUG_PRINT("exit",("ha_federatedx::multi_range_read_next result %d", result));
+  DBUG_RETURN(result);
+}
 
 int ha_federatedx::free_result()
 {
@@ -3273,6 +3497,7 @@ int ha_federatedx::reset(void)
   replace_duplicates= FALSE;
   position_called= FALSE;
   dynstr_trunc(&additionalFilter, additionalFilter.length);
+  use_default_mrr = TRUE;
 
   if (stored_result)
     insert_dynamic(&results, (uchar*) &stored_result);

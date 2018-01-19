@@ -574,7 +574,8 @@ int mysql_update(THD *thd,
       !table->check_virtual_columns_marked_for_write())
   {
     DBUG_PRINT("info", ("Trying direct update"));
-    if (select && select->cond &&
+    if (optimizer_flag(thd, deprecated_ENGINE_CONDITION_PUSHDOWN) &&
+        select && select->cond &&
         (select->cond->used_tables() == table->map))
     {
       DBUG_ASSERT(!table->file->pushed_cond);
