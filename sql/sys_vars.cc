@@ -2458,18 +2458,20 @@ export const char *optimizer_switch_names[]=
   "orderby_uses_equalities",
   "condition_pushdown_for_derived",
   "split_materialized",
-  "default", 
+  "fedx_mrr",
+  "default",
   NullS
 };
 static bool fix_optimizer_switch(sys_var *self, THD *thd,
                                  enum_var_type type)
 {
-  SV *sv= (type == OPT_GLOBAL) ? &global_system_variables : &thd->variables;
+/*  SV *sv= (type == OPT_GLOBAL) ? &global_system_variables : &thd->variables;
   if (sv->optimizer_switch & deprecated_ENGINE_CONDITION_PUSHDOWN)
     push_warning_printf(current_thd, Sql_condition::WARN_LEVEL_WARN,
                         ER_WARN_DEPRECATED_SYNTAX_NO_REPLACEMENT,
                         ER_THD(thd, ER_WARN_DEPRECATED_SYNTAX_NO_REPLACEMENT),
                         "engine_condition_pushdown=on");
+                        */
   return false;
 }
 static Sys_var_flagset Sys_optimizer_switch(

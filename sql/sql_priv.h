@@ -228,11 +228,13 @@
 #define OPTIMIZER_SWITCH_ORDERBY_EQ_PROP           (1ULL << 29)
 #define OPTIMIZER_SWITCH_COND_PUSHDOWN_FOR_DERIVED (1ULL << 30)
 #define OPTIMIZER_SWITCH_SPLIT_MATERIALIZED        (1ULL << 31)
+#define OPTIMIZER_SWITCH_FEDX_MRR                  (1ULL << 32)
 
 #define OPTIMIZER_SWITCH_DEFAULT   (OPTIMIZER_SWITCH_INDEX_MERGE | \
                                     OPTIMIZER_SWITCH_INDEX_MERGE_UNION | \
                                     OPTIMIZER_SWITCH_INDEX_MERGE_SORT_UNION | \
                                     OPTIMIZER_SWITCH_INDEX_MERGE_INTERSECT | \
+                                    deprecated_ENGINE_CONDITION_PUSHDOWN | \
                                     OPTIMIZER_SWITCH_INDEX_COND_PUSHDOWN | \
                                     OPTIMIZER_SWITCH_DERIVED_MERGE | \
                                     OPTIMIZER_SWITCH_DERIVED_WITH_KEYS | \

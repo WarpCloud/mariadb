@@ -88,6 +88,7 @@ typedef struct st_fedrated_server {
 #define FEDERATEDX_QUERY_BUFFER_SIZE STRING_BUFFER_USUAL_SIZE * 5
 #define FEDERATEDX_RECORDS_IN_RANGE 2
 #define FEDERATEDX_MAX_KEY_LENGTH 3500 // Same as innodb
+#define FEDERATEDX_MAX_IN_SIZE 128 // max in size when construct a in filter
 
 /*
   FEDERATEDX_SHARE is a structure that will be shared amoung all open handlers
@@ -326,6 +327,17 @@ public:
     const DYNAMIC_STRING *ha_pushed_condition() const;
     // zqdai add column pruning logic
     void append_select_from(String& query);
+    ha_rows multi_range_read_info_const(uint keyno, RANGE_SEQ_IF *seq,
+                                         void *seq_init_param, uint n_ranges_arg,
+                                         uint *bufsz, uint *flags, Cost_estimate *cost);
+    ha_rows multi_range_read_info(uint keyno, uint n_ranges, uint n_rows,
+                                           uint key_parts, uint *bufsz,
+                                           uint *flags, Cost_estimate *cost);
+    int multi_range_read_next(range_id_t *range_info);
+    int read_multi_in_first(String *in_filter_str);
+    int multi_range_read_init(RANGE_SEQ_IF *seq_funcs, void *seq_init_param,
+                                   uint n_ranges, uint mode, HANDLER_BUFFER *buf);
+    bool use_default_mrr;
     /*
     This is a list of flags that says what the storage engine
     implements. The current table flags are documented in

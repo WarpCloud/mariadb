@@ -2565,6 +2565,8 @@ void get_sweep_read_cost(TABLE *table, ha_rows nrows, bool interrupted,
 #define HA_MRR_IMPLEMENTATION_FLAGS \
   (512U | 1024U | 2048U | 4096U | 8192U | 16384U)
 
+#define HA_MRR_FEDX_MRR   32768U
+
 /*
   This is a buffer area that the handler can use to store rows.
   'end_of_used_area' should be kept updated after calls to
