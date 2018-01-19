@@ -2978,10 +2978,23 @@ int ha_federatedx::read_multi_in_first(String *in_filter_str)
   DBUG_ENTER("ha_federatedx::read_multi_in_first");
 
   sql_query.length(0);
-  //sql_query.append(share->select_query);
   append_select_from(sql_query);
   sql_query.append(STRING_WITH_LEN(" WHERE "));
   sql_query.append(in_filter_str->ptr(), in_filter_str->length());
+  if (additionalFilter.length != 0) {
+      if (sql_query.append(STRING_WITH_LEN(" AND ("))) {
+          dynstr_trunc(&additionalFilter, additionalFilter.length);
+          DBUG_RETURN(1);
+      }
+      if (sql_query.append(additionalFilter.str, additionalFilter.length)) {
+          dynstr_trunc(&additionalFilter, additionalFilter.length);
+          DBUG_RETURN(1);
+      }
+      if (sql_query.append(STRING_WITH_LEN(")"))) {
+          dynstr_trunc(&additionalFilter, additionalFilter.length);
+          DBUG_RETURN(1);
+      }
+  }
 
   if ((retval= txn->acquire(share, ha_thd(), TRUE, &io)))
     DBUG_RETURN(retval);
