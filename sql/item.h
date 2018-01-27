@@ -5859,7 +5859,14 @@ public:
 
   virtual void keep_array() {}
   virtual void print(String *str, enum_query_type query_type);
-  bool eq_def(const Field *field) 
+  virtual String *to_str(String *str) const {
+    if (example) {
+      return example->to_str(str);
+    } else {
+      return 0;
+    }
+  }
+  bool eq_def(const Field *field)
   { 
     return cached_field ? cached_field->eq_def (field) : FALSE;
   }
