@@ -3471,6 +3471,7 @@ public:
       for(uint i = 0; i < list.elements; i++) {
         if (!((Item *)first_node->info)->to_str(&str1)) {
           first_node = first_node->next;
+          str1.length(0);
           continue;
         }
         if (first) {
