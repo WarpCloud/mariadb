@@ -3043,6 +3043,11 @@ public:
     str->append(STRING_WITH_LEN("NULL"));
   }
 
+  virtual String *to_str(String *str) const {
+    str->append(STRING_WITH_LEN("NULL"));
+    return str;
+  }
+
   Item *safe_charset_converter(THD *thd, CHARSET_INFO *tocs);
   bool check_partition_func_processor(void *int_arg) {return FALSE;}
   Item *get_copy(THD *thd)
