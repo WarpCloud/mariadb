@@ -692,7 +692,7 @@ public:
   int  marker;
   bool maybe_null;			/* If item may be null */
   bool in_rollup;                       /* If used in GROUP BY list
-                                           of a query with ROLLUP */ 
+                                           of a query with ROLLUP */
   bool null_value;			/* if item is null */
   bool with_sum_func;                   /* True if item contains a sum func */
   bool with_window_func;             /* True if item contains a window func */
@@ -2892,12 +2892,7 @@ public:
     }
     return 0;
   }
-    virtual String *to_str(String *str) const {
-      str->append(STRING_WITH_LEN("`"));
-      str->append(field_name.str, field_name.length);
-      str->append(STRING_WITH_LEN("`"));
-      return str;
-    }
+  virtual String *to_str(String *str) const;
 
   void cleanup();
   Item_equal *get_item_equal() { return item_equal; }
@@ -3501,10 +3496,10 @@ public:
   { return int_eq(value, item); }
   Item *get_copy(THD *thd)
   { return get_item_copy<Item_int>(thd, this); }
-    virtual String *to_str(String *str) const {
-      str->append_longlong(value);
-      return str;
-    }
+  virtual String *to_str(String *str) const {
+    str->append_longlong(value);
+    return str;
+  }
 };
 
 
@@ -5864,13 +5859,7 @@ public:
 
   virtual void keep_array() {}
   virtual void print(String *str, enum_query_type query_type);
-  virtual String *to_str(String *str) const {
-    if (example) {
-      return example->to_str(str);
-    } else {
-      return 0;
-    }
-  }
+  virtual String *to_str(String *str) const;
   bool eq_def(const Field *field)
   { 
     return cached_field ? cached_field->eq_def (field) : FALSE;

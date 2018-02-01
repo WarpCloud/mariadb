@@ -112,6 +112,30 @@ bool Item_str_func::fix_fields(THD *thd, Item **ref)
   return res;
 }
 
+String *Item_str_func::to_str(String *str) const {
+  char buff[1024];
+  String str1(buff, sizeof(buff), system_charset_info);
+  str1.length(0);
+  const char *name = func_name();
+  str->append(name, strlen(name));
+  str->append(STRING_WITH_LEN("("));
+  bool first = true;
+  for (uint i = 0; i < arg_count; i++) {
+    if (first) {
+      first = false;
+    } else {
+      str->append(STRING_WITH_LEN(", "));
+    }
+    if (args[i]->to_str(&str1)) {
+      str->append(str1.ptr(), str1.length());
+      str1.length(0);
+    } else {
+      return 0;
+    }
+  }
+  str->append(STRING_WITH_LEN(")"));
+  return str;
+}
 
 my_decimal *Item_str_func::val_decimal(my_decimal *decimal_value)
 {

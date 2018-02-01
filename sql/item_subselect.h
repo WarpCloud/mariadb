@@ -99,7 +99,7 @@ public:
   /* Cached buffers used when calling filesort in sub queries */
   Filesort_buffer filesort_buffer;
   LEX_STRING sortbuffer;
-    virtual String *to_str(String *str) const {return 0;};
+  virtual String *to_str(String *str) const {return 0;};
   /* A reference from inside subquery predicate to somewhere outside of it */
   class Ref_to_outside : public Sql_alloc
   {

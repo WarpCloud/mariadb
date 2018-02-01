@@ -7688,6 +7688,37 @@ void Item_field::print(String *str, enum_query_type query_type)
   Item_ident::print(str, query_type);
 }
 
+String *Item_field::to_str(String *str) const {
+  if (field && field->table->const_table)
+  {
+    char buff[MAX_FIELD_WIDTH];
+    String *ptr, tmp(buff,sizeof(buff),str->charset());
+    ptr= ((Item *)this)->val_str(&tmp);
+    if (!ptr)
+      str->append("NULL");
+    else
+    {
+      switch (cmp_type()) {
+        case STRING_RESULT:
+        case TIME_RESULT:
+          append_unescaped(str, ptr->ptr(), ptr->length());
+              break;
+        case DECIMAL_RESULT:
+        case REAL_RESULT:
+        case INT_RESULT:
+          str->append(*ptr);
+              break;
+        case ROW_RESULT:
+          return 0;
+      }
+    }
+  } else {
+    str->append(STRING_WITH_LEN("`"));
+    str->append(field_name.str, field_name.length);
+    str->append(STRING_WITH_LEN("`"));
+  }
+  return str;
+}
 
 bool Item_field_row::element_index_by_name(uint *idx,
                                            const LEX_CSTRING &name) const
@@ -9825,6 +9856,14 @@ void Item_cache::print(String *str, enum_query_type query_type)
   else
     Item::print(str, query_type);
   str->append(')');
+}
+
+String *Item_cache::to_str(String *str) const {
+  if (example) {
+    return example->to_str(str);
+  } else {
+    return 0;
+  }
 }
 
 /**
