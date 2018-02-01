@@ -685,25 +685,7 @@ public:
   Item_func_num1(THD *thd, Item *a, Item *b): Item_func_numhybrid(thd, a, b) {}
   bool check_partition_func_processor(void *int_arg) { return FALSE; }
   bool check_vcol_func_processor(void *arg) { return FALSE; }
-    virtual String *to_str(String *str) const {
-      if (arg_count != 1) {
-        return 0;
-      }
-      char buff[1024];
-      String str1(buff, sizeof(buff), system_charset_info);
-      str1.length(0);
-      const char * name = func_name();
-      str->append(name, strlen(name));
-      str->append(STRING_WITH_LEN("("));
-      if (args[0]->to_str(&str1)) {
-        str->append(str1.ptr(), str1.length());
-        str1.length(0);
-      } else {
-        return 0;
-      }
-      str->append(STRING_WITH_LEN(")"));
-      return str;
-    }
+  virtual String *to_str(String *str) const;
 
 };
 
@@ -746,43 +728,7 @@ class Item_num_op :public Item_func_numhybrid
       set_handler(type_handler_long_or_longlong());
   }
   bool need_parentheses_in_default() { return true; }
-    virtual String *to_str(String *str) const {
-      if (arg_count != 2) {
-        return 0;
-      }
-      char buff[1024];
-      String str1(buff, sizeof(buff), system_charset_info);
-      str1.length(0);
-      if (args[0]->to_str(&str1)) {
-        if (!is_component_item(args[0])) {
-          str->append(STRING_WITH_LEN("("));
-        }
-        str->append(str1.ptr(), str1.length());
-        str1.length(0);
-        if (!is_component_item(args[0])) {
-          str->append(STRING_WITH_LEN(")"));
-        }
-      } else {
-        return 0;
-      }
-      const char * name = func_name();
-      str->append(STRING_WITH_LEN(" "));
-      str->append(name, strlen(name));
-      str->append(STRING_WITH_LEN(" "));
-      if (args[1]->to_str(&str1)) {
-        if (!is_component_item(args[1])) {
-          str->append(STRING_WITH_LEN("("));
-        }
-        str->append(str1.ptr(), str1.length());
-        str1.length(0);
-        if (!is_component_item(args[1])) {
-          str->append(STRING_WITH_LEN(")"));
-        }
-      } else {
-        return 0;
-      }
-      return str;
-    }
+  virtual String *to_str(String *str) const;
 
 };
 
@@ -1221,28 +1167,7 @@ public:
   bool need_parentheses_in_default() { return true; }
   Item *get_copy(THD *thd)
   { return get_item_copy<Item_func_neg>(thd, this); }
-    virtual String *to_str(String *str) const {
-      if (arg_count != 1) {
-        return 0;
-      }
-      char buff[1024];
-      String str1(buff, sizeof(buff), system_charset_info);
-      str1.length(0);
-      str->append(STRING_WITH_LEN("-"));
-      if (args[0]->to_str(&str1)) {
-        if (!is_component_item(args[0])) {
-          str->append(STRING_WITH_LEN("("));
-        }
-        str->append(str1.ptr(), str1.length());
-        str1.length(0);
-        if (!is_component_item(args[0])) {
-          str->append(STRING_WITH_LEN(")"));
-        }
-      } else {
-        return 0;
-      }
-      return str;
-    }
+  virtual String *to_str(String *str) const;
 
 };
 
