@@ -3738,7 +3738,7 @@ public:
   }
     virtual String *to_str(String *str) const {
       str->append("'");
-      str->append(str_value.ptr(), str_value.length());
+      str->append_for_single_quote(str_value.ptr(), str_value.length());
       str->append("'");
       return str;
     }
