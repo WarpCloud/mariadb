@@ -3102,15 +3102,24 @@ start:
           if (need_construct_column_names) {
             emit_key_part_name(&column_names, key_part);
           }
+          if (key_part->null_bit) {
+            if (*ptr++) {
+              // todo the key is null, should not reach here
+              in_values.append(STRING_WITH_LEN("NULL"));
+              goto prepare_for_next_key_part;
+            }
+          }
+
           emit_key_part_element(&in_values, key_part, needs_quotes, 0, ptr, part_length);
 
+prepare_for_next_key_part:
           if (store_length >= length) {
             break;
           }
           DBUG_PRINT("info", ("remainder %d", remainder));
           DBUG_ASSERT(remainder > 1);
           length-= store_length;
-          ptr += store_length;
+          ptr += store_length - MY_TEST(key_part->null_bit);
         }
         in_values.append(STRING_WITH_LEN(")"));
 
