@@ -1438,7 +1438,7 @@ const COND *ha_federatedx::cond_push(const Item *cond) {
   DBUG_ENTER("ha_federated::cond_push");
 
 #if 1
-  if (cond->used_tables() & ~table->pos_in_table_list->get_map())
+  if (cond->used_tables() & ~PSEUDO_TABLE_BITS & ~table->pos_in_table_list->get_map())
   {
     /**
      * 'cond' refers fields from other tables, or other instances
