@@ -2038,6 +2038,8 @@ public:
   {
     return mark_unsupported_function(func_name(), "()", arg, VCOL_NON_DETERMINISTIC);
   }
+  // do not push udf
+  virtual String *to_str(String *str) const { return 0;};
 };
 
 
@@ -2826,6 +2828,9 @@ public:
     str->copy(buf);
     return str;
   }
+
+  // do not push stored function
+  virtual String *to_str(String *str) const { return 0;};
 
   void update_null_value()
   { 
