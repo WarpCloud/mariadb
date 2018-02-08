@@ -2129,7 +2129,7 @@ int ha_federatedx::write_row(uchar *buf)
     if (bulk_insert.length + values_string.length() + bulk_padding >
         io->max_query_size() && bulk_insert.length)
     {
-      error= io->query(bulk_insert.str, bulk_insert.length);
+      error= io->query(bulk_insert.str, bulk_insert.length, DML);
       bulk_insert.length= 0;
     }
     else
@@ -2153,7 +2153,7 @@ int ha_federatedx::write_row(uchar *buf)
   }  
   else
   {
-    error= io->query(values_string.ptr(), values_string.length());
+    error= io->query(values_string.ptr(), values_string.length(), DML);
   }
   
   if (error)
@@ -2238,7 +2238,7 @@ int ha_federatedx::end_bulk_insert()
   {
     if ((error= txn->acquire(share, ha_thd(), FALSE, &io)))
       DBUG_RETURN(error);
-    if (io->query(bulk_insert.str, bulk_insert.length))
+    if (io->query(bulk_insert.str, bulk_insert.length, DML))
       error= stash_remote_error();
     else
     if (table->next_number_field)
@@ -2291,7 +2291,7 @@ int ha_federatedx::optimize(THD* thd, HA_CHECK_OPT* check_opt)
   if ((error= txn->acquire(share, thd, FALSE, &io)))
     DBUG_RETURN(error);
 
-  if (io->query(query.ptr(), query.length()))
+  if (io->query(query.ptr(), query.length(), OTHER))
     error= stash_remote_error();
 
   DBUG_RETURN(error);
@@ -2323,7 +2323,7 @@ int ha_federatedx::repair(THD* thd, HA_CHECK_OPT* check_opt)
   if ((error= txn->acquire(share, thd, FALSE, &io)))
     DBUG_RETURN(error);
 
-  if (io->query(query.ptr(), query.length()))
+  if (io->query(query.ptr(), query.length(), OTHER))
     error= stash_remote_error();
 
   DBUG_RETURN(error);
@@ -2482,7 +2482,7 @@ int ha_federatedx::update_row(const uchar *old_data, const uchar *new_data)
   if ((error= txn->acquire(share, ha_thd(), FALSE, &io)))
     DBUG_RETURN(error);
 
-  if (io->query(update_string.ptr(), update_string.length()))
+  if (io->query(update_string.ptr(), update_string.length(), DML))
   {
     DBUG_RETURN(stash_remote_error());
   }
@@ -2560,7 +2560,7 @@ int ha_federatedx::delete_row(const uchar *buf)
   if ((error= txn->acquire(share, ha_thd(), FALSE, &io)))
     DBUG_RETURN(error);
 
-  if (io->query(delete_string.ptr(), delete_string.length()))
+  if (io->query(delete_string.ptr(), delete_string.length(), DML))
   {
     DBUG_RETURN(stash_remote_error());
   }
@@ -2672,7 +2672,7 @@ int ha_federatedx::index_read_idx_with_result_set(uchar *buf, uint index,
   if ((retval= txn->acquire(share, ha_thd(), TRUE, &io)))
     DBUG_RETURN(retval);
 
-  if (io->query(sql_query.ptr(), sql_query.length()))
+  if (io->query(sql_query.ptr(), sql_query.length(), QUERY))
   {
     snprintf(error_buffer, sizeof(error_buffer),"error: %d '%s'",
             io->error_code(), io->error_str());
@@ -2756,7 +2756,7 @@ int ha_federatedx::read_range_first(const key_range *start_key,
   if (stored_result)
     (void) free_result();
 
-  if (io->query(sql_query.ptr(), sql_query.length()))
+  if (io->query(sql_query.ptr(), sql_query.length(), QUERY))
   {
     retval= ER_QUERY_ON_FOREIGN_DATA_SOURCE;
     goto error;
@@ -2870,7 +2870,7 @@ int ha_federatedx::rnd_init(bool scan)
     }
 
     if (io->query(sql_query.ptr(),
-                  strlen(sql_query.ptr())))
+                  strlen(sql_query.ptr()), QUERY))
       goto error;
 
     stored_result= io->store_result();
@@ -3002,7 +3002,7 @@ int ha_federatedx::read_multi_in_first(String *in_filter_str)
   if (stored_result)
     (void) free_result();
 
-  if (io->query(sql_query.ptr(), sql_query.length()))
+  if (io->query(sql_query.ptr(), sql_query.length(), QUERY))
   {
     retval= ER_QUERY_ON_FOREIGN_DATA_SOURCE;
     goto error;
@@ -3578,7 +3578,7 @@ int ha_federatedx::delete_all_rows()
   if ((error= txn->acquire(share, thd, FALSE, &io)))
     DBUG_RETURN(error);
 
-  if (io->query(query.ptr(), query.length()))
+  if (io->query(query.ptr(), query.length(), DML))
   {
     DBUG_RETURN(stash_remote_error());
   }
@@ -3670,7 +3670,7 @@ static int test_connection(MYSQL_THD thd, federatedx_io *io,
                     share->table_name_length);
   str.append(STRING_WITH_LEN(" WHERE 1=0"));
 
-  if ((retval= io->query(str.ptr(), str.length())))
+  if ((retval= io->query(str.ptr(), str.length(), QUERY)))
   {
     sprintf(buffer, "database: '%s'  username: '%s'  hostname: '%s'",
             share->database, share->username, share->hostname);

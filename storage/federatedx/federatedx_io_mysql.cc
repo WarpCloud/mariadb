@@ -68,6 +68,9 @@ class federatedx_io_mysql :public federatedx_io
   DYNAMIC_ARRAY savepoints;
   bool requested_autocommit;
   bool actual_autocommit;
+  // todo should add a new class federatedx_io_vitess for vitess connection
+  bool is_vitess;
+  int current_workload;
 
   int actual_query(const char *buffer, uint length);
   bool test_all_restrict() const;
@@ -76,7 +79,7 @@ public:
   ~federatedx_io_mysql();
 
   int simple_query(const char *fmt, ...);
-  int query(const char *buffer, uint length);
+  int query(const char *buffer, uint length, int query_type);
   virtual FEDERATEDX_IO_RESULT *store_result();
 
   virtual size_t max_query_size() const;
@@ -102,6 +105,10 @@ public:
 
   bool table_metadata(ha_statistics *stats, const char *table_name,
                       uint table_name_length, uint flag);
+
+  void set_is_vitess(bool is_vitess) {
+    this->is_vitess = is_vitess;
+  }
 
   /* resultset operations */
 
@@ -130,6 +137,14 @@ federatedx_io *instantiate_io_mysql(MEM_ROOT *server_root,
   return new (server_root) federatedx_io_mysql(server);
 }
 
+federatedx_io *instantiate_io_vitess(MEM_ROOT *server_root,
+                                    FEDERATEDX_SERVER *server)
+{
+  federatedx_io_mysql *ret = new (server_root) federatedx_io_mysql(server);
+  ret->set_is_vitess(true);
+  return ret;
+}
+
 
 federatedx_io_mysql::federatedx_io_mysql(FEDERATEDX_SERVER *aserver)
   : federatedx_io(aserver),
@@ -141,6 +156,8 @@ federatedx_io_mysql::federatedx_io_mysql(FEDERATEDX_SERVER *aserver)
   bzero(&savepoints, sizeof(DYNAMIC_ARRAY));
 
   my_init_dynamic_array(&savepoints, sizeof(SAVEPT), 16, 16, MYF(0));
+  current_workload = VITESS_WORKLOAD_UNKNOWN;
+  is_vitess = false;
   
   DBUG_VOID_RETURN;
 }
@@ -349,7 +366,7 @@ int federatedx_io_mysql::simple_query(const char *fmt, ...)
   length= my_vsnprintf(buffer, sizeof(buffer), fmt, arg);
   va_end(arg);
   
-  error= query(buffer, length);
+  error= query(buffer, length, QUERY);
   
   DBUG_RETURN(error);
 }
@@ -377,7 +394,7 @@ bool federatedx_io_mysql::test_all_restrict() const
 }
 
 
-int federatedx_io_mysql::query(const char *buffer, uint length)
+int federatedx_io_mysql::query(const char *buffer, uint length, int query_type)
 {
   int error;
   bool wants_autocommit= requested_autocommit | is_readonly();
@@ -416,6 +433,22 @@ int federatedx_io_mysql::query(const char *buffer, uint length)
     savept->flags|= SAVEPOINT_REALIZED;
   }
 
+  if (is_vitess) {
+    if (query_type == QUERY && current_workload != VITESS_WORKLOAD_OLAP) {
+      // set workload to olap for query
+      if ((error = actual_query("SET WORKLOAD=OLAP", 17))) {
+        DBUG_RETURN(error);
+      }
+      current_workload = VITESS_WORKLOAD_OLAP;
+    }
+    if (query_type == DML && current_workload != VITESS_WORKLOAD_OLTP) {
+      // set workload to oltp for dml
+      if ((error = actual_query("SET WORKLOAD=OLTP", 17))) {
+        DBUG_RETURN(error);
+      }
+      current_workload = VITESS_WORKLOAD_OLTP;
+    }
+  }
   if (!(error= actual_query(buffer, length)))
     set_active(is_active() || !actual_autocommit);
 
@@ -454,6 +487,8 @@ int federatedx_io_mysql::actual_query(const char *buffer, uint length)
                             get_socket(), 0))
       DBUG_RETURN(ER_CONNECT_TO_FOREIGN_DATA_SOURCE);
     mysql.reconnect= 1;
+    // once reconnect, reset the current workload flag
+    current_workload = VITESS_WORKLOAD_UNKNOWN;
   }
 
   error= mysql_real_query(&mysql, buffer, length);
@@ -561,7 +596,7 @@ bool federatedx_io_mysql::table_metadata(ha_statistics *stats,
   append_ident(&status_query_string, table_name,
                table_name_length, value_quote_char);
 
-  if (query(status_query_string.ptr(), status_query_string.length()))
+  if (query(status_query_string.ptr(), status_query_string.length(), OTHER))
     goto error;
 
   status_query_string.length(0);
