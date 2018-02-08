@@ -1141,6 +1141,16 @@ prepare_server_struct_for_insert(LEX_SERVER_OPTIONS *server_options)
       DBUG_RETURN(NULL);
     }
   }
+  if (!strcasecmp(server->scheme, "vitess"))
+  {
+    default_port= 15306;
+    if (!server_options->host.str && !server_options->socket.str)
+    {
+      my_error(ER_CANT_CREATE_FEDERATED_TABLE, MYF(0),
+               "either HOST or SOCKET must be set");
+      DBUG_RETURN(NULL);
+    }
+  }
 
   SET_SERVER_OR_RETURN(host, "");
   SET_SERVER_OR_RETURN(db, "");

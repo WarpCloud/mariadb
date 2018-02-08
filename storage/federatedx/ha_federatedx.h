@@ -90,6 +90,14 @@ typedef struct st_fedrated_server {
 #define FEDERATEDX_MAX_KEY_LENGTH 3500 // Same as innodb
 #define FEDERATEDX_MAX_IN_SIZE 128 // max in size when construct a in filter
 
+#define VITESS_WORKLOAD_UNKNOWN 0
+#define VITESS_WORKLOAD_OLTP 1
+#define VITESS_WORKLOAD_OLAP 2
+
+#define QUERY 1
+#define DML 2
+#define OTHER 3
+
 /*
   FEDERATEDX_SHARE is a structure that will be shared amoung all open handlers
   The example implements the minimum of what you will probably need.
@@ -172,7 +180,7 @@ public:
   static void operator delete(void *ptr, size_t size)
   { TRASH(ptr, size); }
 
-  virtual int query(const char *buffer, uint length)=0;
+  virtual int query(const char *buffer, uint length, int query_type)=0;
   virtual FEDERATEDX_IO_RESULT *store_result()=0;
 
   virtual size_t max_query_size() const=0;
@@ -474,6 +482,8 @@ extern bool append_ident(String *string, const char *name, uint length,
 
 
 extern federatedx_io *instantiate_io_mysql(MEM_ROOT *server_root,
+                                           FEDERATEDX_SERVER *server);
+extern federatedx_io *instantiate_io_vitess(MEM_ROOT *server_root,
                                            FEDERATEDX_SERVER *server);
 extern federatedx_io *instantiate_io_null(MEM_ROOT *server_root,
                                           FEDERATEDX_SERVER *server);
