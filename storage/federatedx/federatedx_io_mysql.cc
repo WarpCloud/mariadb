@@ -70,7 +70,7 @@ class federatedx_io_mysql :public federatedx_io
   bool actual_autocommit;
   // todo should add a new class federatedx_io_vitess for vitess connection
   bool is_vitess;
-  int current_workload;
+  int current_scan_mode;
 
   int actual_query(const char *buffer, uint length);
   bool test_all_restrict() const;
@@ -79,7 +79,7 @@ public:
   ~federatedx_io_mysql();
 
   int simple_query(const char *fmt, ...);
-  int query(const char *buffer, uint length, int query_type);
+  int query(const char *buffer, uint length, int scan_mode);
   virtual FEDERATEDX_IO_RESULT *store_result();
 
   virtual size_t max_query_size() const;
@@ -156,7 +156,7 @@ federatedx_io_mysql::federatedx_io_mysql(FEDERATEDX_SERVER *aserver)
   bzero(&savepoints, sizeof(DYNAMIC_ARRAY));
 
   my_init_dynamic_array(&savepoints, sizeof(SAVEPT), 16, 16, MYF(0));
-  current_workload = VITESS_WORKLOAD_UNKNOWN;
+  current_scan_mode = SCAN_MODE_UNKNOWN;
   is_vitess = false;
   
   DBUG_VOID_RETURN;
@@ -366,7 +366,7 @@ int federatedx_io_mysql::simple_query(const char *fmt, ...)
   length= my_vsnprintf(buffer, sizeof(buffer), fmt, arg);
   va_end(arg);
   
-  error= query(buffer, length, QUERY);
+  error= query(buffer, length, SCAN_MODE_DEFAULT);
   
   DBUG_RETURN(error);
 }
@@ -394,7 +394,7 @@ bool federatedx_io_mysql::test_all_restrict() const
 }
 
 
-int federatedx_io_mysql::query(const char *buffer, uint length, int query_type)
+int federatedx_io_mysql::query(const char *buffer, uint length, int scan_mode)
 {
   int error;
   bool wants_autocommit= requested_autocommit | is_readonly();
@@ -434,19 +434,17 @@ int federatedx_io_mysql::query(const char *buffer, uint length, int query_type)
   }
 
   if (is_vitess) {
-    if (query_type == QUERY && current_workload != VITESS_WORKLOAD_OLAP) {
-      // set workload to olap for query
+    if (scan_mode == SCAN_MODE_OLAP && current_scan_mode != SCAN_MODE_OLAP) {
       if ((error = actual_query("SET WORKLOAD=OLAP", 17))) {
         DBUG_RETURN(error);
       }
-      current_workload = VITESS_WORKLOAD_OLAP;
+      current_scan_mode = SCAN_MODE_OLAP;
     }
-    if (query_type == DML && current_workload != VITESS_WORKLOAD_OLTP) {
-      // set workload to oltp for dml
+    if (scan_mode == SCAN_MODE_OLTP && current_scan_mode != SCAN_MODE_OLTP) {
       if ((error = actual_query("SET WORKLOAD=OLTP", 17))) {
         DBUG_RETURN(error);
       }
-      current_workload = VITESS_WORKLOAD_OLTP;
+      current_scan_mode = SCAN_MODE_OLTP;
     }
   }
   if (!(error= actual_query(buffer, length)))
@@ -488,7 +486,7 @@ int federatedx_io_mysql::actual_query(const char *buffer, uint length)
       DBUG_RETURN(ER_CONNECT_TO_FOREIGN_DATA_SOURCE);
     mysql.reconnect= 1;
     // once reconnect, reset the current workload flag
-    current_workload = VITESS_WORKLOAD_UNKNOWN;
+    current_scan_mode = SCAN_MODE_UNKNOWN;
   }
 
   error= mysql_real_query(&mysql, buffer, length);
@@ -596,7 +594,7 @@ bool federatedx_io_mysql::table_metadata(ha_statistics *stats,
   append_ident(&status_query_string, table_name,
                table_name_length, value_quote_char);
 
-  if (query(status_query_string.ptr(), status_query_string.length(), OTHER))
+  if (query(status_query_string.ptr(), status_query_string.length(), SCAN_MODE_EITHER))
     goto error;
 
   status_query_string.length(0);

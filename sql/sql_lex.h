@@ -1084,7 +1084,8 @@ public:
                                 enum_mdl_type mdl_type= MDL_SHARED_READ,
 				List<Index_hint> *hints= 0,
                                 List<String> *partition_names= 0,
-                                LEX_STRING *option= 0);
+                                LEX_STRING *option= 0,
+                                LEX_CSTRING scan_mode = null_clex_str);
   TABLE_LIST* get_table_list();
   bool init_nested_join(THD *thd);
   TABLE_LIST *end_nested_join(THD *thd);
@@ -1170,6 +1171,12 @@ public:
     return hints;
   }
 
+  void set_scan_mode(LEX_CSTRING scan_mode) {
+    this->scan_mode = scan_mode;
+  }
+  LEX_CSTRING get_scan_mode() {
+    return scan_mode;
+  }
   void clear_index_hints(void) { index_hints= NULL; }
   bool is_part_of_union() { return master_unit()->is_unit_op(); }
   bool is_top_level_node() 
@@ -1265,6 +1272,7 @@ private:
   index_clause_map current_index_hint_clause;
   /* a list of USE/FORCE/IGNORE INDEX */
   List<Index_hint> *index_hints;
+  LEX_CSTRING scan_mode;
 
 public:
   inline void add_where_field(st_select_lex *sel)

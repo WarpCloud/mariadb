@@ -1433,6 +1433,17 @@ err:
   DBUG_RETURN(1);
 }
 
+void ha_federatedx::set_scan_mode(LEX_CSTRING scan_mode) {
+    if (!scan_mode.str || scan_mode.length != 4) {
+      return;
+    }
+    if (!strcasecmp(scan_mode.str, "oltp")) {
+      this->scan_mode = SCAN_MODE_OLTP;
+    } else if (!strcasecmp(scan_mode.str, "olap")) {
+      this->scan_mode = SCAN_MODE_OLAP;
+    }
+}
+
 const COND *ha_federatedx::cond_push(const Item *cond) {
   // convert cond to string
   DBUG_ENTER("ha_federated::cond_push");
@@ -2129,7 +2140,7 @@ int ha_federatedx::write_row(uchar *buf)
     if (bulk_insert.length + values_string.length() + bulk_padding >
         io->max_query_size() && bulk_insert.length)
     {
-      error= io->query(bulk_insert.str, bulk_insert.length, DML);
+      error= io->query(bulk_insert.str, bulk_insert.length, SCAN_MODE_OLTP);
       bulk_insert.length= 0;
     }
     else
@@ -2153,7 +2164,7 @@ int ha_federatedx::write_row(uchar *buf)
   }  
   else
   {
-    error= io->query(values_string.ptr(), values_string.length(), DML);
+    error= io->query(values_string.ptr(), values_string.length(), SCAN_MODE_OLTP);
   }
   
   if (error)
@@ -2238,7 +2249,7 @@ int ha_federatedx::end_bulk_insert()
   {
     if ((error= txn->acquire(share, ha_thd(), FALSE, &io)))
       DBUG_RETURN(error);
-    if (io->query(bulk_insert.str, bulk_insert.length, DML))
+    if (io->query(bulk_insert.str, bulk_insert.length, SCAN_MODE_OLTP))
       error= stash_remote_error();
     else
     if (table->next_number_field)
@@ -2291,7 +2302,7 @@ int ha_federatedx::optimize(THD* thd, HA_CHECK_OPT* check_opt)
   if ((error= txn->acquire(share, thd, FALSE, &io)))
     DBUG_RETURN(error);
 
-  if (io->query(query.ptr(), query.length(), OTHER))
+  if (io->query(query.ptr(), query.length(), SCAN_MODE_EITHER))
     error= stash_remote_error();
 
   DBUG_RETURN(error);
@@ -2323,7 +2334,7 @@ int ha_federatedx::repair(THD* thd, HA_CHECK_OPT* check_opt)
   if ((error= txn->acquire(share, thd, FALSE, &io)))
     DBUG_RETURN(error);
 
-  if (io->query(query.ptr(), query.length(), OTHER))
+  if (io->query(query.ptr(), query.length(), SCAN_MODE_EITHER))
     error= stash_remote_error();
 
   DBUG_RETURN(error);
@@ -2482,7 +2493,7 @@ int ha_federatedx::update_row(const uchar *old_data, const uchar *new_data)
   if ((error= txn->acquire(share, ha_thd(), FALSE, &io)))
     DBUG_RETURN(error);
 
-  if (io->query(update_string.ptr(), update_string.length(), DML))
+  if (io->query(update_string.ptr(), update_string.length(), SCAN_MODE_OLTP))
   {
     DBUG_RETURN(stash_remote_error());
   }
@@ -2560,7 +2571,7 @@ int ha_federatedx::delete_row(const uchar *buf)
   if ((error= txn->acquire(share, ha_thd(), FALSE, &io)))
     DBUG_RETURN(error);
 
-  if (io->query(delete_string.ptr(), delete_string.length(), DML))
+  if (io->query(delete_string.ptr(), delete_string.length(), SCAN_MODE_OLTP))
   {
     DBUG_RETURN(stash_remote_error());
   }
@@ -2672,7 +2683,7 @@ int ha_federatedx::index_read_idx_with_result_set(uchar *buf, uint index,
   if ((retval= txn->acquire(share, ha_thd(), TRUE, &io)))
     DBUG_RETURN(retval);
 
-  if (io->query(sql_query.ptr(), sql_query.length(), QUERY))
+  if (io->query(sql_query.ptr(), sql_query.length(), scan_mode))
   {
     snprintf(error_buffer, sizeof(error_buffer),"error: %d '%s'",
             io->error_code(), io->error_str());
@@ -2756,7 +2767,7 @@ int ha_federatedx::read_range_first(const key_range *start_key,
   if (stored_result)
     (void) free_result();
 
-  if (io->query(sql_query.ptr(), sql_query.length(), QUERY))
+  if (io->query(sql_query.ptr(), sql_query.length(), scan_mode))
   {
     retval= ER_QUERY_ON_FOREIGN_DATA_SOURCE;
     goto error;
@@ -2870,7 +2881,7 @@ int ha_federatedx::rnd_init(bool scan)
     }
 
     if (io->query(sql_query.ptr(),
-                  strlen(sql_query.ptr()), QUERY))
+                  strlen(sql_query.ptr()), scan_mode))
       goto error;
 
     stored_result= io->store_result();
@@ -3002,7 +3013,7 @@ int ha_federatedx::read_multi_in_first(String *in_filter_str)
   if (stored_result)
     (void) free_result();
 
-  if (io->query(sql_query.ptr(), sql_query.length(), QUERY))
+  if (io->query(sql_query.ptr(), sql_query.length(), scan_mode))
   {
     retval= ER_QUERY_ON_FOREIGN_DATA_SOURCE;
     goto error;
@@ -3507,6 +3518,7 @@ int ha_federatedx::reset(void)
   position_called= FALSE;
   dynstr_trunc(&additionalFilter, additionalFilter.length);
   use_default_mrr = TRUE;
+  scan_mode = SCAN_MODE_DEFAULT;
 
   if (stored_result)
     insert_dynamic(&results, (uchar*) &stored_result);
@@ -3578,7 +3590,7 @@ int ha_federatedx::delete_all_rows()
   if ((error= txn->acquire(share, thd, FALSE, &io)))
     DBUG_RETURN(error);
 
-  if (io->query(query.ptr(), query.length(), DML))
+  if (io->query(query.ptr(), query.length(), SCAN_MODE_OLTP))
   {
     DBUG_RETURN(stash_remote_error());
   }
@@ -3670,7 +3682,7 @@ static int test_connection(MYSQL_THD thd, federatedx_io *io,
                     share->table_name_length);
   str.append(STRING_WITH_LEN(" WHERE 1=0"));
 
-  if ((retval= io->query(str.ptr(), str.length(), QUERY)))
+  if ((retval= io->query(str.ptr(), str.length(), SCAN_MODE_DEFAULT)))
   {
     sprintf(buffer, "database: '%s'  username: '%s'  hostname: '%s'",
             share->database, share->username, share->hostname);
