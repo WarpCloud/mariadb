@@ -11272,14 +11272,14 @@ table_primary_ident:
             SELECT_LEX *sel= Select;
             sel->table_join_options= 0;
           }
-          table_ident opt_use_partition opt_table_alias opt_key_definition
+          table_ident opt_use_partition opt_table_alias opt_key_definition opt_scan_mode_definition
           {
             if (!($$= Select->add_table_to_list(thd, $2, $4,
                                                 Select->get_table_join_options(),
                                                 YYPS->m_lock_type,
                                                 YYPS->m_mdl_type,
                                                 Select->pop_index_hints(),
-                                                $3)))
+                                                $3, 0, Select->get_scan_mode())))
               MYSQL_YYABORT;
             Select->add_joined_table($$);
           }
@@ -11588,6 +11588,14 @@ opt_index_hints_list:
 opt_key_definition:
           {  Select->clear_index_hints(); }
           opt_index_hints_list
+        ;
+
+opt_scan_mode_definition:
+          /* empty */ { Select->set_scan_mode(null_clex_str); }
+        | FETCH_SYM MODE_SYM TEXT_STRING_sys
+        {
+            Select->set_scan_mode($3);
+        }
         ;
 
 opt_key_usage_list:

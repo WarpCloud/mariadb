@@ -90,14 +90,15 @@ typedef struct st_fedrated_server {
 #define FEDERATEDX_MAX_KEY_LENGTH 3500 // Same as innodb
 #define FEDERATEDX_MAX_IN_SIZE 128 // max in size when construct a in filter
 
-#define VITESS_WORKLOAD_UNKNOWN 0
-#define VITESS_WORKLOAD_OLTP 1
-#define VITESS_WORKLOAD_OLAP 2
-
-#define QUERY 1
-#define DML 2
-#define OTHER 3
-
+#define SCAN_MODE_UNKNOWN 0
+// the vitess workload is oltp, all commands are allowed
+#define SCAN_MODE_OLTP 1
+// the vitess workload is olap, dml is not allowed
+#define SCAN_MODE_OLAP 2
+// either oltp and olap is ok, for commands other than query and dml
+#define SCAN_MODE_EITHER 3
+// default scan mode for query and dml
+#define SCAN_MODE_DEFAULT SCAN_MODE_OLTP
 /*
   FEDERATEDX_SHARE is a structure that will be shared amoung all open handlers
   The example implements the minimum of what you will probably need.
@@ -180,7 +181,7 @@ public:
   static void operator delete(void *ptr, size_t size)
   { TRASH(ptr, size); }
 
-  virtual int query(const char *buffer, uint length, int query_type)=0;
+  virtual int query(const char *buffer, uint length, int scan_mode)=0;
   virtual FEDERATEDX_IO_RESULT *store_result()=0;
 
   virtual size_t max_query_size() const=0;
@@ -274,6 +275,7 @@ class ha_federatedx: public handler
   federatedx_txn *txn;
   federatedx_io *io;
   FEDERATEDX_IO_RESULT *stored_result;
+  int scan_mode;
   /**
       Array of all stored results we get during a query execution.
   */
@@ -332,6 +334,7 @@ public:
   const char *index_type(uint inx) { return "REMOTE"; }
 
     const COND *cond_push(const Item *cond);
+    void set_scan_mode(LEX_CSTRING scan_mode);
     const DYNAMIC_STRING *ha_pushed_condition() const;
     // zqdai add column pruning logic
     void append_select_from(String& query);
