@@ -1892,7 +1892,6 @@ retry_share:
   {
     DBUG_ASSERT(table->file != NULL);
     MYSQL_REBIND_TABLE(table->file);
-    table->file->set_scan_mode(table_list->scan_mode);
   }
   else
   {
@@ -1941,6 +1940,10 @@ retry_share:
   thd->set_open_tables(table);
 
   table->reginfo.lock_type=TL_READ;		/* Assume read */
+
+  if (table->file) {
+    table->file->set_scan_mode(table_list->scan_mode);
+  }
 
  reset:
   /*
