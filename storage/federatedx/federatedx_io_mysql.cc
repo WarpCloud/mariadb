@@ -435,13 +435,13 @@ int federatedx_io_mysql::query(const char *buffer, uint length, int scan_mode)
 
   if (is_vitess) {
     if (scan_mode == SCAN_MODE_OLAP && current_scan_mode != SCAN_MODE_OLAP) {
-      if ((error = actual_query("SET WORKLOAD=OLAP", 17))) {
+      if ((error = actual_query("SET WORKLOAD='OLAP'", 19))) {
         DBUG_RETURN(error);
       }
       current_scan_mode = SCAN_MODE_OLAP;
     }
     if (scan_mode == SCAN_MODE_OLTP && current_scan_mode != SCAN_MODE_OLTP) {
-      if ((error = actual_query("SET WORKLOAD=OLTP", 17))) {
+      if ((error = actual_query("SET WORKLOAD='OLTP'", 19))) {
         DBUG_RETURN(error);
       }
       current_scan_mode = SCAN_MODE_OLTP;
