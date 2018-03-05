@@ -6204,7 +6204,7 @@ String *Item_func_isnull::to_str(String *str) const {
   String str1(buff, sizeof(buff), system_charset_info);
   str1.length(0);
   if (args[0]->to_str(&str1)) {
-    if (str->append(str1.ptr(), str1.length())) {
+    if (!str->append(str1.ptr(), str1.length())) {
       str->append(STRING_WITH_LEN(" IS NULL"));
       str1.length(0);
     }
