@@ -263,6 +263,7 @@ int mysql_update(THD *thd,
   ha_rows       dup_key_found;
   bool          need_sort= TRUE;
   bool          reverse= FALSE;
+  bool ppd_done = FALSE;
 #ifndef NO_EMBEDDED_ACCESS_CHECKS
   uint		want_privilege;
 #endif
@@ -574,13 +575,15 @@ int mysql_update(THD *thd,
       !table->check_virtual_columns_marked_for_write())
   {
     DBUG_PRINT("info", ("Trying direct update"));
-    if (optimizer_flag(thd, deprecated_ENGINE_CONDITION_PUSHDOWN) &&
+    if ((table->file->ha_table_flags() & HA_CAN_TABLE_CONDITION_PUSHDOWN) &&
+        optimizer_flag(thd, OPTIMIZER_SWITCH_ENGINE_CONDITION_PUSHDOWN_DML) &&
         select && select->cond &&
         (select->cond->used_tables() == table->map))
     {
       DBUG_ASSERT(!table->file->pushed_cond);
       if (!table->file->cond_push(select->cond))
         table->file->pushed_cond= select->cond;
+      ppd_done = true;
     }
 
     if (!table->file->info_push(INFO_KIND_UPDATE_FIELDS, &fields) &&
@@ -592,6 +595,16 @@ int mysql_update(THD *thd,
       /* Direct update is not using_filesort and is not using_io_buffer */
       goto update_begin;
     }
+  }
+
+  if (!ppd_done && (table->file->ha_table_flags() & HA_CAN_TABLE_CONDITION_PUSHDOWN) &&
+      optimizer_flag(thd, OPTIMIZER_SWITCH_ENGINE_CONDITION_PUSHDOWN_DML) &&
+      select && select->cond &&
+      (select->cond->used_tables() == table->map))
+  {
+    DBUG_ASSERT(!table->file->pushed_cond);
+    if (!table->file->cond_push(select->cond))
+      table->file->pushed_cond= select->cond;
   }
 
   if (query_plan.using_filesort || query_plan.using_io_buffer)

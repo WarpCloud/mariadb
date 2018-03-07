@@ -314,6 +314,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #define MYSQL_SERVER 1
 #include <my_global.h>
 #include <mysql/plugin.h>
+#include <sql_select.h>
 //#include <sql_test.h>
 #include "ha_federatedx.h"
 #include "sql_servers.h"
@@ -2894,14 +2895,48 @@ error:
   DBUG_RETURN(stash_remote_error());
 }
 
+bool is_bit_set(MY_BITMAP *def_set, MY_BITMAP *tmp_set, MY_BITMAP *active_set, uint bit) {
+  if (def_set == active_set || tmp_set == active_set) {
+    // looks like the condition is always true, but do not have enough confidence :(
+    return bitmap_is_set(active_set, bit) || (def_set != NULL && bitmap_is_set(def_set, bit))
+           || (tmp_set != NULL && bitmap_is_set(tmp_set, bit));
+  }
+  return bitmap_is_set(active_set, bit);
+}
+
 // zqdai add support for column pruning
 void ha_federatedx::append_select_from(String& sql_query)
 {
+    THD * thd = ha_thd();
+    bool skip_cp = false;
+    if (thd) {
+      bool is_dml = false;
+      switch (thd->lex->sql_command) {
+        case SQLCOM_DELETE:
+        case SQLCOM_DELETE_MULTI:
+        case SQLCOM_UPDATE:
+        case SQLCOM_UPDATE_MULTI:
+          is_dml = true;
+              break;
+        default:
+          is_dml = false;
+      }
+
+      if (is_dml && !optimizer_flag(thd, OPTIMIZER_SWITCH_FEDX_CP_DML)) {
+        skip_cp = true;
+      }
+      if (!is_dml && !optimizer_flag(thd, OPTIMIZER_SWITCH_FEDX_CP_QUERY)) {
+        skip_cp = true;
+      }
+    }
+
     sql_query.set_charset(system_charset_info);
     sql_query.append(STRING_WITH_LEN("SELECT "));
     uint field_idx = 1;
+    MY_BITMAP *def_set = table->def_read_set.bitmap ? &table->def_read_set : NULL;
+    MY_BITMAP *tmp_set = table->tmp_set.bitmap ? &table->tmp_set : NULL;
     for (Field **field = table->field; *field; field++, field_idx++) {
-        if (bitmap_is_set(table->read_set,(*field)->field_index)) {
+        if (skip_cp || is_bit_set(def_set, tmp_set, table->read_set,(*field)->field_index)) {
             append_ident(&sql_query, (*field)->field_name.str,
                          (*field)->field_name.length, ident_quote_char);
             sql_query.append(STRING_WITH_LEN(", "));

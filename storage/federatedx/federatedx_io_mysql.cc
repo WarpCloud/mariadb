@@ -461,6 +461,7 @@ int federatedx_io_mysql::actual_query(const char *buffer, uint length)
 
   if (!mysql.net.vio)
   {
+    //todo should throw error if current io is in transaction
     my_bool my_true= 1;
 
     if (!(mysql_init(&mysql)))

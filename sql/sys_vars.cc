@@ -2459,6 +2459,9 @@ export const char *optimizer_switch_names[]=
   "condition_pushdown_for_derived",
   "split_materialized",
   "fedx_mrr",
+  "engine_condition_pushdown_dml",
+  "fedx_cp_dml",
+  "fedx_cp_query",
   "default",
   NullS
 };
