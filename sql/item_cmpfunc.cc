@@ -5244,8 +5244,10 @@ String *Item_func_like::to_str(String *str) const {
   } else {
     return 0;
   }
+  if (negated) {
+    str->append(STRING_WITH_LEN(" not "));
+  }
   const char * name = func_name();
-  str->append(STRING_WITH_LEN(" "));
   str->append(name, strlen(name));
   str->append(STRING_WITH_LEN(" "));
   if (args[1]->to_str(&str1)) {
