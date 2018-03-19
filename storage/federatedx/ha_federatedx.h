@@ -213,7 +213,7 @@ public:
   virtual void free_result(FEDERATEDX_IO_RESULT *io_result)=0;
   virtual unsigned int get_num_fields(FEDERATEDX_IO_RESULT *io_result)=0;
   virtual my_ulonglong get_num_rows(FEDERATEDX_IO_RESULT *io_result)=0;
-  virtual FEDERATEDX_IO_ROW *fetch_row(FEDERATEDX_IO_RESULT *io_result)=0;
+  virtual FEDERATEDX_IO_ROW *fetch_row(FEDERATEDX_IO_RESULT *io_result, void **current)=0;
   virtual ulong *fetch_lengths(FEDERATEDX_IO_RESULT *io_result)=0;
   virtual const char *get_column_data(FEDERATEDX_IO_ROW *row,
                                       unsigned int column)=0;
@@ -222,7 +222,7 @@ public:
 
   virtual size_t get_ref_length() const=0;
   virtual void mark_position(FEDERATEDX_IO_RESULT *io_result,
-                             void *ref)=0;
+                             void *ref, void *offset)=0;
   virtual int seek_position(FEDERATEDX_IO_RESULT **io_result,
                             const void *ref)=0;
   virtual void set_thd(void *thd) { }
@@ -271,11 +271,18 @@ class ha_federatedx: public handler
   friend int federatedx_db_init(void *p);
 
   THR_LOCK_DATA lock;      /* MySQL lock */
+  thr_lock_type statement_lock_type;
   FEDERATEDX_SHARE *share;    /* Shared lock info */
   federatedx_txn *txn;
   federatedx_io *io;
   FEDERATEDX_IO_RESULT *stored_result;
   int scan_mode;
+  void *current;
+  // if the table is update/delete target, we should add 'for update' to the remote
+  // select statement to avoid lost update in concurrency update
+  // todo: eventually, the flag should be removed, and the federatedx handler should use
+  // lock type to decide whether 'for update' should be used or not
+  bool is_delete_update_target;
   /**
       Array of all stored results we get during a query execution.
   */
@@ -334,6 +341,7 @@ public:
   const char *index_type(uint inx) { return "REMOTE"; }
 
     const COND *cond_push(const Item *cond);
+    void set_delete_update_target() { is_delete_update_target = true;}
     void set_scan_mode(LEX_CSTRING scan_mode);
     const DYNAMIC_STRING *ha_pushed_condition() const;
     // zqdai add column pruning logic

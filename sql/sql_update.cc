@@ -315,6 +315,7 @@ int mysql_update(THD *thd,
     DBUG_RETURN(1);
 
   table= table_list->table;
+  table->file->set_delete_update_target();
 
   if (!table_list->single_table_updatable())
   {
@@ -1895,8 +1896,10 @@ void multi_update::prepare_to_read_rows()
     might read rows from const tables
   */
 
-  for (TABLE_LIST *tl= update_tables; tl; tl= tl->next_local)
+  for (TABLE_LIST *tl= update_tables; tl; tl= tl->next_local) {
+    tl->table->file->set_delete_update_target();
     tl->table->mark_columns_needed_for_update();
+  }
 }
 
 

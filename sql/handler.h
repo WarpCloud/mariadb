@@ -3785,6 +3785,8 @@ public:
  */ 
  virtual const COND *cond_push(const COND *cond) { return cond; };
 
+ virtual void set_delete_update_target() {};
+
  virtual void set_scan_mode(LEX_CSTRING scan_mode) { return; };
  /**
    Pop the top condition from the condition stack of the handler instance.

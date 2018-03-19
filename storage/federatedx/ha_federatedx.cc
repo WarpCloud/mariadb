@@ -2681,6 +2681,10 @@ int ha_federatedx::index_read_idx_with_result_set(uchar *buf, uint index,
                         NULL, 0, 0);
   sql_query.append(index_string);
 
+  if (is_delete_update_target || statement_lock_type >= TL_WRITE_DELAYED) {
+    sql_query.append(STRING_WITH_LEN(" FOR UPDATE"));
+  }
+
   if ((retval= txn->acquire(share, ha_thd(), TRUE, &io)))
     DBUG_RETURN(retval);
 
@@ -2761,6 +2765,10 @@ int ha_federatedx::read_range_first(const key_range *start_key,
   create_where_from_key(&sql_query,
                         &table->key_info[active_index],
                         start_key, end_key, 0, eq_range_arg);
+
+  if (is_delete_update_target || statement_lock_type >= TL_WRITE_DELAYED) {
+    sql_query.append(STRING_WITH_LEN(" FOR UPDATE"));
+  }
 
   if ((retval= txn->acquire(share, ha_thd(), TRUE, &io)))
     DBUG_RETURN(retval);
@@ -2879,6 +2887,10 @@ int ha_federatedx::rnd_init(bool scan)
     if (additionalFilter.length > 0) {
       sql_query.append(STRING_WITH_LEN(" WHERE "));
       sql_query.append(additionalFilter.str, additionalFilter.length);
+    }
+
+    if (is_delete_update_target || statement_lock_type >= TL_WRITE_DELAYED) {
+      sql_query.append(STRING_WITH_LEN(" FOR UPDATE"));
     }
 
     if (io->query(sql_query.ptr(),
@@ -3040,6 +3052,10 @@ int ha_federatedx::read_multi_in_first(String *in_filter_str)
           dynstr_trunc(&additionalFilter, additionalFilter.length);
           DBUG_RETURN(1);
       }
+  }
+
+  if (is_delete_update_target || statement_lock_type >= TL_WRITE_DELAYED) {
+    sql_query.append(STRING_WITH_LEN(" FOR UPDATE"));
   }
 
   if ((retval= txn->acquire(share, ha_thd(), TRUE, &io)))
@@ -3299,7 +3315,7 @@ int ha_federatedx::read_next(uchar *buf, FEDERATEDX_IO_RESULT *result)
     DBUG_RETURN(retval);
 
   /* Fetch a row, insert it back in a row format. */
-  if (!(row= io->fetch_row(result)))
+  if (!(row= io->fetch_row(result, &current)))
     DBUG_RETURN(HA_ERR_END_OF_FILE);
 
   if (!(retval= convert_row_to_internal_format(buf, row, result)))
@@ -3343,7 +3359,7 @@ void ha_federatedx::position(const uchar *record __attribute__ ((unused)))
   if (txn->acquire(share, ha_thd(), TRUE, &io))
     DBUG_VOID_RETURN;
 
-  io->mark_position(stored_result, ref);
+  io->mark_position(stored_result, ref, current);
 
   position_called= TRUE;
 
@@ -3554,6 +3570,7 @@ int ha_federatedx::reset(void)
   dynstr_trunc(&additionalFilter, additionalFilter.length);
   use_default_mrr = TRUE;
   scan_mode = SCAN_MODE_DEFAULT;
+  is_delete_update_target = FALSE;
 
   if (stored_result)
     insert_dynamic(&results, (uchar*) &stored_result);
@@ -3672,6 +3689,7 @@ THR_LOCK_DATA **ha_federatedx::store_lock(THD *thd,
   DBUG_ENTER("ha_federatedx::store_lock");
   if (lock_type != TL_IGNORE && lock.type == TL_UNLOCK)
   {
+      statement_lock_type = lock_type;
     /*
       Here is where we get into the guts of a row level lock.
       If TL_UNLOCK is set
