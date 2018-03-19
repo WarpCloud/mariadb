@@ -301,6 +301,7 @@ bool mysql_delete(THD *thd, TABLE_LIST *table_list, COND *conds,
 	       table_list->view_db.str, table_list->view_name.str);
     DBUG_RETURN(TRUE);
   }
+  table->file->set_delete_update_target();
   table->map=1;
   query_plan.select_lex= &thd->lex->select_lex;
   query_plan.table= table;
@@ -1062,6 +1063,7 @@ void multi_delete::prepare_to_read_rows()
   {
     TABLE_LIST *tbl= walk->correspondent_table->find_table_for_update();
     tbl->table->mark_columns_needed_for_delete();
+    tbl->table->file->set_delete_update_target();
   }
 }
 
