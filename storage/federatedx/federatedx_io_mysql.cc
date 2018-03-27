@@ -63,13 +63,11 @@ struct mysql_position
 
 class federatedx_io_mysql :public federatedx_io
 {
+protected:
   MYSQL mysql; /* MySQL connection */
   DYNAMIC_ARRAY savepoints;
   bool requested_autocommit;
   bool actual_autocommit;
-  // todo should add a new class federatedx_io_vitess for vitess connection
-  bool is_vitess;
-  int current_scan_mode;
 
   int actual_query(const char *buffer, uint length);
   bool test_all_restrict() const;
@@ -105,10 +103,6 @@ public:
   bool table_metadata(ha_statistics *stats, const char *table_name,
                       uint table_name_length, uint flag);
 
-  void set_is_vitess(bool is_vitess) {
-    this->is_vitess = is_vitess;
-  }
-
   /* resultset operations */
 
   virtual void free_result(FEDERATEDX_IO_RESULT *io_result);
@@ -127,6 +121,7 @@ public:
   virtual int seek_position(FEDERATEDX_IO_RESULT **io_result,
                             const void *ref);
   virtual void set_thd(void *thd);
+  virtual int mysql_connect();
 };
 
 
@@ -135,15 +130,6 @@ federatedx_io *instantiate_io_mysql(MEM_ROOT *server_root,
 {
   return new (server_root) federatedx_io_mysql(server);
 }
-
-federatedx_io *instantiate_io_vitess(MEM_ROOT *server_root,
-                                    FEDERATEDX_SERVER *server)
-{
-  federatedx_io_mysql *ret = new (server_root) federatedx_io_mysql(server);
-  ret->set_is_vitess(true);
-  return ret;
-}
-
 
 federatedx_io_mysql::federatedx_io_mysql(FEDERATEDX_SERVER *aserver)
   : federatedx_io(aserver),
@@ -155,9 +141,7 @@ federatedx_io_mysql::federatedx_io_mysql(FEDERATEDX_SERVER *aserver)
   bzero(&savepoints, sizeof(DYNAMIC_ARRAY));
 
   my_init_dynamic_array(&savepoints, sizeof(SAVEPT), 16, 16, MYF(0));
-  current_scan_mode = SCAN_MODE_UNKNOWN;
-  is_vitess = false;
-  
+
   DBUG_VOID_RETURN;
 }
 
@@ -432,20 +416,6 @@ int federatedx_io_mysql::query(const char *buffer, uint length, int scan_mode)
     savept->flags|= SAVEPOINT_REALIZED;
   }
 
-  if (is_vitess) {
-    if (scan_mode == SCAN_MODE_OLAP && current_scan_mode != SCAN_MODE_OLAP) {
-      if ((error = actual_query("SET WORKLOAD='OLAP'", 19))) {
-        DBUG_RETURN(error);
-      }
-      current_scan_mode = SCAN_MODE_OLAP;
-    }
-    if (scan_mode == SCAN_MODE_OLTP && current_scan_mode != SCAN_MODE_OLTP) {
-      if ((error = actual_query("SET WORKLOAD='OLTP'", 19))) {
-        DBUG_RETURN(error);
-      }
-      current_scan_mode = SCAN_MODE_OLTP;
-    }
-  }
   if (!(error= actual_query(buffer, length)))
     set_active(is_active() || !actual_autocommit);
 
@@ -485,8 +455,6 @@ int federatedx_io_mysql::actual_query(const char *buffer, uint length)
                             get_socket(), 0))
       DBUG_RETURN(ER_CONNECT_TO_FOREIGN_DATA_SOURCE);
     mysql.reconnect= 1;
-    // once reconnect, reset the current workload flag
-    current_scan_mode = SCAN_MODE_UNKNOWN;
   }
 
   error= mysql_real_query(&mysql, buffer, length);
@@ -690,4 +658,197 @@ int federatedx_io_mysql::seek_position(FEDERATEDX_IO_RESULT **io_result,
 void federatedx_io_mysql::set_thd(void *thd)
 {
   mysql.net.thd= thd;
+}
+
+int federatedx_io_mysql::mysql_connect()
+{
+  DBUG_ENTER("federatedx_io_vitess::mysql_connect");
+
+  //todo should throw error if current io is in transaction
+  my_bool my_true= 1;
+
+  if (!(mysql_init(&mysql)))
+    DBUG_RETURN(-1);
+
+  /*
+  BUG# 17044 Federated Storage Engine is not UTF8 clean
+  Add set names to whatever charset the table is at open
+  of table
+  */
+  /* this sets the csname like 'set names utf8' */
+  mysql_options(&mysql, MYSQL_SET_CHARSET_NAME, get_charsetname());
+  mysql_options(&mysql, MYSQL_OPT_USE_THREAD_SPECIFIC_MEMORY,
+                (char*) &my_true);
+
+  if (!mysql_real_connect(&mysql,
+                          get_hostname(),
+                          get_username(),
+                          get_password(),
+                          get_database(),
+                          get_port(),
+                          get_socket(), 0))
+    DBUG_RETURN(ER_CONNECT_TO_FOREIGN_DATA_SOURCE);
+  mysql.reconnect= 1;
+
+  DBUG_RETURN(0);
+}
+
+class federatedx_io_vitess :public federatedx_io_mysql {
+    int current_scan_mode;
+public:
+    federatedx_io_vitess(FEDERATEDX_SERVER *);
+    ~federatedx_io_vitess();
+
+    int query(const char *buffer, uint length, int scan_mode);
+    int actual_query(const char *buffer, uint length);
+    int mysql_connect();
+};
+
+federatedx_io *instantiate_io_vitess(MEM_ROOT *server_root, FEDERATEDX_SERVER *server) {
+  return new (server_root) federatedx_io_vitess(server);
+}
+
+federatedx_io_vitess::federatedx_io_vitess(FEDERATEDX_SERVER *aserver) : federatedx_io_mysql(aserver)
+{
+  DBUG_ENTER("federatedx_io_vitess::federatedx_io_vitess");
+  current_scan_mode = SCAN_MODE_UNKNOWN;
+  DBUG_VOID_RETURN;
+}
+
+federatedx_io_vitess::~federatedx_io_vitess() {
+  DBUG_ENTER("federatedx_io_vitess::~federatedx_io_vitess");
+  DBUG_VOID_RETURN;
+}
+
+int federatedx_io_vitess::query(const char *buffer, uint length, int scan_mode) {
+  int error;
+  bool wants_autocommit= requested_autocommit | is_readonly();
+  DBUG_ENTER("federatedx_io_vitess::query");
+
+  if (!wants_autocommit && test_all_restrict())
+    wants_autocommit= TRUE;
+  if (is_active()) {
+    // if we are inside a transaction, we should never want autocommit, even if the query is read only
+    wants_autocommit = false;
+  }
+
+  if (wants_autocommit != actual_autocommit)
+  {
+    if ((error= actual_query(wants_autocommit ? "SET AUTOCOMMIT=1"
+                                            : "SET AUTOCOMMIT=0", 16)))
+    DBUG_RETURN(error);
+    mysql.reconnect= wants_autocommit ? 1 : 0;
+    actual_autocommit= wants_autocommit;
+  }
+
+  if (!actual_autocommit && last_savepoint() != actual_savepoint())
+  {
+    SAVEPT *savept= dynamic_element(&savepoints, savepoints.elements - 1,
+                                SAVEPT *);
+    if (!(savept->flags & SAVEPOINT_RESTRICT))
+  {
+      char buf[STRING_BUFFER_USUAL_SIZE];
+    int len= my_snprintf(buf, sizeof(buf),
+                  "SAVEPOINT save%lu", savept->level);
+      if ((error= actual_query(buf, len)))
+    DBUG_RETURN(error);
+    set_active(TRUE);
+    savept->flags|= SAVEPOINT_EMITTED;
+    }
+    savept->flags|= SAVEPOINT_REALIZED;
+  }
+
+  if (scan_mode == SCAN_MODE_OLAP && current_scan_mode != SCAN_MODE_OLAP) {
+    if ((error = actual_query("SET WORKLOAD='OLAP'", 19))) {
+      DBUG_RETURN(error);
+    }
+    current_scan_mode = SCAN_MODE_OLAP;
+  }
+  if (scan_mode == SCAN_MODE_OLTP && current_scan_mode != SCAN_MODE_OLTP) {
+    if ((error = actual_query("SET WORKLOAD='OLTP'", 19))) {
+      DBUG_RETURN(error);
+    }
+    current_scan_mode = SCAN_MODE_OLTP;
+  }
+  if (!(error= actual_query(buffer, length)))
+    set_active(is_active() || !actual_autocommit);
+
+  DBUG_RETURN(error);
+}
+
+int federatedx_io_vitess::actual_query(const char *buffer, uint length)
+{
+  int error;
+  DBUG_ENTER("federatedx_io_mysql::actual_query");
+
+  if (!mysql.net.vio)
+  {
+    //todo should throw error if current io is in transaction
+    my_bool my_true= 1;
+
+    if (!(mysql_init(&mysql)))
+      DBUG_RETURN(-1);
+
+    /*
+	BUG# 17044 Federated Storage Engine is not UTF8 clean
+	Add set names to whatever charset the table is at open
+	of table
+    */
+    /* this sets the csname like 'set names utf8' */
+    mysql_options(&mysql, MYSQL_SET_CHARSET_NAME, get_charsetname());
+    mysql_options(&mysql, MYSQL_OPT_USE_THREAD_SPECIFIC_MEMORY,
+                  (char*) &my_true);
+
+    if (!mysql_real_connect(&mysql,
+                            get_hostname(),
+                            get_username(),
+                            get_password(),
+                            get_database(),
+                            get_port(),
+                            get_socket(), 0))
+      DBUG_RETURN(ER_CONNECT_TO_FOREIGN_DATA_SOURCE);
+    mysql.reconnect= 1;
+    // once reconnect, reset the current workload flag
+    current_scan_mode = SCAN_MODE_UNKNOWN;
+  }
+
+  error= mysql_real_query(&mysql, buffer, length);
+
+  DBUG_RETURN(error);
+}
+
+int federatedx_io_vitess::mysql_connect()
+{
+  DBUG_ENTER("federatedx_io_vitess::mysql_connect");
+
+
+  //todo should throw error if current io is in transaction
+  my_bool my_true= 1;
+
+  if (!(mysql_init(&mysql)))
+    DBUG_RETURN(-1);
+
+  /*
+  BUG# 17044 Federated Storage Engine is not UTF8 clean
+  Add set names to whatever charset the table is at open
+  of table
+  */
+  /* this sets the csname like 'set names utf8' */
+  mysql_options(&mysql, MYSQL_SET_CHARSET_NAME, get_charsetname());
+  mysql_options(&mysql, MYSQL_OPT_USE_THREAD_SPECIFIC_MEMORY,
+                (char*) &my_true);
+
+  if (!mysql_real_connect(&mysql,
+                          get_hostname(),
+                          get_username(),
+                          get_password(),
+                          get_database(),
+                          get_port(),
+                          get_socket(), 0))
+    DBUG_RETURN(ER_CONNECT_TO_FOREIGN_DATA_SOURCE);
+  mysql.reconnect= 1;
+  // once reconnect, reset the current workload flag
+  current_scan_mode = SCAN_MODE_UNKNOWN;
+
+  DBUG_RETURN(0);
 }
