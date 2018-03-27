@@ -430,31 +430,10 @@ int federatedx_io_mysql::actual_query(const char *buffer, uint length)
 
   if (!mysql.net.vio)
   {
-    //todo should throw error if current io is in transaction
-    my_bool my_true= 1;
-
-    if (!(mysql_init(&mysql)))
-      DBUG_RETURN(-1);
-  
-    /*
-	BUG# 17044 Federated Storage Engine is not UTF8 clean
-	Add set names to whatever charset the table is at open
-	of table
-    */
-    /* this sets the csname like 'set names utf8' */
-    mysql_options(&mysql, MYSQL_SET_CHARSET_NAME, get_charsetname());
-    mysql_options(&mysql, MYSQL_OPT_USE_THREAD_SPECIFIC_MEMORY,
-                  (char*) &my_true);
-
-    if (!mysql_real_connect(&mysql,
-                            get_hostname(),
-                            get_username(),
-                            get_password(),
-                            get_database(),
-                            get_port(),
-                            get_socket(), 0))
-      DBUG_RETURN(ER_CONNECT_TO_FOREIGN_DATA_SOURCE);
-    mysql.reconnect= 1;
+    error = mysql_connect();
+    if (error) {
+      DBUG_RETURN(error);
+    }
   }
 
   error= mysql_real_query(&mysql, buffer, length);
@@ -700,7 +679,6 @@ public:
     ~federatedx_io_vitess();
 
     int query(const char *buffer, uint length, int scan_mode);
-    int actual_query(const char *buffer, uint length);
     int mysql_connect();
 };
 
@@ -776,77 +754,15 @@ int federatedx_io_vitess::query(const char *buffer, uint length, int scan_mode) 
   DBUG_RETURN(error);
 }
 
-int federatedx_io_vitess::actual_query(const char *buffer, uint length)
-{
-  int error;
-  DBUG_ENTER("federatedx_io_mysql::actual_query");
-
-  if (!mysql.net.vio)
-  {
-    //todo should throw error if current io is in transaction
-    my_bool my_true= 1;
-
-    if (!(mysql_init(&mysql)))
-      DBUG_RETURN(-1);
-
-    /*
-	BUG# 17044 Federated Storage Engine is not UTF8 clean
-	Add set names to whatever charset the table is at open
-	of table
-    */
-    /* this sets the csname like 'set names utf8' */
-    mysql_options(&mysql, MYSQL_SET_CHARSET_NAME, get_charsetname());
-    mysql_options(&mysql, MYSQL_OPT_USE_THREAD_SPECIFIC_MEMORY,
-                  (char*) &my_true);
-
-    if (!mysql_real_connect(&mysql,
-                            get_hostname(),
-                            get_username(),
-                            get_password(),
-                            get_database(),
-                            get_port(),
-                            get_socket(), 0))
-      DBUG_RETURN(ER_CONNECT_TO_FOREIGN_DATA_SOURCE);
-    mysql.reconnect= 1;
-    // once reconnect, reset the current workload flag
-    current_scan_mode = SCAN_MODE_UNKNOWN;
-  }
-
-  error= mysql_real_query(&mysql, buffer, length);
-
-  DBUG_RETURN(error);
-}
-
 int federatedx_io_vitess::mysql_connect()
 {
   DBUG_ENTER("federatedx_io_vitess::mysql_connect");
 
+  int error = federatedx_io_mysql::mysql_connect();
+  if (error) {
+    DBUG_RETURN(error);
+  }
 
-  //todo should throw error if current io is in transaction
-  my_bool my_true= 1;
-
-  if (!(mysql_init(&mysql)))
-    DBUG_RETURN(-1);
-
-  /*
-  BUG# 17044 Federated Storage Engine is not UTF8 clean
-  Add set names to whatever charset the table is at open
-  of table
-  */
-  /* this sets the csname like 'set names utf8' */
-  mysql_options(&mysql, MYSQL_SET_CHARSET_NAME, get_charsetname());
-  mysql_options(&mysql, MYSQL_OPT_USE_THREAD_SPECIFIC_MEMORY,
-                (char*) &my_true);
-
-  if (!mysql_real_connect(&mysql,
-                          get_hostname(),
-                          get_username(),
-                          get_password(),
-                          get_database(),
-                          get_port(),
-                          get_socket(), 0))
-    DBUG_RETURN(ER_CONNECT_TO_FOREIGN_DATA_SOURCE);
-  mysql.reconnect= 1;
   // once reconnect, reset the current workload flag
   current_scan_mode = SCAN_MODE_UNKNOWN;
 
