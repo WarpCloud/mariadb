@@ -2688,17 +2688,20 @@ int ha_federatedx::index_read_idx_with_result_set(uchar *buf, uint index,
   sql_query.append(index_string);
 
 
-  bool is_for_update = false;
+  bool force_oltp = false;
   if (is_delete_update_target || statement_lock_type >= TL_WRITE_DELAYED) {
     sql_query.append(STRING_WITH_LEN(" FOR UPDATE"));
-    is_for_update = true;
+    force_oltp = true;
 
+  }
+  if (!ha_thd()->transaction.all.is_empty()) {
+    force_oltp = true;
   }
 
   if ((retval= txn->acquire(share, ha_thd(), TRUE, &io)))
     DBUG_RETURN(retval);
 
-  if (io->query(sql_query.ptr(), sql_query.length(), is_for_update ? SCAN_MODE_OLTP : scan_mode))
+  if (io->query(sql_query.ptr(), sql_query.length(), force_oltp ? SCAN_MODE_OLTP : scan_mode))
   {
     snprintf(error_buffer, sizeof(error_buffer),"error: %d '%s'",
             io->error_code(), io->error_str());
@@ -2776,10 +2779,13 @@ int ha_federatedx::read_range_first(const key_range *start_key,
                         &table->key_info[active_index],
                         start_key, end_key, 0, eq_range_arg);
 
-  bool is_for_update = false;
+  bool force_oltp = false;
   if (is_delete_update_target || statement_lock_type >= TL_WRITE_DELAYED) {
     sql_query.append(STRING_WITH_LEN(" FOR UPDATE"));
-    is_for_update = true;
+    force_oltp = true;
+  }
+  if (!ha_thd()->transaction.all.is_empty()) {
+    force_oltp = true;
   }
 
   if ((retval= txn->acquire(share, ha_thd(), TRUE, &io)))
@@ -2788,7 +2794,7 @@ int ha_federatedx::read_range_first(const key_range *start_key,
   if (stored_result)
     (void) free_result();
 
-  if (io->query(sql_query.ptr(), sql_query.length(), is_for_update ? SCAN_MODE_OLTP : scan_mode))
+  if (io->query(sql_query.ptr(), sql_query.length(), force_oltp ? SCAN_MODE_OLTP : scan_mode))
   {
     retval= ER_QUERY_ON_FOREIGN_DATA_SOURCE;
     goto error;
@@ -2901,13 +2907,16 @@ int ha_federatedx::rnd_init(bool scan)
       sql_query.append(additionalFilter.str, additionalFilter.length);
     }
 
-    bool is_for_update = false;
+    bool force_oltp = false;
     if (is_delete_update_target || statement_lock_type >= TL_WRITE_DELAYED) {
       sql_query.append(STRING_WITH_LEN(" FOR UPDATE"));
-      is_for_update = true;
+      force_oltp = true;
+    }
+    if (!ha_thd()->transaction.all.is_empty()) {
+      force_oltp = true;
     }
 
-    if (io->query(sql_query.ptr(), strlen(sql_query.ptr()), is_for_update ? SCAN_MODE_OLTP : scan_mode))
+    if (io->query(sql_query.ptr(), strlen(sql_query.ptr()), force_oltp ? SCAN_MODE_OLTP : scan_mode))
       goto error;
 
     stored_result= io->store_result();
@@ -3067,10 +3076,13 @@ int ha_federatedx::read_multi_in_first(String *in_filter_str)
       }
   }
 
-  bool is_for_update = false;
+  bool force_oltp = false;
   if (is_delete_update_target || statement_lock_type >= TL_WRITE_DELAYED) {
     sql_query.append(STRING_WITH_LEN(" FOR UPDATE"));
-    is_for_update = true;
+    force_oltp = true;
+  }
+  if (!ha_thd()->transaction.all.is_empty()) {
+    force_oltp = true;
   }
 
   if ((retval= txn->acquire(share, ha_thd(), TRUE, &io)))
@@ -3079,7 +3091,7 @@ int ha_federatedx::read_multi_in_first(String *in_filter_str)
   if (stored_result)
     (void) free_result();
 
-  if (io->query(sql_query.ptr(), sql_query.length(), is_for_update ? SCAN_MODE_OLTP : scan_mode))
+  if (io->query(sql_query.ptr(), sql_query.length(), force_oltp ? SCAN_MODE_OLTP : scan_mode))
   {
     retval= ER_QUERY_ON_FOREIGN_DATA_SOURCE;
     goto error;
