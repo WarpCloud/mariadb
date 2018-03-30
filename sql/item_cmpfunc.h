@@ -726,6 +726,7 @@ public:
   friend class  Arg_comparator;
   Item *get_copy(THD *thd)
   { return get_item_copy<Item_func_eq>(thd, this); }
+  virtual bool has_equal_condition(void *arg) const { (*(bool *)arg) = true; return 0; }
 };
 
 class Item_func_equal :public Item_bool_rowready_func2
@@ -750,6 +751,7 @@ public:
   }
   Item *get_copy(THD *thd)
   { return get_item_copy<Item_func_equal>(thd, this); }
+  virtual bool has_equal_condition(void *arg) const { (*(bool *)arg) = true; return 0; }
 };
 
 
@@ -2409,6 +2411,7 @@ public:
   bool create_value_list_for_tvc(THD *thd, List< List<Item> > *values);
   Item *in_predicate_to_in_subs_transformer(THD *thd, uchar *arg);
   virtual String *to_str(String *str) const;
+  virtual bool has_equal_condition(void *arg) const { if (!negated) (*(bool *)arg) = true; return 0; }
 
 };
 
@@ -3322,6 +3325,7 @@ public:
   Item *get_copy(THD *thd)
   { return get_item_copy<Item_cond_or>(thd, this); }
   virtual String *to_str(String *str) const;
+  bool walk_const(Item_processor_const processor, bool walk_subquery, void *arg) const {return 0;}
 
 };
 

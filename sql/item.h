@@ -495,6 +495,8 @@ typedef struct st_dyncall_create_def DYNCALL_CREATE_DEF;
 
 
 typedef bool (Item::*Item_processor) (void *arg);
+
+typedef bool (Item::*Item_processor_const) (void *arg) const;
 /*
   Analyzer function
     SYNOPSIS
@@ -1504,6 +1506,11 @@ public:
     return (this->*processor)(arg);
   }
 
+  virtual bool walk_const(Item_processor_const processor, bool walk_subquery, void *arg) const
+  {
+    return (this->*processor)(arg);
+  }
+
   virtual Item* transform(THD *thd, Item_transformer transformer, uchar *arg);
 
   /*
@@ -1568,6 +1575,7 @@ public:
   virtual bool limit_index_condition_pushdown_processor(void *arg) { return 0; }
   virtual bool exists2in_processor(void *arg) { return 0; }
   virtual bool find_selective_predicates_list_processor(void *arg) { return 0; }
+  virtual bool has_equal_condition(void *arg) const { return 0; }
 
   /* 
     TRUE if the expression depends only on the table indicated by tab_map
@@ -2037,6 +2045,15 @@ protected:
     for (uint i= 0; i < arg_count; i++)
     {
       if (args[i]->walk(processor, walk_subquery, arg))
+        return true;
+    }
+    return false;
+  }
+  bool walk_args_const(Item_processor_const processor, bool walk_subquery, void *arg) const
+  {
+    for (uint i= 0; i < arg_count; i++)
+    {
+      if (args[i]->walk_const(processor, walk_subquery, arg))
         return true;
     }
     return false;

@@ -833,6 +833,8 @@ ha_federatedx::ha_federatedx(handlerton *hton,
   bzero(&bulk_insert, sizeof(bulk_insert));
   bzero(&additionalFilter, sizeof(additionalFilter));
   init_dynamic_string(&additionalFilter, NULL, FEDERATEDX_QUERY_BUFFER_SIZE, FEDERATEDX_QUERY_BUFFER_SIZE);
+  bzero(&sharded_scan_query, sizeof(sharded_scan_query));
+  init_dynamic_string(&sharded_scan_query, NULL, FEDERATEDX_QUERY_BUFFER_SIZE, FEDERATEDX_QUERY_BUFFER_SIZE);
 }
 
 
@@ -1448,6 +1450,22 @@ void ha_federatedx::set_scan_mode(LEX_CSTRING scan_mode) {
       this->scan_mode = SCAN_MODE_OLTP;
     } else if (!strcasecmp(scan_mode.str, "olap")) {
       this->scan_mode = SCAN_MODE_OLAP;
+    } else if (!strcasecmp(scan_mode.str, "sdsc")) {
+      this->sharded_scan = SHARDED_SCAN_TRUE;
+    } else if (!strcasecmp(scan_mode.str, "ussc")) {
+      this->sharded_scan = SHARDED_SCAN_FALSE;
+    } else if (!strcasecmp(scan_mode.str, "sstp")) {
+      this->sharded_scan = SHARDED_SCAN_TRUE;
+      this->scan_mode = SCAN_MODE_OLTP;
+    } else if (!strcasecmp(scan_mode.str, "ssap")) {
+      this->sharded_scan = SHARDED_SCAN_TRUE;
+      this->scan_mode = SCAN_MODE_OLAP;
+    } else if (!strcasecmp(scan_mode.str, "ustp")) {
+      this->sharded_scan = SHARDED_SCAN_FALSE;
+      this->scan_mode = SCAN_MODE_OLTP;
+    } else if (!strcasecmp(scan_mode.str, "usap")) {
+      this->sharded_scan = SHARDED_SCAN_FALSE;
+      this->scan_mode = SCAN_MODE_OLAP;
     }
 }
 
@@ -1480,6 +1498,7 @@ const COND *ha_federatedx::cond_push(const Item *cond) {
     String *res;
     String filter(buff, sizeof(buff), system_charset_info);
     filter.length(0);
+    cond->walk_const(&Item::has_equal_condition, false, &has_equal_filter);
     res = cond->to_str(&filter);
     if (res != 0 && res->length() > 0) {
         dynstr_append_mem(&additionalFilter, res->ptr(), res->length());
@@ -1862,6 +1881,9 @@ int ha_federatedx::open(const char *name, int mode, uint test_if_locked)
   DBUG_PRINT("info", ("ref_length: %u", ref_length));
 
   my_init_dynamic_array(&results, sizeof(FEDERATEDX_IO_RESULT*), 4, 4, MYF(0));
+  is_sharded_scan = false;
+  sharded_scan = SHARDED_SCAN_DEFAULT;
+  sc_info.sharded_offset = 0;
 
   reset();
 
@@ -2147,7 +2169,7 @@ int ha_federatedx::write_row(uchar *buf)
     if (bulk_insert.length + values_string.length() + bulk_padding >
         io->max_query_size() && bulk_insert.length)
     {
-      error= io->query(bulk_insert.str, bulk_insert.length, SCAN_MODE_OLTP);
+      error= io->query(bulk_insert.str, bulk_insert.length, SCAN_MODE_OLTP, NULL);
       bulk_insert.length= 0;
     }
     else
@@ -2171,7 +2193,7 @@ int ha_federatedx::write_row(uchar *buf)
   }  
   else
   {
-    error= io->query(values_string.ptr(), values_string.length(), SCAN_MODE_OLTP);
+    error= io->query(values_string.ptr(), values_string.length(), SCAN_MODE_OLTP, NULL);
   }
   
   if (error)
@@ -2256,7 +2278,7 @@ int ha_federatedx::end_bulk_insert()
   {
     if ((error= txn->acquire(share, ha_thd(), FALSE, &io)))
       DBUG_RETURN(error);
-    if (io->query(bulk_insert.str, bulk_insert.length, SCAN_MODE_OLTP))
+    if (io->query(bulk_insert.str, bulk_insert.length, SCAN_MODE_OLTP, NULL))
       error= stash_remote_error();
     else
     if (table->next_number_field)
@@ -2309,7 +2331,7 @@ int ha_federatedx::optimize(THD* thd, HA_CHECK_OPT* check_opt)
   if ((error= txn->acquire(share, thd, FALSE, &io)))
     DBUG_RETURN(error);
 
-  if (io->query(query.ptr(), query.length(), SCAN_MODE_EITHER))
+  if (io->query(query.ptr(), query.length(), SCAN_MODE_EITHER, NULL))
     error= stash_remote_error();
 
   DBUG_RETURN(error);
@@ -2341,7 +2363,7 @@ int ha_federatedx::repair(THD* thd, HA_CHECK_OPT* check_opt)
   if ((error= txn->acquire(share, thd, FALSE, &io)))
     DBUG_RETURN(error);
 
-  if (io->query(query.ptr(), query.length(), SCAN_MODE_EITHER))
+  if (io->query(query.ptr(), query.length(), SCAN_MODE_EITHER, NULL))
     error= stash_remote_error();
 
   DBUG_RETURN(error);
@@ -2500,7 +2522,7 @@ int ha_federatedx::update_row(const uchar *old_data, const uchar *new_data)
   if ((error= txn->acquire(share, ha_thd(), FALSE, &io)))
     DBUG_RETURN(error);
 
-  if (io->query(update_string.ptr(), update_string.length(), SCAN_MODE_OLTP))
+  if (io->query(update_string.ptr(), update_string.length(), SCAN_MODE_OLTP, NULL))
   {
     DBUG_RETURN(stash_remote_error());
   }
@@ -2578,7 +2600,7 @@ int ha_federatedx::delete_row(const uchar *buf)
   if ((error= txn->acquire(share, ha_thd(), FALSE, &io)))
     DBUG_RETURN(error);
 
-  if (io->query(delete_string.ptr(), delete_string.length(), SCAN_MODE_OLTP))
+  if (io->query(delete_string.ptr(), delete_string.length(), SCAN_MODE_OLTP, NULL))
   {
     DBUG_RETURN(stash_remote_error());
   }
@@ -2694,7 +2716,7 @@ int ha_federatedx::index_read_idx_with_result_set(uchar *buf, uint index,
   if ((retval= txn->acquire(share, ha_thd(), TRUE, &io)))
     DBUG_RETURN(retval);
 
-  if (io->query(sql_query.ptr(), sql_query.length(), scan_mode))
+  if (io->query(sql_query.ptr(), sql_query.length(), scan_mode, NULL))
   {
     snprintf(error_buffer, sizeof(error_buffer),"error: %d '%s'",
             io->error_code(), io->error_str());
@@ -2782,7 +2804,7 @@ int ha_federatedx::read_range_first(const key_range *start_key,
   if (stored_result)
     (void) free_result();
 
-  if (io->query(sql_query.ptr(), sql_query.length(), scan_mode))
+  if (io->query(sql_query.ptr(), sql_query.length(), scan_mode, NULL))
   {
     retval= ER_QUERY_ON_FOREIGN_DATA_SOURCE;
     goto error;
@@ -2821,6 +2843,22 @@ int ha_federatedx::index_next(uchar *buf)
 }
 
 
+bool ha_federatedx::need_shard_scan() {
+  // sql hint has highest priority
+  if (sharded_scan == SHARDED_SCAN_TRUE) {
+    return true;
+  } else if (sharded_scan == SHARDED_SCAN_FALSE) {
+    return false;
+  }
+  ha_rows max_row = ha_thd()->variables.max_vitess_unsharded_scan_size;
+  if (max_row >= stats.records) {
+    return false;
+  }
+  if (additionalFilter.length > 0 && has_equal_filter) {
+    return false;
+  }
+  return true;
+}
 /*
   rnd_init() is called when the system wants the storage engine to do a table
   scan.
@@ -2899,8 +2937,16 @@ int ha_federatedx::rnd_init(bool scan)
       sql_query.append(STRING_WITH_LEN(" FOR UPDATE"));
     }
 
-    if (io->query(sql_query.ptr(),
-                  strlen(sql_query.ptr()), scan_mode))
+    if (need_shard_scan()) {
+      is_sharded_scan = true;
+      dynstr_trunc(&sharded_scan_query, sharded_scan_query.length);
+      dynstr_append_mem(&sharded_scan_query, sql_query.ptr(), sql_query.length());
+      sc_info.shard_names = share->s->shard_names;
+      sc_info.shard_num = share->s->shard_num;
+      sc_info.sharded_offset = 0;
+    }
+
+    if (io->query(sql_query.ptr(), strlen(sql_query.ptr()), scan_mode, is_sharded_scan ? &sc_info : NULL))
       goto error;
 
     stored_result= io->store_result();
@@ -3070,7 +3116,7 @@ int ha_federatedx::read_multi_in_first(String *in_filter_str)
   if (stored_result)
     (void) free_result();
 
-  if (io->query(sql_query.ptr(), sql_query.length(), scan_mode))
+  if (io->query(sql_query.ptr(), sql_query.length(), scan_mode, NULL))
   {
     retval= ER_QUERY_ON_FOREIGN_DATA_SOURCE;
     goto error;
@@ -3287,7 +3333,23 @@ int ha_federatedx::rnd_next(uchar *buf)
     DBUG_RETURN(1);
   }
   int retval=read_next(buf, stored_result);
+  while (retval == HA_ERR_END_OF_FILE && is_sharded_scan && sc_info.sharded_offset < sc_info.shard_num) {
+    // in sharded scan mode, we need read next shard if possible
+    free_result();
+    int error;
+    if ((error= txn->acquire(share, ha_thd(), TRUE, &io)))
+      DBUG_RETURN(error);
+    if (io->query(sharded_scan_query.str, sharded_scan_query.length, scan_mode, &sc_info))
+      goto err;
+
+    stored_result= io->store_result();
+    if (!stored_result)
+      goto err;
+    retval=read_next(buf, stored_result);
+  }
   DBUG_RETURN(retval);
+err:
+  DBUG_RETURN(stash_remote_error());
 }
 
 
@@ -3449,6 +3511,25 @@ error:
 
 */
 
+bool is_valid_shard_name(const char* shard_name, const char* database_name) {
+  bool validate_shard = true;
+
+  for (int j = 0; ; j++) {
+    if (database_name[j] != '\0') {
+      if (database_name[j] != shard_name[j]) {
+        validate_shard = false;
+        break;
+      }
+    } else {
+      if (shard_name[j] != '/') {
+        validate_shard = false;
+      }
+      break;
+    }
+  }
+  return validate_shard;
+}
+
 int ha_federatedx::info(uint flag)
 {
   uint error_code;
@@ -3486,6 +3567,49 @@ int ha_federatedx::info(uint flag)
   if (flag & HA_STATUS_AUTO)
     stats.auto_increment_value= (*iop)->last_insert_id();
 
+  if (share->s->shard_num == 0 && !strcmp((*iop)->get_scheme(),"vitess")) {
+    // initialize shard name infomation for vitess table
+    DYNAMIC_ARRAY shard_infos;
+    my_init_dynamic_array(&shard_infos, sizeof(char **), 4, 4, MYF(0));
+    (*iop)->query("SHOW vitess_shards", 18, SCAN_MODE_DEFAULT, NULL);
+    FEDERATEDX_IO_RESULT *shard_info_result;
+    FEDERATEDX_IO_ROW *row;
+    shard_info_result = (*iop)->store_result();
+    my_ulonglong rownum = (*iop)->get_num_rows(shard_info_result);
+    for (my_ulonglong i = 0; i < rownum; i++) {
+      if (!(row = (*iop)->fetch_row(shard_info_result, NULL))) {
+        (*iop)->free_result(shard_info_result);
+        goto error;
+      }
+
+      const char *shard_name = (*iop)->get_column_data(row, 0);
+      if (is_valid_shard_name(shard_name, (*iop)->get_database())) {
+        insert_dynamic(&shard_infos, &shard_name);
+      }
+    }
+
+    if (shard_infos.elements == 0) {
+      // do not found any valid shard name, must be something wrong
+      // in the remote vitess server
+      (*iop)->free_result(shard_info_result);
+      delete_dynamic(&shard_infos);
+      error_code= ER_QUERY_ON_FOREIGN_DATA_SOURCE;
+      goto fail;
+    } else {
+      // set the shard info into server
+      mysql_mutex_lock(&share->s->mutex);
+      if (share->s->shard_num == 0) {
+        for (uint i = 0; i<shard_infos.elements; i++) {
+          const char **shard_name = dynamic_element(&shard_infos, i, const char**);
+          share->s->shard_names[i] = strdup_root(&share->s->mem_root, *shard_name);
+        }
+        share->s->shard_num = shard_infos.elements;
+      }
+      mysql_mutex_unlock(&share->s->mutex);
+      (*iop)->free_result(shard_info_result);
+      delete_dynamic(&shard_infos);
+    }
+  }
   /*
     If ::info created it's own transaction, close it. This happens in case
     of show table status;
@@ -3577,6 +3701,11 @@ int ha_federatedx::reset(void)
   use_default_mrr = TRUE;
   scan_mode = SCAN_MODE_DEFAULT;
   is_delete_update_target = FALSE;
+  dynstr_trunc(&sharded_scan_query, sharded_scan_query.length);
+  sc_info.sharded_offset = 0;
+  is_sharded_scan = false;
+  sharded_scan = SHARDED_SCAN_DEFAULT;
+  has_equal_filter = false;
 
   if (stored_result)
     insert_dynamic(&results, (uchar*) &stored_result);
@@ -3648,7 +3777,7 @@ int ha_federatedx::delete_all_rows()
   if ((error= txn->acquire(share, thd, FALSE, &io)))
     DBUG_RETURN(error);
 
-  if (io->query(query.ptr(), query.length(), SCAN_MODE_OLTP))
+  if (io->query(query.ptr(), query.length(), SCAN_MODE_OLTP, NULL))
   {
     DBUG_RETURN(stash_remote_error());
   }
@@ -3741,7 +3870,7 @@ static int test_connection(MYSQL_THD thd, federatedx_io *io,
                     share->table_name_length);
   str.append(STRING_WITH_LEN(" WHERE 1=0"));
 
-  if ((retval= io->query(str.ptr(), str.length(), SCAN_MODE_DEFAULT)))
+  if ((retval= io->query(str.ptr(), str.length(), SCAN_MODE_DEFAULT, NULL)))
   {
     sprintf(buffer, "database: '%s'  username: '%s'  hostname: '%s'",
             share->database, share->username, share->hostname);

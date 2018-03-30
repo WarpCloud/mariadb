@@ -2182,6 +2182,12 @@ static Sys_var_harows Sys_max_join_size(
        NO_MUTEX_GUARD, NOT_IN_BINLOG, ON_CHECK(0),
        ON_UPDATE(fix_max_join_size));
 
+static Sys_var_harows Sys_max_vitess_unsharded_scan_size(
+        "max_vitess_unsharded_scan_size",
+        "the max size of a unsharded scan for vitess table",
+        SESSION_VAR(max_vitess_unsharded_scan_size), CMD_LINE(REQUIRED_ARG),
+        VALID_RANGE(1, HA_POS_ERROR), DEFAULT(10000000L), BLOCK_SIZE(1));
+
 static Sys_var_ulong Sys_max_seeks_for_key(
        "max_seeks_for_key",
        "Limit assumed max number of seeks when looking up rows based on a key",

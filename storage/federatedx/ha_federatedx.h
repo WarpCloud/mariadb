@@ -42,6 +42,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "handler.h"
 
 class federatedx_io;
+#define HA_FEDERATEDX_VITESS_MAX_SHARD 100
 
 /*
   FEDERATEDX_SERVER will eventually be a structure that will be shared among
@@ -65,6 +66,8 @@ typedef struct st_fedrated_server {
   ushort port;
 
   const char *csname;
+  const char *shard_names[HA_FEDERATEDX_VITESS_MAX_SHARD];
+  uint shard_num;
 
   mysql_mutex_t mutex;
   federatedx_io *idle_list;
@@ -99,6 +102,11 @@ typedef struct st_fedrated_server {
 #define SCAN_MODE_EITHER 3
 // default scan mode for query and dml
 #define SCAN_MODE_DEFAULT SCAN_MODE_OLTP
+
+#define SHARDED_SCAN_DEFAULT 0
+#define SHARDED_SCAN_TRUE 1
+#define SHARDED_SCAN_FALSE 2
+
 /*
   FEDERATEDX_SHARE is a structure that will be shared amoung all open handlers
   The example implements the minimum of what you will probably need.
@@ -144,7 +152,6 @@ typedef ptrdiff_t FEDERATEDX_IO_OFFSET;
 class federatedx_io
 {
   friend class federatedx_txn;
-  FEDERATEDX_SERVER * const server;
   federatedx_io **owner_ptr;
   federatedx_io *txn_next;
   federatedx_io *idle_next;
@@ -153,6 +160,7 @@ class federatedx_io
   bool readonly;/* indicates that no updates have occurred */
 
 protected:
+  FEDERATEDX_SERVER * const server;
   void set_active(bool new_active)
   { active= new_active; }
 public:
@@ -171,6 +179,7 @@ public:
   const char * get_database() const { return server->database; }
   ushort       get_port() const     { return server->port; }
   const char * get_socket() const   { return server->socket; }
+  const char * get_scheme() const   { return server->scheme; }
 
   static bool handles_scheme(const char *scheme);
   static federatedx_io *construct(MEM_ROOT *server_root,
@@ -181,7 +190,7 @@ public:
   static void operator delete(void *ptr, size_t size)
   { TRASH(ptr, size); }
 
-  virtual int query(const char *buffer, uint length, int scan_mode)=0;
+  virtual int query(const char *buffer, uint length, int scan_mode, void *scan_info)=0;
   virtual FEDERATEDX_IO_RESULT *store_result()=0;
 
   virtual size_t max_query_size() const=0;
@@ -262,6 +271,11 @@ public:
   void stmt_autocommit();
 };
 
+typedef struct shard_scan_info {
+    const char** shard_names;
+    uint shard_num;
+    uint sharded_offset;
+} shard_scan_info;
 
 /*
   Class definition for the storage engine
@@ -287,6 +301,12 @@ class ha_federatedx: public handler
       Array of all stored results we get during a query execution.
   */
   DYNAMIC_ARRAY results;
+  // the following 3 fields is related to sharded read of vitess table
+  shard_scan_info sc_info;
+  bool is_sharded_scan;
+  DYNAMIC_STRING sharded_scan_query;
+  int sharded_scan;
+
   bool position_called;
   uint fetch_num; // stores the fetch num
   int remote_error_number;
@@ -295,6 +315,7 @@ class ha_federatedx: public handler
   bool insert_dup_update, table_will_be_deleted;
   DYNAMIC_STRING bulk_insert;
   DYNAMIC_STRING additionalFilter;
+  bool has_equal_filter;
 
 private:
   /*
@@ -456,6 +477,7 @@ public:
     and allocate it again
   */
   int rnd_init(bool scan);                                      //required
+  bool need_shard_scan();                                      //required
   int rnd_end();
   int rnd_next(uchar *buf);                                      //required
   int rnd_pos(uchar *buf, uchar *pos);                            //required

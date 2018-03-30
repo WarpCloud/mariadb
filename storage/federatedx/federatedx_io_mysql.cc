@@ -76,7 +76,7 @@ public:
   ~federatedx_io_mysql();
 
   int simple_query(const char *fmt, ...);
-  int query(const char *buffer, uint length, int scan_mode);
+  int query(const char *buffer, uint length, int scan_mode, void *scan_info);
   virtual FEDERATEDX_IO_RESULT *store_result();
 
   virtual size_t max_query_size() const;
@@ -349,7 +349,7 @@ int federatedx_io_mysql::simple_query(const char *fmt, ...)
   length= my_vsnprintf(buffer, sizeof(buffer), fmt, arg);
   va_end(arg);
   
-  error= query(buffer, length, SCAN_MODE_DEFAULT);
+  error= query(buffer, length, SCAN_MODE_DEFAULT, NULL);
   
   DBUG_RETURN(error);
 }
@@ -377,7 +377,7 @@ bool federatedx_io_mysql::test_all_restrict() const
 }
 
 
-int federatedx_io_mysql::query(const char *buffer, uint length, int scan_mode)
+int federatedx_io_mysql::query(const char *buffer, uint length, int scan_mode, void *scan_info)
 {
   int error;
   bool wants_autocommit= requested_autocommit | is_readonly();
@@ -543,7 +543,7 @@ bool federatedx_io_mysql::table_metadata(ha_statistics *stats,
   append_ident(&status_query_string, table_name,
                table_name_length, value_quote_char);
 
-  if (query(status_query_string.ptr(), status_query_string.length(), SCAN_MODE_EITHER))
+  if (query(status_query_string.ptr(), status_query_string.length(), SCAN_MODE_EITHER, NULL))
     goto error;
 
   status_query_string.length(0);
@@ -674,12 +674,14 @@ int federatedx_io_mysql::mysql_connect()
 
 class federatedx_io_vitess :public federatedx_io_mysql {
     int current_scan_mode;
+    bool in_shard_db;
 public:
     federatedx_io_vitess(FEDERATEDX_SERVER *);
     ~federatedx_io_vitess();
 
-    int query(const char *buffer, uint length, int scan_mode);
+    int query(const char *buffer, uint length, int scan_mode, void *scan_info);
     int mysql_connect();
+    int actual_shard_query(const char *buffer, uint length, shard_scan_info *sc_info);
 };
 
 federatedx_io *instantiate_io_vitess(MEM_ROOT *server_root, FEDERATEDX_SERVER *server) {
@@ -690,6 +692,7 @@ federatedx_io_vitess::federatedx_io_vitess(FEDERATEDX_SERVER *aserver) : federat
 {
   DBUG_ENTER("federatedx_io_vitess::federatedx_io_vitess");
   current_scan_mode = SCAN_MODE_UNKNOWN;
+  in_shard_db = false;
   DBUG_VOID_RETURN;
 }
 
@@ -698,10 +701,15 @@ federatedx_io_vitess::~federatedx_io_vitess() {
   DBUG_VOID_RETURN;
 }
 
-int federatedx_io_vitess::query(const char *buffer, uint length, int scan_mode) {
+int federatedx_io_vitess::query(const char *buffer, uint length, int scan_mode, void *scan_info) {
   int error;
   bool wants_autocommit= requested_autocommit | is_readonly();
   DBUG_ENTER("federatedx_io_vitess::query");
+
+  shard_scan_info* sc_info = NULL;
+  if (scan_info) {
+    sc_info = (shard_scan_info *) scan_info;
+  }
 
   if (!wants_autocommit && test_all_restrict())
     wants_autocommit= TRUE;
@@ -712,8 +720,8 @@ int federatedx_io_vitess::query(const char *buffer, uint length, int scan_mode) 
 
   if (wants_autocommit != actual_autocommit)
   {
-    if ((error= actual_query(wants_autocommit ? "SET AUTOCOMMIT=1"
-                                            : "SET AUTOCOMMIT=0", 16)))
+    if ((error= actual_shard_query(wants_autocommit ? "SET AUTOCOMMIT=1"
+                                            : "SET AUTOCOMMIT=0", 16, NULL)))
     DBUG_RETURN(error);
     mysql.reconnect= wants_autocommit ? 1 : 0;
     actual_autocommit= wants_autocommit;
@@ -728,7 +736,7 @@ int federatedx_io_vitess::query(const char *buffer, uint length, int scan_mode) 
       char buf[STRING_BUFFER_USUAL_SIZE];
     int len= my_snprintf(buf, sizeof(buf),
                   "SAVEPOINT save%lu", savept->level);
-      if ((error= actual_query(buf, len)))
+      if ((error= actual_shard_query(buf, len, NULL)))
     DBUG_RETURN(error);
     set_active(TRUE);
     savept->flags|= SAVEPOINT_EMITTED;
@@ -737,18 +745,19 @@ int federatedx_io_vitess::query(const char *buffer, uint length, int scan_mode) 
   }
 
   if (scan_mode == SCAN_MODE_OLAP && current_scan_mode != SCAN_MODE_OLAP) {
-    if ((error = actual_query("SET WORKLOAD='OLAP'", 19))) {
+    if ((error = actual_shard_query("SET WORKLOAD='OLAP'", 19, NULL))) {
       DBUG_RETURN(error);
     }
     current_scan_mode = SCAN_MODE_OLAP;
   }
   if (scan_mode == SCAN_MODE_OLTP && current_scan_mode != SCAN_MODE_OLTP) {
-    if ((error = actual_query("SET WORKLOAD='OLTP'", 19))) {
+    if ((error = actual_shard_query("SET WORKLOAD='OLTP'", 19, NULL))) {
       DBUG_RETURN(error);
     }
     current_scan_mode = SCAN_MODE_OLTP;
   }
-  if (!(error= actual_query(buffer, length)))
+
+  if (!(error = actual_shard_query(buffer, length, sc_info)))
     set_active(is_active() || !actual_autocommit);
 
   DBUG_RETURN(error);
@@ -767,4 +776,43 @@ int federatedx_io_vitess::mysql_connect()
   current_scan_mode = SCAN_MODE_UNKNOWN;
 
   DBUG_RETURN(0);
+}
+
+int federatedx_io_vitess::actual_shard_query(const char *buffer, uint length, shard_scan_info *sc_info) {
+  int error;
+  DBUG_ENTER("federatedx_io_vitess::actual_shard_query");
+
+  if (!mysql.net.vio)
+  {
+    error = mysql_connect();
+    if (error) {
+      DBUG_RETURN(error);
+    }
+  }
+
+  if (sc_info != NULL) {
+    bool old_reconnect = mysql.reconnect;
+    const char *current_db = sc_info->shard_names[sc_info->sharded_offset];
+    sc_info->sharded_offset = sc_info->sharded_offset + 1;
+    error = mysql_select_db(&mysql, current_db);
+    if (error) {
+      goto err;
+    }
+    mysql.reconnect = false;
+    in_shard_db = true;
+    error = mysql_real_query(&mysql, buffer, length);
+    mysql.reconnect = old_reconnect;
+  } else {
+    if (in_shard_db) {
+      error = mysql_select_db(&mysql, server->database);
+      if (error) {
+        goto err;
+      }
+      in_shard_db = false;
+    }
+    error = mysql_real_query(&mysql, buffer, length);
+  }
+
+err:
+  DBUG_RETURN(error);
 }
