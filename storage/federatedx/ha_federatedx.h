@@ -304,6 +304,7 @@ class ha_federatedx: public handler
   // the following 3 fields is related to sharded read of vitess table
   shard_scan_info sc_info;
   bool is_sharded_scan;
+  int shard_scan_mode;
   DYNAMIC_STRING sharded_scan_query;
   int sharded_scan;
 

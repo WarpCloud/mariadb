@@ -2468,6 +2468,7 @@ export const char *optimizer_switch_names[]=
   "engine_condition_pushdown_dml",
   "fedx_cp_dml",
   "fedx_cp_query",
+  "fedx_scan_mode_olap",
   "default",
   NullS
 };

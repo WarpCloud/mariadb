@@ -2709,14 +2709,21 @@ int ha_federatedx::index_read_idx_with_result_set(uchar *buf, uint index,
                         NULL, 0, 0);
   sql_query.append(index_string);
 
+
+  bool force_oltp = false;
   if (is_delete_update_target || statement_lock_type >= TL_WRITE_DELAYED) {
     sql_query.append(STRING_WITH_LEN(" FOR UPDATE"));
+    force_oltp = true;
+
+  }
+  if (!ha_thd()->transaction.all.is_empty()) {
+    force_oltp = true;
   }
 
   if ((retval= txn->acquire(share, ha_thd(), TRUE, &io)))
     DBUG_RETURN(retval);
 
-  if (io->query(sql_query.ptr(), sql_query.length(), scan_mode, NULL))
+  if (io->query(sql_query.ptr(), sql_query.length(), force_oltp ? SCAN_MODE_OLTP : scan_mode, NULL))
   {
     snprintf(error_buffer, sizeof(error_buffer),"error: %d '%s'",
             io->error_code(), io->error_str());
@@ -2794,8 +2801,13 @@ int ha_federatedx::read_range_first(const key_range *start_key,
                         &table->key_info[active_index],
                         start_key, end_key, 0, eq_range_arg);
 
+  bool force_oltp = false;
   if (is_delete_update_target || statement_lock_type >= TL_WRITE_DELAYED) {
     sql_query.append(STRING_WITH_LEN(" FOR UPDATE"));
+    force_oltp = true;
+  }
+  if (!ha_thd()->transaction.all.is_empty()) {
+    force_oltp = true;
   }
 
   if ((retval= txn->acquire(share, ha_thd(), TRUE, &io)))
@@ -2804,7 +2816,7 @@ int ha_federatedx::read_range_first(const key_range *start_key,
   if (stored_result)
     (void) free_result();
 
-  if (io->query(sql_query.ptr(), sql_query.length(), scan_mode, NULL))
+  if (io->query(sql_query.ptr(), sql_query.length(), force_oltp ? SCAN_MODE_OLTP : scan_mode, NULL))
   {
     retval= ER_QUERY_ON_FOREIGN_DATA_SOURCE;
     goto error;
@@ -2933,12 +2945,18 @@ int ha_federatedx::rnd_init(bool scan)
       sql_query.append(additionalFilter.str, additionalFilter.length);
     }
 
+    bool force_oltp = false;
     if (is_delete_update_target || statement_lock_type >= TL_WRITE_DELAYED) {
       sql_query.append(STRING_WITH_LEN(" FOR UPDATE"));
+      force_oltp = true;
+    }
+    if (!ha_thd()->transaction.all.is_empty()) {
+      force_oltp = true;
     }
 
     if (need_shard_scan()) {
       is_sharded_scan = true;
+      shard_scan_mode = force_oltp ? SCAN_MODE_OLTP : scan_mode;
       dynstr_trunc(&sharded_scan_query, sharded_scan_query.length);
       dynstr_append_mem(&sharded_scan_query, sql_query.ptr(), sql_query.length());
       sc_info.shard_names = share->s->shard_names;
@@ -2946,7 +2964,7 @@ int ha_federatedx::rnd_init(bool scan)
       sc_info.sharded_offset = 0;
     }
 
-    if (io->query(sql_query.ptr(), strlen(sql_query.ptr()), scan_mode, is_sharded_scan ? &sc_info : NULL))
+    if (io->query(sql_query.ptr(), strlen(sql_query.ptr()), force_oltp ? SCAN_MODE_OLTP : scan_mode, is_sharded_scan ? &sc_info : NULL))
       goto error;
 
     stored_result= io->store_result();
@@ -3106,8 +3124,13 @@ int ha_federatedx::read_multi_in_first(String *in_filter_str)
       }
   }
 
+  bool force_oltp = false;
   if (is_delete_update_target || statement_lock_type >= TL_WRITE_DELAYED) {
     sql_query.append(STRING_WITH_LEN(" FOR UPDATE"));
+    force_oltp = true;
+  }
+  if (!ha_thd()->transaction.all.is_empty()) {
+    force_oltp = true;
   }
 
   if ((retval= txn->acquire(share, ha_thd(), TRUE, &io)))
@@ -3116,7 +3139,7 @@ int ha_federatedx::read_multi_in_first(String *in_filter_str)
   if (stored_result)
     (void) free_result();
 
-  if (io->query(sql_query.ptr(), sql_query.length(), scan_mode, NULL))
+  if (io->query(sql_query.ptr(), sql_query.length(), force_oltp ? SCAN_MODE_OLTP : scan_mode, NULL))
   {
     retval= ER_QUERY_ON_FOREIGN_DATA_SOURCE;
     goto error;
@@ -3339,7 +3362,7 @@ int ha_federatedx::rnd_next(uchar *buf)
     int error;
     if ((error= txn->acquire(share, ha_thd(), TRUE, &io)))
       DBUG_RETURN(error);
-    if (io->query(sharded_scan_query.str, sharded_scan_query.length, scan_mode, &sc_info))
+    if (io->query(sharded_scan_query.str, sharded_scan_query.length, shard_scan_mode, &sc_info))
       goto err;
 
     stored_result= io->store_result();
@@ -3699,7 +3722,8 @@ int ha_federatedx::reset(void)
   position_called= FALSE;
   dynstr_trunc(&additionalFilter, additionalFilter.length);
   use_default_mrr = TRUE;
-  scan_mode = SCAN_MODE_DEFAULT;
+  scan_mode = optimizer_flag(thd, OPTIMIZER_SWITCH_FEDX_SCAN_MODE_OLAP) ? SCAN_MODE_OLAP : SCAN_MODE_OLTP;
+  shard_scan_mode = scan_mode;
   is_delete_update_target = FALSE;
   dynstr_trunc(&sharded_scan_query, sharded_scan_query.length);
   sc_info.sharded_offset = 0;
