@@ -43,6 +43,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 class federatedx_io;
 #define HA_FEDERATEDX_VITESS_MAX_SHARD 100
+#define HA_FEDERATEDX_VITESS_MAX_PART_NUM 999
 
 /*
   FEDERATEDX_SERVER will eventually be a structure that will be shared among
@@ -103,9 +104,11 @@ typedef struct st_fedrated_server {
 // default scan mode for query and dml
 #define SCAN_MODE_DEFAULT SCAN_MODE_OLTP
 
-#define SHARDED_SCAN_DEFAULT 0
-#define SHARDED_SCAN_TRUE 1
-#define SHARDED_SCAN_FALSE 2
+#define PARTIAL_READ_NONE 0
+#define PARTIAL_READ_SHARD_READ 1
+#define PARTIAL_READ_RANGE_READ 2
+#define PARTIAL_READ_SHARD_RANGE_READ 3
+#define PARTIAL_READ_DEFAULT 4
 
 /*
   FEDERATEDX_SHARE is a structure that will be shared amoung all open handlers
@@ -142,6 +145,9 @@ typedef struct st_federatedx_share {
   uint use_count;
   THR_LOCK lock;
   FEDERATEDX_SERVER *s;
+  const char *part_col_name;
+  const char *part_values[HA_FEDERATEDX_VITESS_MAX_PART_NUM];
+  uint part_value_num;
 } FEDERATEDX_SHARE;
 
 
@@ -271,11 +277,25 @@ public:
   void stmt_autocommit();
 };
 
-typedef struct shard_scan_info {
+typedef struct partial_read_info {
+    int partial_read_mode;
+
+    // query infos
+    DYNAMIC_STRING partial_read_query;
+    DYNAMIC_STRING partial_read_filter;
+    bool need_for_update;
+
+    // shard read infos
     const char** shard_names;
     uint shard_num;
     uint sharded_offset;
-} shard_scan_info;
+
+    // range read infos
+    const char** range_values;
+    Field *part_col;
+    uint range_num;
+    uint range_offset;
+} partial_read_info;
 
 /*
   Class definition for the storage engine
@@ -301,12 +321,12 @@ class ha_federatedx: public handler
       Array of all stored results we get during a query execution.
   */
   DYNAMIC_ARRAY results;
-  // the following 3 fields is related to sharded read of vitess table
-  shard_scan_info sc_info;
-  bool is_sharded_scan;
-  int shard_scan_mode;
-  DYNAMIC_STRING sharded_scan_query;
-  int sharded_scan;
+  // the following 4 fields is related to partial read of vitess table
+  partial_read_info pr_info;
+  int partial_read_scan_mode;
+  // the partial read mode from sql hint
+  int partial_read_mode_by_hint;
+  Field *part_col;
 
   bool position_called;
   uint fetch_num; // stores the fetch num
@@ -478,7 +498,7 @@ public:
     and allocate it again
   */
   int rnd_init(bool scan);                                      //required
-  bool need_shard_scan();                                      //required
+  void check_partial_read();                                      //required
   int rnd_end();
   int rnd_next(uchar *buf);                                      //required
   int rnd_pos(uchar *buf, uchar *pos);                            //required

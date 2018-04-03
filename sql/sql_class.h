@@ -559,7 +559,9 @@ typedef struct system_variables
 
   ha_rows select_limit;
   ha_rows max_join_size;
-  ha_rows max_vitess_unsharded_scan_size;
+  ha_rows max_vitess_complete_read_size;
+  ha_rows vitess_partial_read_type;
+  ha_rows join_limit_scale;
   ha_rows expensive_subquery_limit;
   ulong auto_increment_increment, auto_increment_offset;
   ulong column_compression_zlib_strategy;

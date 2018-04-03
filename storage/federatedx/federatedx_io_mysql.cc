@@ -31,6 +31,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <my_global.h>
 #include "sql_priv.h"
 #include <mysqld_error.h>
+#include <field.h>
 
 #include "ha_federatedx.h"
 
@@ -681,7 +682,7 @@ public:
 
     int query(const char *buffer, uint length, int scan_mode, void *scan_info);
     int mysql_connect();
-    int actual_shard_query(const char *buffer, uint length, shard_scan_info *sc_info);
+    int actual_shard_query(const char *buffer, uint length, partial_read_info *pr_info);
 };
 
 federatedx_io *instantiate_io_vitess(MEM_ROOT *server_root, FEDERATEDX_SERVER *server) {
@@ -706,9 +707,9 @@ int federatedx_io_vitess::query(const char *buffer, uint length, int scan_mode, 
   bool wants_autocommit= requested_autocommit | is_readonly();
   DBUG_ENTER("federatedx_io_vitess::query");
 
-  shard_scan_info* sc_info = NULL;
+  partial_read_info* pr_info = NULL;
   if (scan_info) {
-    sc_info = (shard_scan_info *) scan_info;
+    pr_info = (partial_read_info *) scan_info;
   }
 
   if (!wants_autocommit && test_all_restrict())
@@ -757,7 +758,7 @@ int federatedx_io_vitess::query(const char *buffer, uint length, int scan_mode, 
     current_scan_mode = SCAN_MODE_OLTP;
   }
 
-  if (!(error = actual_shard_query(buffer, length, sc_info)))
+  if (!(error = actual_shard_query(buffer, length, pr_info)))
     set_active(is_active() || !actual_autocommit);
 
   DBUG_RETURN(error);
@@ -778,7 +779,86 @@ int federatedx_io_vitess::mysql_connect()
   DBUG_RETURN(0);
 }
 
-int federatedx_io_vitess::actual_shard_query(const char *buffer, uint length, shard_scan_info *sc_info) {
+void construct_partial_read_query(String *query, partial_read_info *pr_info) {
+  if (pr_info->partial_read_mode == PARTIAL_READ_SHARD_READ) {
+    pr_info->sharded_offset = pr_info->sharded_offset + 1;
+    query->append(pr_info->partial_read_query.str, pr_info->partial_read_query.length);
+    if (pr_info->partial_read_filter.length > 0) {
+      query->append(STRING_WITH_LEN(" WHERE "));
+      query->append(pr_info->partial_read_filter.str, pr_info->partial_read_filter.length);
+    }
+    if (pr_info->need_for_update) {
+      query->append(STRING_WITH_LEN(" FOR UPDATE"));
+    }
+  } else {
+    query->append(pr_info->partial_read_query.str, pr_info->partial_read_query.length);
+    if (pr_info->partial_read_filter.length > 0) {
+      query->append(STRING_WITH_LEN(" WHERE ("));
+      query->append(pr_info->partial_read_filter.str, pr_info->partial_read_filter.length);
+      query->append(STRING_WITH_LEN(") AND ("));
+    } else {
+      query->append(STRING_WITH_LEN(" WHERE ("));
+    }
+
+    if (pr_info->range_offset == 0) {
+      append_ident(query, pr_info->part_col->field_name.str,
+                   pr_info->part_col->field_name.length, ident_quote_char);
+      // the first range
+      query->append(STRING_WITH_LEN(" <= "));
+      if (pr_info->part_col->str_needs_quotes()) {
+        query->append(STRING_WITH_LEN("'"));
+      }
+      query->append(pr_info->range_values[pr_info->range_offset]);
+      if (pr_info->part_col->str_needs_quotes()) {
+        query->append(STRING_WITH_LEN("'"));
+      }
+    } else if (pr_info->range_offset == pr_info->range_num){
+      append_ident(query, pr_info->part_col->field_name.str,
+                   pr_info->part_col->field_name.length, ident_quote_char);
+      // the last range
+      query->append(STRING_WITH_LEN(" > "));
+      if (pr_info->part_col->str_needs_quotes()) {
+        query->append(STRING_WITH_LEN("'"));
+      }
+      query->append(pr_info->range_values[pr_info->range_offset -1]);
+      if (pr_info->part_col->str_needs_quotes()) {
+        query->append(STRING_WITH_LEN("'"));
+      }
+    } else {
+      append_ident(query, pr_info->part_col->field_name.str,
+                   pr_info->part_col->field_name.length, ident_quote_char);
+      query->append(STRING_WITH_LEN(" > "));
+      if (pr_info->part_col->str_needs_quotes()) {
+        query->append(STRING_WITH_LEN("'"));
+      }
+      query->append(pr_info->range_values[pr_info->range_offset-1]);
+      if (pr_info->part_col->str_needs_quotes()) {
+        query->append(STRING_WITH_LEN("'"));
+      }
+
+      query->append(STRING_WITH_LEN(" AND "));
+      append_ident(query, pr_info->part_col->field_name.str,
+                   pr_info->part_col->field_name.length, ident_quote_char);
+      query->append(STRING_WITH_LEN(" <= "));
+      if (pr_info->part_col->str_needs_quotes()) {
+        query->append(STRING_WITH_LEN("'"));
+      }
+      query->append(pr_info->range_values[pr_info->range_offset]);
+      if (pr_info->part_col->str_needs_quotes()) {
+        query->append(STRING_WITH_LEN("'"));
+      }
+    }
+
+    query->append(STRING_WITH_LEN(")"));
+    pr_info->range_offset = pr_info->range_offset + 1;
+    if (pr_info->need_for_update) {
+      query->append(STRING_WITH_LEN(" FOR UPDATE"));
+    }
+  }
+
+}
+
+int federatedx_io_vitess::actual_shard_query(const char *buffer, uint length, partial_read_info *pr_info) {
   int error;
   DBUG_ENTER("federatedx_io_vitess::actual_shard_query");
 
@@ -790,18 +870,39 @@ int federatedx_io_vitess::actual_shard_query(const char *buffer, uint length, sh
     }
   }
 
-  if (sc_info != NULL) {
-    bool old_reconnect = mysql.reconnect;
-    const char *current_db = sc_info->shard_names[sc_info->sharded_offset];
-    sc_info->sharded_offset = sc_info->sharded_offset + 1;
-    error = mysql_select_db(&mysql, current_db);
-    if (error) {
-      goto err;
+  if (pr_info != NULL) {
+    if (pr_info->partial_read_mode == PARTIAL_READ_SHARD_READ) {
+      bool old_reconnect = mysql.reconnect;
+      const char *current_db = pr_info->shard_names[pr_info->sharded_offset];
+      error = mysql_select_db(&mysql, current_db);
+      if (error) {
+        goto err;
+      }
+      mysql.reconnect = false;
+      in_shard_db = true;
+
+      char sql_query_buffer[FEDERATEDX_QUERY_BUFFER_SIZE];
+      String sql_query(sql_query_buffer,
+                       sizeof(sql_query_buffer),
+                       &my_charset_bin);
+      sql_query.length(0);
+      construct_partial_read_query(&sql_query, pr_info);
+
+      error = mysql_real_query(&mysql, sql_query.ptr(), sql_query.length());
+      mysql.reconnect = old_reconnect;
+    } else if (pr_info->partial_read_mode == PARTIAL_READ_RANGE_READ) {
+
+      char sql_query_buffer[FEDERATEDX_QUERY_BUFFER_SIZE];
+      String sql_query(sql_query_buffer,
+                       sizeof(sql_query_buffer),
+                       &my_charset_bin);
+      sql_query.length(0);
+      construct_partial_read_query(&sql_query, pr_info);
+      error = mysql_real_query(&mysql, sql_query.ptr(), sql_query.length());
+
+    } else if (pr_info->partial_read_mode == PARTIAL_READ_SHARD_RANGE_READ) {
+      // not supported yet
     }
-    mysql.reconnect = false;
-    in_shard_db = true;
-    error = mysql_real_query(&mysql, buffer, length);
-    mysql.reconnect = old_reconnect;
   } else {
     if (in_shard_db) {
       error = mysql_select_db(&mysql, server->database);

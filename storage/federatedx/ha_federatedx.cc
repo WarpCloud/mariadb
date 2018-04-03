@@ -833,8 +833,11 @@ ha_federatedx::ha_federatedx(handlerton *hton,
   bzero(&bulk_insert, sizeof(bulk_insert));
   bzero(&additionalFilter, sizeof(additionalFilter));
   init_dynamic_string(&additionalFilter, NULL, FEDERATEDX_QUERY_BUFFER_SIZE, FEDERATEDX_QUERY_BUFFER_SIZE);
-  bzero(&sharded_scan_query, sizeof(sharded_scan_query));
-  init_dynamic_string(&sharded_scan_query, NULL, FEDERATEDX_QUERY_BUFFER_SIZE, FEDERATEDX_QUERY_BUFFER_SIZE);
+  bzero(&pr_info.partial_read_query, sizeof(pr_info.partial_read_query));
+  init_dynamic_string(&pr_info.partial_read_query, NULL, FEDERATEDX_QUERY_BUFFER_SIZE, FEDERATEDX_QUERY_BUFFER_SIZE);
+  bzero(&pr_info.partial_read_filter, sizeof(pr_info.partial_read_filter));
+  init_dynamic_string(&pr_info.partial_read_filter, NULL, FEDERATEDX_QUERY_BUFFER_SIZE, FEDERATEDX_QUERY_BUFFER_SIZE);
+  part_col = NULL;
 }
 
 
@@ -1442,30 +1445,109 @@ err:
   DBUG_RETURN(1);
 }
 
+/**
+ * @param scan_mode
+ * scan mode is the scan type for vitess remote database, when reading
+ * from vitess, generally speaking, there are two category of the scan type:
+ * a. which workload type the vitess server is when reading the data:
+ *    1. OLTP, it means batch read && transaction aware read
+ *    2. OLAP, it means stream read, but it does not support transaction.
+ *       Even the mode is OLAP, the server will collect all the results
+ *       and stored it in its memory, so OLAP mode only means streaming
+ *       at vitess's side, not server side
+ * b. how the server doing a complete table scan for vitess table
+ *    1. server read all data from remote vitess database through one query
+ *    2. server read all data from remote vitess database through several
+ *       queries(known as partial read or incremental read). Partial read
+ *       is extremely useful when the user query has a limit clause. For
+ *       partial read, we need to divide vitess's table into several parts,
+ *       and each query read a part of the data. There are two strategies to
+ *       divide the table:
+ *       i)  based on vitess's shard, this is called shard read
+ *       ii) based on range, this is called range read
+ * information needed by shard read/range read is provided by vitess.
+ *
+ * scan mode can be specified by sql hint `fetch mode 'value'` explicitly in user's
+ * query, for example, `select * from t fetch mode 'olap'` specified the scan
+ * mode for table t is OLAP.
+ *
+ * the valid fetch mode string and its meaning is listed as below
+ *
+ * 'olap'        -> scan_mode = olap,    partial_read_mode = default
+ * 'oltp'        -> scan_mode = oltp,    partial_read_mode = default
+ * 'sd_rd'       -> scan_mode = default, partial_read_mode = shard read
+ * 'rg_rd'       -> scan_mode = default, partial_read_mode = range read
+ * 'full_rd'     -> scan_mode = default, partial_read_mode = none
+ * 'rg_sd_rd'    -> scan_mode = default, partial_read_mode = range shard read
+ * 'sd_tp_rd'    -> scan_mode = oltp,    partial_read_mode = shard read
+ * 'sd_ap_rd'    -> scan_mode = olap,    partial_read_mode = shard read
+ * 'rg_tp_rd'    -> scan_mode = oltp,    partial_read_mode = range read
+ * 'rg_ap_rd'    -> scan_mode = olap,    partial_read_mode = range read
+ * 'full_ap_rd'  -> scan_mode = olap,    partial_read_mode = none
+ * 'full_tp_rd'  -> scan_mode = oltp,    partial_read_mode = none
+ * 'rg_sd_ap_rd' -> scan_mode = oltp,    partial_read_mode = range shard read
+ * 'rg_sd_tp_rd' -> scan_mode = olap,    partial_read_mode = range shard read
+ *
+ */
 void ha_federatedx::set_scan_mode(LEX_CSTRING scan_mode) {
-    if (!scan_mode.str || scan_mode.length != 4) {
+    if (!scan_mode.str) {
       return;
     }
-    if (!strcasecmp(scan_mode.str, "oltp")) {
-      this->scan_mode = SCAN_MODE_OLTP;
-    } else if (!strcasecmp(scan_mode.str, "olap")) {
-      this->scan_mode = SCAN_MODE_OLAP;
-    } else if (!strcasecmp(scan_mode.str, "sdsc")) {
-      this->sharded_scan = SHARDED_SCAN_TRUE;
-    } else if (!strcasecmp(scan_mode.str, "ussc")) {
-      this->sharded_scan = SHARDED_SCAN_FALSE;
-    } else if (!strcasecmp(scan_mode.str, "sstp")) {
-      this->sharded_scan = SHARDED_SCAN_TRUE;
-      this->scan_mode = SCAN_MODE_OLTP;
-    } else if (!strcasecmp(scan_mode.str, "ssap")) {
-      this->sharded_scan = SHARDED_SCAN_TRUE;
-      this->scan_mode = SCAN_MODE_OLAP;
-    } else if (!strcasecmp(scan_mode.str, "ustp")) {
-      this->sharded_scan = SHARDED_SCAN_FALSE;
-      this->scan_mode = SCAN_MODE_OLTP;
-    } else if (!strcasecmp(scan_mode.str, "usap")) {
-      this->sharded_scan = SHARDED_SCAN_FALSE;
-      this->scan_mode = SCAN_MODE_OLAP;
+
+    if (scan_mode.length == 4) {
+      if (!strcasecmp(scan_mode.str, "oltp")) {
+        this->scan_mode = SCAN_MODE_OLTP;
+      } else if (!strcasecmp(scan_mode.str, "olap")) {
+        this->scan_mode = SCAN_MODE_OLAP;
+      }
+      return;
+    } else if (scan_mode.length == 5) {
+      if (!strcasecmp(scan_mode.str, "sd_rd")) {
+        this->partial_read_mode_by_hint = PARTIAL_READ_SHARD_READ;
+      } else if (!strcasecmp(scan_mode.str, "rg_rd")) {
+        this->partial_read_mode_by_hint = PARTIAL_READ_RANGE_READ;
+      }
+      return;
+    } else if (scan_mode.length == 7) {
+      if (!strcasecmp(scan_mode.str, "full_rd")) {
+        this->partial_read_mode_by_hint = PARTIAL_READ_NONE;
+      }
+      return;
+    } else if (scan_mode.length == 8) {
+      if (!strcasecmp(scan_mode.str, "sd_tp_rd")) {
+        this->scan_mode = SCAN_MODE_OLTP;
+        this->partial_read_mode_by_hint = PARTIAL_READ_SHARD_READ;
+      } else if (!strcasecmp(scan_mode.str, "sd_ap_rd")) {
+        this->scan_mode = SCAN_MODE_OLAP;
+        this->partial_read_mode_by_hint = PARTIAL_READ_SHARD_READ;
+      } else if (!strcasecmp(scan_mode.str, "rg_tp_rd")) {
+        this->scan_mode = SCAN_MODE_OLTP;
+        this->partial_read_mode_by_hint = PARTIAL_READ_RANGE_READ;
+      } else if (!strcasecmp(scan_mode.str, "rg_ap_rd")) {
+        this->scan_mode = SCAN_MODE_OLAP;
+        this->partial_read_mode_by_hint = PARTIAL_READ_RANGE_READ;
+      } else if (!strcasecmp(scan_mode.str, "rg_sd_rd")) {
+        this->partial_read_mode_by_hint = PARTIAL_READ_SHARD_RANGE_READ;
+      }
+      return;
+    } else if (scan_mode.length == 10) {
+      if (!strcasecmp(scan_mode.str, "full_ap_rd")) {
+        this->scan_mode = SCAN_MODE_OLAP;
+        this->partial_read_mode_by_hint = PARTIAL_READ_NONE;
+      } else if (!strcasecmp(scan_mode.str, "full_tp_rd")) {
+        this->scan_mode = SCAN_MODE_OLTP;
+        this->partial_read_mode_by_hint = PARTIAL_READ_NONE;
+      }
+      return;
+    } else if (scan_mode.length == 11) {
+      if (!strcasecmp(scan_mode.str, "rg_sd_tp_rd")) {
+        this->scan_mode = SCAN_MODE_OLTP;
+        this->partial_read_mode_by_hint = PARTIAL_READ_SHARD_RANGE_READ;
+      } else if (!strcasecmp(scan_mode.str, "rg_sd_ap_rd")) {
+        this->scan_mode = SCAN_MODE_OLAP;
+        this->partial_read_mode_by_hint = PARTIAL_READ_SHARD_RANGE_READ;
+      }
+      return;
     }
 }
 
@@ -1881,9 +1963,10 @@ int ha_federatedx::open(const char *name, int mode, uint test_if_locked)
   DBUG_PRINT("info", ("ref_length: %u", ref_length));
 
   my_init_dynamic_array(&results, sizeof(FEDERATEDX_IO_RESULT*), 4, 4, MYF(0));
-  is_sharded_scan = false;
-  sharded_scan = SHARDED_SCAN_DEFAULT;
-  sc_info.sharded_offset = 0;
+  pr_info.partial_read_mode = PARTIAL_READ_NONE;
+  partial_read_mode_by_hint = PARTIAL_READ_DEFAULT;
+  pr_info.sharded_offset = 0;
+  pr_info.range_offset = 0;
 
   reset();
 
@@ -2855,21 +2938,86 @@ int ha_federatedx::index_next(uchar *buf)
 }
 
 
-bool ha_federatedx::need_shard_scan() {
+void ha_federatedx::check_partial_read() {
+  bool want_shard_read = false;
+  bool want_range_read = false;
+
   // sql hint has highest priority
-  if (sharded_scan == SHARDED_SCAN_TRUE) {
-    return true;
-  } else if (sharded_scan == SHARDED_SCAN_FALSE) {
-    return false;
+  ha_rows limit_num = 0;
+  bool auto_partial_on_limit = optimizer_flag(ha_thd(), OPTIMIZER_SWITCH_FEDX_AUTO_PARTIAL_READ_ON_LIMIT);
+  ha_rows partial_read_type = ha_thd()->variables.vitess_partial_read_type;
+  if (auto_partial_on_limit) {
+    limit_num = ha_thd()->lex->current_select->join->row_limit;
+    if (limit_num == HA_POS_ERROR) {
+      //todo we should use the first select_lex directly???
+      limit_num = ha_thd()->lex->select_lex.join->row_limit;
+    }
+    if (limit_num != HA_POS_ERROR && ha_thd()->lex->current_select->join->table_count > 1) {
+      limit_num = limit_num * ha_thd()->variables.join_limit_scale;
+    }
   }
-  ha_rows max_row = ha_thd()->variables.max_vitess_unsharded_scan_size;
-  if (max_row >= stats.records) {
-    return false;
+  if (partial_read_mode_by_hint == PARTIAL_READ_SHARD_READ) {
+    want_shard_read = true;
+  } else if (partial_read_mode_by_hint == PARTIAL_READ_RANGE_READ) {
+    want_range_read = true;
+  } else if (partial_read_mode_by_hint == PARTIAL_READ_SHARD_RANGE_READ) {
+    want_shard_read = want_range_read = true;
+  } else if (partial_read_mode_by_hint == PARTIAL_READ_NONE) {
+    want_shard_read = want_range_read = false;
+  } else {
+    ha_rows max_row = ha_thd()->variables.max_vitess_complete_read_size;
+    if (max_row < stats.records || (auto_partial_on_limit &&
+            limit_num != HA_POS_ERROR && limit_num < stats.records)) {
+      if (partial_read_type >= 3 || (additionalFilter.length > 0 && has_equal_filter)) {
+        // user does not allow partial read explicitly or has equal filter condition
+        want_shard_read = want_range_read = false;
+      } else {
+        want_shard_read = want_range_read = true;
+      }
+    } else {
+      // do not need partial read
+      want_shard_read = want_range_read = false;
+    }
   }
-  if (additionalFilter.length > 0 && has_equal_filter) {
-    return false;
+
+  if (part_col == NULL && share->part_value_num > 0) {
+    for (Field **field = table->field; *field; field++) {
+      if (!strcasecmp(share->part_col_name, (*field)->field_name.str)) {
+        //todo check the column type, types like blob should not be supported.
+        part_col = *field;
+        break;
+      }
+    }
   }
-  return true;
+
+  bool support_range_read = part_col != NULL && share->part_value_num > 0 &&
+                            optimizer_flag(ha_thd(), OPTIMIZER_SWITCH_FEDX_RANGE_READ);
+  bool support_shard_read = share->s->shard_num > 1 &&
+                            optimizer_flag(ha_thd(), OPTIMIZER_SWITCH_FEDX_SHARDED_READ);
+
+  want_shard_read = want_shard_read && support_shard_read;
+  want_range_read = want_range_read && support_range_read;
+
+  if (want_range_read && want_shard_read) {
+    if (partial_read_type == 0) {
+      //range read preferred
+      pr_info.partial_read_mode = PARTIAL_READ_RANGE_READ;
+    } else if (partial_read_type == 1) {
+      //shard read preferred
+      pr_info.partial_read_mode = PARTIAL_READ_SHARD_READ;
+    } else if (partial_read_type == 2) {
+      // todo support partial range shard read
+      pr_info.partial_read_mode = PARTIAL_READ_RANGE_READ;
+    } else {
+      pr_info.partial_read_mode = PARTIAL_READ_NONE;
+    }
+  } else if (want_range_read) {
+    pr_info.partial_read_mode = PARTIAL_READ_RANGE_READ;
+  } else if (want_shard_read) {
+    pr_info.partial_read_mode = PARTIAL_READ_SHARD_READ;
+  } else {
+    pr_info.partial_read_mode = PARTIAL_READ_NONE;
+  }
 }
 /*
   rnd_init() is called when the system wants the storage engine to do a table
@@ -2932,6 +3080,17 @@ int ha_federatedx::rnd_init(bool scan)
     if (stored_result)
       (void) free_result();
 
+    check_partial_read();
+    if (pr_info.partial_read_mode != PARTIAL_READ_NONE) {
+      pr_info.shard_names = share->s->shard_names;
+      pr_info.shard_num = share->s->shard_num;
+      pr_info.sharded_offset = 0;
+      pr_info.range_num = share->part_value_num;
+      pr_info.range_offset = 0;
+      pr_info.range_values = share->part_values;
+      pr_info.part_col = part_col;
+    }
+
     char sql_query_buffer[FEDERATEDX_QUERY_BUFFER_SIZE];
     String sql_query(sql_query_buffer,
                      sizeof(sql_query_buffer),
@@ -2939,6 +3098,16 @@ int ha_federatedx::rnd_init(bool scan)
     sql_query.length(0);
     //sql_query.append(share->select_query, strlen(share->select_query));
     append_select_from(sql_query);
+
+    if (pr_info.partial_read_mode != PARTIAL_READ_NONE) {
+      dynstr_trunc(&pr_info.partial_read_query, pr_info.partial_read_query.length);
+      dynstr_append_mem(&pr_info.partial_read_query, sql_query.ptr(), sql_query.length());
+
+      dynstr_trunc(&pr_info.partial_read_filter, pr_info.partial_read_filter.length);
+      dynstr_append_mem(&pr_info.partial_read_filter, additionalFilter.str, additionalFilter.length);
+
+      pr_info.need_for_update = false;
+    }
 
     if (additionalFilter.length > 0) {
       sql_query.append(STRING_WITH_LEN(" WHERE "));
@@ -2949,22 +3118,21 @@ int ha_federatedx::rnd_init(bool scan)
     if (is_delete_update_target || statement_lock_type >= TL_WRITE_DELAYED) {
       sql_query.append(STRING_WITH_LEN(" FOR UPDATE"));
       force_oltp = true;
+      if (pr_info.partial_read_mode != PARTIAL_READ_NONE) {
+        pr_info.need_for_update = true;
+      }
     }
     if (!ha_thd()->transaction.all.is_empty()) {
       force_oltp = true;
     }
 
-    if (need_shard_scan()) {
-      is_sharded_scan = true;
-      shard_scan_mode = force_oltp ? SCAN_MODE_OLTP : scan_mode;
-      dynstr_trunc(&sharded_scan_query, sharded_scan_query.length);
-      dynstr_append_mem(&sharded_scan_query, sql_query.ptr(), sql_query.length());
-      sc_info.shard_names = share->s->shard_names;
-      sc_info.shard_num = share->s->shard_num;
-      sc_info.sharded_offset = 0;
+    if (pr_info.partial_read_mode != PARTIAL_READ_NONE) {
+      // for partial read, initialize pr_info
+      partial_read_scan_mode = force_oltp ? SCAN_MODE_OLTP : scan_mode;
     }
 
-    if (io->query(sql_query.ptr(), strlen(sql_query.ptr()), force_oltp ? SCAN_MODE_OLTP : scan_mode, is_sharded_scan ? &sc_info : NULL))
+    if (io->query(sql_query.ptr(), strlen(sql_query.ptr()), force_oltp ? SCAN_MODE_OLTP : scan_mode,
+                  pr_info.partial_read_mode != PARTIAL_READ_NONE ? &pr_info : NULL))
       goto error;
 
     stored_result= io->store_result();
@@ -3331,6 +3499,18 @@ int ha_federatedx::index_end(void)
   DBUG_RETURN(error);
 }
 
+bool partial_read_has_next(partial_read_info pr_info, int partial_read_mode) {
+  if (partial_read_mode == PARTIAL_READ_RANGE_READ) {
+    return  pr_info.range_offset <= pr_info.range_num;
+  } else if (partial_read_mode == PARTIAL_READ_SHARD_READ) {
+    return pr_info.sharded_offset < pr_info.shard_num;
+  } else if (partial_read_mode == PARTIAL_READ_SHARD_RANGE_READ) {
+    return !(pr_info.range_offset > pr_info.range_num
+             && pr_info.sharded_offset == pr_info.shard_num);
+  } else {
+    return false;
+  }
+}
 
 /*
   This is called for each row of the table scan. When you run out of records
@@ -3356,13 +3536,14 @@ int ha_federatedx::rnd_next(uchar *buf)
     DBUG_RETURN(1);
   }
   int retval=read_next(buf, stored_result);
-  while (retval == HA_ERR_END_OF_FILE && is_sharded_scan && sc_info.sharded_offset < sc_info.shard_num) {
-    // in sharded scan mode, we need read next shard if possible
+  while (retval == HA_ERR_END_OF_FILE && pr_info.partial_read_mode != PARTIAL_READ_NONE
+         && partial_read_has_next(pr_info, pr_info.partial_read_mode)) {
+    // in partial read mode, we need read next part if possible
     free_result();
     int error;
     if ((error= txn->acquire(share, ha_thd(), TRUE, &io)))
       DBUG_RETURN(error);
-    if (io->query(sharded_scan_query.str, sharded_scan_query.length, shard_scan_mode, &sc_info))
+    if (io->query("aaaaa", 5, partial_read_scan_mode, &pr_info))
       goto err;
 
     stored_result= io->store_result();
@@ -3590,7 +3771,7 @@ int ha_federatedx::info(uint flag)
   if (flag & HA_STATUS_AUTO)
     stats.auto_increment_value= (*iop)->last_insert_id();
 
-  if (share->s->shard_num == 0 && !strcmp((*iop)->get_scheme(),"vitess")) {
+  if (share->s->shard_num == 0 && !strcasecmp((*iop)->get_scheme(),"vitess")) {
     // initialize shard name infomation for vitess table
     DYNAMIC_ARRAY shard_infos;
     my_init_dynamic_array(&shard_infos, sizeof(char **), 4, 4, MYF(0));
@@ -3632,6 +3813,53 @@ int ha_federatedx::info(uint flag)
       (*iop)->free_result(shard_info_result);
       delete_dynamic(&shard_infos);
     }
+  }
+
+  if (share->part_col_name == NULL && !strcasecmp((*iop)->get_scheme(),"vitess")) {
+    //
+    char range_info_query_buffer[FEDERATEDX_QUERY_BUFFER_SIZE];
+    String query(range_info_query_buffer, sizeof(range_info_query_buffer), &my_charset_bin);
+    query.length(0);
+    query.append(STRING_WITH_LEN("SHOW VITESS_RANGE_INFO "));
+    query.append(share->table_name, share->table_name_length);
+    FEDERATEDX_IO_RESULT *shard_info_result;
+    FEDERATEDX_IO_ROW *row;
+    (*iop)->query(query.ptr(), query.length(), SCAN_MODE_DEFAULT, NULL);
+    shard_info_result = (*iop)->store_result();
+    my_ulonglong rownum = (*iop)->get_num_rows(shard_info_result);
+    if (rownum ==  0) {
+      // not range info
+      mysql_mutex_lock(&share->s->mutex);
+      if (share->part_col_name == 0) {
+        share->part_col_name = "no_part_col";
+        share->part_value_num = rownum;
+      }
+      mysql_mutex_unlock(&share->s->mutex);
+    } else {
+      const char * range_values[HA_FEDERATEDX_VITESS_MAX_PART_NUM];
+      const char * part_col_name;
+      for (my_ulonglong i = 0; i < rownum; i++) {
+        if (!(row = (*iop)->fetch_row(shard_info_result, NULL))) {
+          (*iop)->free_result(shard_info_result);
+          goto error;
+        }
+        if (i == 0) {
+          part_col_name = (*iop)->get_column_data(row, 0);
+        }
+        range_values[i] = (*iop)->get_column_data(row, 1);
+      }
+      // todo should use per share mutex
+      mysql_mutex_lock(&share->s->mutex);
+      if (share->part_col_name == 0) {
+        share->part_col_name = strdup_root(&share->mem_root, part_col_name);
+        for (my_ulonglong i = 0; i < rownum; i++) {
+          share->part_values[i] = strdup_root(&share->mem_root, range_values[i]);
+        }
+        share->part_value_num = rownum;
+      }
+      mysql_mutex_unlock(&share->s->mutex);
+    }
+    (*iop)->free_result(shard_info_result);
   }
   /*
     If ::info created it's own transaction, close it. This happens in case
@@ -3723,12 +3951,12 @@ int ha_federatedx::reset(void)
   dynstr_trunc(&additionalFilter, additionalFilter.length);
   use_default_mrr = TRUE;
   scan_mode = optimizer_flag(thd, OPTIMIZER_SWITCH_FEDX_SCAN_MODE_OLAP) ? SCAN_MODE_OLAP : SCAN_MODE_OLTP;
-  shard_scan_mode = scan_mode;
+  partial_read_scan_mode = scan_mode;
   is_delete_update_target = FALSE;
-  dynstr_trunc(&sharded_scan_query, sharded_scan_query.length);
-  sc_info.sharded_offset = 0;
-  is_sharded_scan = false;
-  sharded_scan = SHARDED_SCAN_DEFAULT;
+  pr_info.sharded_offset = 0;
+  pr_info.range_offset = 0;
+  pr_info.partial_read_mode = PARTIAL_READ_NONE;
+  partial_read_mode_by_hint = PARTIAL_READ_DEFAULT;
   has_equal_filter = false;
 
   if (stored_result)

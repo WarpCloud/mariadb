@@ -2182,11 +2182,26 @@ static Sys_var_harows Sys_max_join_size(
        NO_MUTEX_GUARD, NOT_IN_BINLOG, ON_CHECK(0),
        ON_UPDATE(fix_max_join_size));
 
-static Sys_var_harows Sys_max_vitess_unsharded_scan_size(
-        "max_vitess_unsharded_scan_size",
-        "the max size of a unsharded scan for vitess table",
-        SESSION_VAR(max_vitess_unsharded_scan_size), CMD_LINE(REQUIRED_ARG),
-        VALID_RANGE(1, HA_POS_ERROR), DEFAULT(10000000L), BLOCK_SIZE(1));
+static Sys_var_harows Sys_max_vitess_complete_read_size(
+        "max_vitess_complete_read_size",
+        "the max size of a complete read for vitess table",
+        SESSION_VAR(max_vitess_complete_read_size), CMD_LINE(REQUIRED_ARG),
+        VALID_RANGE(1, HA_POS_ERROR), DEFAULT(3000000L), BLOCK_SIZE(1),
+        NO_MUTEX_GUARD, NOT_IN_BINLOG);
+
+static Sys_var_harows Sys_vitess_partial_read_type(
+        "vitess_partial_read_type",
+        "the preferred partial read type for vitess table, 0 range read, 1 shard read, 2 both, others none",
+        SESSION_VAR(vitess_partial_read_type), CMD_LINE(REQUIRED_ARG),
+        VALID_RANGE(0, 3), DEFAULT(0), BLOCK_SIZE(1),
+        NO_MUTEX_GUARD, NOT_IN_BINLOG);
+
+static Sys_var_harows Sys_join_limit_scale(
+        "join_limit_scale",
+        "the join limit scale for federatedx table",
+        SESSION_VAR(join_limit_scale), CMD_LINE(REQUIRED_ARG),
+        VALID_RANGE(1, 100000), DEFAULT(1), BLOCK_SIZE(1),
+        NO_MUTEX_GUARD, NOT_IN_BINLOG);
 
 static Sys_var_ulong Sys_max_seeks_for_key(
        "max_seeks_for_key",
@@ -2469,6 +2484,9 @@ export const char *optimizer_switch_names[]=
   "fedx_cp_dml",
   "fedx_cp_query",
   "fedx_scan_mode_olap",
+  "fedx_sharded_read",
+  "fedx_range_read",
+  "fedx_auto_partial_read_on_limit",
   "default",
   NullS
 };
