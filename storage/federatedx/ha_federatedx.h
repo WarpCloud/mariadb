@@ -147,7 +147,7 @@ typedef struct st_federatedx_share {
   FEDERATEDX_SERVER *s;
   const char *part_col_name;
   const char *part_values[HA_FEDERATEDX_VITESS_MAX_PART_NUM];
-  uint part_value_num;
+  my_ulonglong part_value_num;
 } FEDERATEDX_SHARE;
 
 
@@ -327,6 +327,11 @@ class ha_federatedx: public handler
   // the partial read mode from sql hint
   int partial_read_mode_by_hint;
   Field *part_col;
+
+  const char *local_part_col_name;
+  const char *local_part_values[HA_FEDERATEDX_VITESS_MAX_PART_NUM];
+  my_ulonglong local_part_value_num;
+  FEDERATEDX_IO_RESULT *local_shard_info_result;
 
   bool position_called;
   uint fetch_num; // stores the fetch num

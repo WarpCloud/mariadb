@@ -2487,6 +2487,7 @@ export const char *optimizer_switch_names[]=
   "fedx_sharded_read",
   "fedx_range_read",
   "fedx_auto_partial_read_on_limit",
+  "fedx_cache_range_info",
   "default",
   NullS
 };
