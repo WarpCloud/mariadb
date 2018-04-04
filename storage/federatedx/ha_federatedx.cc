@@ -2941,6 +2941,10 @@ int ha_federatedx::index_next(uchar *buf)
 
 
 void ha_federatedx::check_partial_read() {
+  if (!(optimizer_flag(ha_thd(), OPTIMIZER_SWITCH_FEDX_RANGE_READ) || optimizer_flag(ha_thd(), OPTIMIZER_SWITCH_FEDX_SHARDED_READ))) {
+    pr_info.partial_read_mode = PARTIAL_READ_NONE;
+    return;
+  }
   bool want_shard_read = false;
   bool want_range_read = false;
 
@@ -2967,7 +2971,7 @@ void ha_federatedx::check_partial_read() {
   } else if (partial_read_mode_by_hint == PARTIAL_READ_NONE) {
     want_shard_read = want_range_read = false;
   } else {
-    if (strstr(table->s->comment.str, "force partial read")) {
+    if (table->s->comment.length > 0 && strstr(table->s->comment.str, "force partial read")) {
       want_shard_read = want_range_read = true;
     } else {
       ha_rows max_row = ha_thd()->variables.max_vitess_complete_read_size;
@@ -3756,6 +3760,7 @@ int ha_federatedx::info(uint flag)
   THD *thd= ha_thd();
   federatedx_txn *tmp_txn;
   federatedx_io *tmp_io= 0, **iop= 0;
+  bool support_partial_read = false;
   DBUG_ENTER("ha_federatedx::info");
 
   error_code= ER_QUERY_ON_FOREIGN_DATA_SOURCE;
@@ -3792,44 +3797,56 @@ int ha_federatedx::info(uint flag)
     DYNAMIC_ARRAY shard_infos;
     my_init_dynamic_array(&shard_infos, sizeof(char **), 4, 4, MYF(0));
     if ((*iop)->query("SHOW vitess_shards", 18, SCAN_MODE_DEFAULT, NULL)) {
-      share->s->shard_num = 10000;
+      mysql_mutex_lock(&share->s->mutex);
+      if (share->s->shard_num == 0) {
+        share->s->shard_num = 10000;
+      }
+      mysql_mutex_unlock(&share->s->mutex);
     } else {
-      FEDERATEDX_IO_RESULT *shard_info_result;
+      FEDERATEDX_IO_RESULT *shard_info_result = NULL;
       FEDERATEDX_IO_ROW *row;
       shard_info_result = (*iop)->store_result();
-      my_ulonglong rownum = (*iop)->get_num_rows(shard_info_result);
-      for (my_ulonglong i = 0; i < rownum; i++) {
-        if (!(row = (*iop)->fetch_row(shard_info_result, NULL))) {
-          (*iop)->free_result(shard_info_result);
-          goto error;
-        }
-
-        const char *shard_name = (*iop)->get_column_data(row, 0);
-        if (is_valid_shard_name(shard_name, (*iop)->get_database())) {
-          insert_dynamic(&shard_infos, &shard_name);
-        }
-      }
-
-      if (shard_infos.elements == 0) {
-        // do not found any valid shard name, must be something wrong
-        // in the remote vitess server
-        (*iop)->free_result(shard_info_result);
-        delete_dynamic(&shard_infos);
-        error_code = ER_QUERY_ON_FOREIGN_DATA_SOURCE;
-        goto fail;
-      } else {
-        // set the shard info into server
+      if (shard_info_result == NULL) {
         mysql_mutex_lock(&share->s->mutex);
         if (share->s->shard_num == 0) {
-          for (uint i = 0; i < shard_infos.elements; i++) {
-            const char **shard_name = dynamic_element(&shard_infos, i, const char**);
-            share->s->shard_names[i] = strdup_root(&share->s->mem_root, *shard_name);
-          }
-          share->s->shard_num = shard_infos.elements;
+          share->s->shard_num = 10000;
         }
         mysql_mutex_unlock(&share->s->mutex);
-        (*iop)->free_result(shard_info_result);
-        delete_dynamic(&shard_infos);
+      } else {
+        my_ulonglong rownum = (*iop)->get_num_rows(shard_info_result);
+        for (my_ulonglong i = 0; i < rownum; i++) {
+          if (!(row = (*iop)->fetch_row(shard_info_result, NULL))) {
+            (*iop)->free_result(shard_info_result);
+            goto error;
+          }
+
+          const char *shard_name = (*iop)->get_column_data(row, 0);
+          if (is_valid_shard_name(shard_name, (*iop)->get_database())) {
+            insert_dynamic(&shard_infos, &shard_name);
+          }
+        }
+
+        if (shard_infos.elements == 0) {
+          // do not found any valid shard name, must be something wrong
+          // in the remote vitess server
+          (*iop)->free_result(shard_info_result);
+          delete_dynamic(&shard_infos);
+          error_code = ER_QUERY_ON_FOREIGN_DATA_SOURCE;
+          goto fail;
+        } else {
+          // set the shard info into server
+          mysql_mutex_lock(&share->s->mutex);
+          if (share->s->shard_num == 0) {
+            for (uint i = 0; i < shard_infos.elements; i++) {
+              const char **shard_name = dynamic_element(&shard_infos, i, const char**);
+              share->s->shard_names[i] = strdup_root(&share->s->mem_root, *shard_name);
+            }
+            share->s->shard_num = shard_infos.elements;
+          }
+          mysql_mutex_unlock(&share->s->mutex);
+          (*iop)->free_result(shard_info_result);
+          delete_dynamic(&shard_infos);
+        }
       }
     }
   }
@@ -3843,7 +3860,7 @@ int ha_federatedx::info(uint flag)
     query.append(STRING_WITH_LEN("`"));
     query.append(share->table_name, share->table_name_length);
     query.append(STRING_WITH_LEN("`"));
-    FEDERATEDX_IO_RESULT *shard_info_result;
+    FEDERATEDX_IO_RESULT *shard_info_result = NULL;
     FEDERATEDX_IO_ROW *row;
     if ((*iop)->query(query.ptr(), query.length(), SCAN_MODE_DEFAULT, NULL)) {
       mysql_mutex_lock(&share->s->mutex);
@@ -3854,44 +3871,55 @@ int ha_federatedx::info(uint flag)
       mysql_mutex_unlock(&share->s->mutex);
     } else {
       shard_info_result = (*iop)->store_result();
-      my_ulonglong rownum = (*iop)->get_num_rows(shard_info_result);
-      if (rownum == 0) {
-        // not range info
+      if (shard_info_result == NULL) {
         mysql_mutex_lock(&share->s->mutex);
         if (share->part_col_name == 0) {
           share->part_col_name = "no_part_col";
-          share->part_value_num = rownum;
+          share->part_value_num = 0;
         }
         mysql_mutex_unlock(&share->s->mutex);
       } else {
-        const char *range_values[HA_FEDERATEDX_VITESS_MAX_PART_NUM];
-        const char *part_col_name;
-        for (my_ulonglong i = 0; i < rownum; i++) {
-          if (!(row = (*iop)->fetch_row(shard_info_result, NULL))) {
-            (*iop)->free_result(shard_info_result);
-            goto error;
+        my_ulonglong rownum = (*iop)->get_num_rows(shard_info_result);
+        if (rownum == 0) {
+          // not range info
+          mysql_mutex_lock(&share->s->mutex);
+          if (share->part_col_name == 0) {
+            share->part_col_name = "no_part_col";
+            share->part_value_num = rownum;
           }
-          if (i == 0) {
-            part_col_name = (*iop)->get_column_data(row, 0);
-          }
-          range_values[i] = (*iop)->get_column_data(row, 1);
-        }
-        // todo should use per share mutex
-        mysql_mutex_lock(&share->s->mutex);
-        if (share->part_col_name == 0) {
-          share->part_col_name = strdup_root(&share->mem_root, part_col_name);
+          mysql_mutex_unlock(&share->s->mutex);
+        } else {
+          const char *range_values[HA_FEDERATEDX_VITESS_MAX_PART_NUM];
+          const char *part_col_name;
           for (my_ulonglong i = 0; i < rownum; i++) {
-            share->part_values[i] = strdup_root(&share->mem_root, range_values[i]);
+            if (!(row = (*iop)->fetch_row(shard_info_result, NULL))) {
+              (*iop)->free_result(shard_info_result);
+              goto error;
+            }
+            if (i == 0) {
+              part_col_name = (*iop)->get_column_data(row, 0);
+            }
+            range_values[i] = (*iop)->get_column_data(row, 1);
           }
-          share->part_value_num = rownum;
+          // todo should use per share mutex
+          mysql_mutex_lock(&share->s->mutex);
+          if (share->part_col_name == 0) {
+            share->part_col_name = strdup_root(&share->mem_root, part_col_name);
+            for (my_ulonglong i = 0; i < rownum; i++) {
+              share->part_values[i] = strdup_root(&share->mem_root, range_values[i]);
+            }
+            share->part_value_num = rownum;
+          }
+          mysql_mutex_unlock(&share->s->mutex);
         }
-        mysql_mutex_unlock(&share->s->mutex);
+        (*iop)->free_result(shard_info_result);
       }
-      (*iop)->free_result(shard_info_result);
     }
   }
 
-  if (!optimizer_flag(ha_thd(), OPTIMIZER_SWITCH_FEDX_CACHE_RANGE_INFO)
+  support_partial_read = optimizer_flag(ha_thd(), OPTIMIZER_SWITCH_FEDX_SHARDED_READ) ||
+                              optimizer_flag(ha_thd(), OPTIMIZER_SWITCH_FEDX_RANGE_READ);
+  if (support_partial_read && !optimizer_flag(ha_thd(), OPTIMIZER_SWITCH_FEDX_CACHE_RANGE_INFO)
       && local_part_col_name == NULL && !strcasecmp((*iop)->get_scheme(),"vitess")) {
     char range_info_query_buffer[FEDERATEDX_QUERY_BUFFER_SIZE];
     String query(range_info_query_buffer, sizeof(range_info_query_buffer), &my_charset_bin);
@@ -3904,23 +3932,28 @@ int ha_federatedx::info(uint flag)
       local_part_value_num = 0;
     } else {
       local_shard_info_result = (*iop)->store_result();
-      my_ulonglong rownum = (*iop)->get_num_rows(local_shard_info_result);
-      if (rownum == 0) {
-        // not range info
+      if (local_shard_info_result == NULL) {
         local_part_col_name = "no_part_col";
         local_part_value_num = 0;
       } else {
-        for (my_ulonglong i = 0; i < rownum; i++) {
-          if (!(row = (*iop)->fetch_row(local_shard_info_result, NULL))) {
-            (*iop)->free_result(local_shard_info_result);
-            goto error;
+        my_ulonglong rownum = (*iop)->get_num_rows(local_shard_info_result);
+        if (rownum == 0) {
+          // not range info
+          local_part_col_name = "no_part_col";
+          local_part_value_num = 0;
+        } else {
+          for (my_ulonglong i = 0; i < rownum; i++) {
+            if (!(row = (*iop)->fetch_row(local_shard_info_result, NULL))) {
+              (*iop)->free_result(local_shard_info_result);
+              goto error;
+            }
+            if (i == 0) {
+              local_part_col_name = (*iop)->get_column_data(row, 0);
+            }
+            local_part_values[i] = (*iop)->get_column_data(row, 1);
           }
-          if (i == 0) {
-            local_part_col_name = (*iop)->get_column_data(row, 0);
-          }
-          local_part_values[i] = (*iop)->get_column_data(row, 1);
+          local_part_value_num = rownum;
         }
-        local_part_value_num = rownum;
       }
     }
   }
