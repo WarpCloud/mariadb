@@ -369,6 +369,12 @@ public:
     - or replaced to an Item_int_with_ref
   */
   bool setup_args_and_comparator(THD *thd, Arg_comparator *cmp);
+  bool walk_const(Item_processor_const processor, bool walk_subquery, void *arg) const
+  {
+    if (walk_args_const(processor, walk_subquery, arg))
+      return true;
+    return (this->*processor)(arg);
+  }
 };
 
 

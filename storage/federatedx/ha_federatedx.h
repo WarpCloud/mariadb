@@ -42,6 +42,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "handler.h"
 
 class federatedx_io;
+#define HA_FEDERATEDX_VITESS_MAX_SHARD 100
+#define HA_FEDERATEDX_VITESS_MAX_PART_NUM 999
 
 /*
   FEDERATEDX_SERVER will eventually be a structure that will be shared among
@@ -65,6 +67,8 @@ typedef struct st_fedrated_server {
   ushort port;
 
   const char *csname;
+  const char *shard_names[HA_FEDERATEDX_VITESS_MAX_SHARD];
+  uint shard_num;
 
   mysql_mutex_t mutex;
   federatedx_io *idle_list;
@@ -99,6 +103,13 @@ typedef struct st_fedrated_server {
 #define SCAN_MODE_EITHER 3
 // default scan mode for query and dml
 #define SCAN_MODE_DEFAULT SCAN_MODE_OLTP
+
+#define PARTIAL_READ_NONE 0
+#define PARTIAL_READ_SHARD_READ 1
+#define PARTIAL_READ_RANGE_READ 2
+#define PARTIAL_READ_SHARD_RANGE_READ 3
+#define PARTIAL_READ_DEFAULT 4
+
 /*
   FEDERATEDX_SHARE is a structure that will be shared amoung all open handlers
   The example implements the minimum of what you will probably need.
@@ -134,6 +145,9 @@ typedef struct st_federatedx_share {
   uint use_count;
   THR_LOCK lock;
   FEDERATEDX_SERVER *s;
+  const char *part_col_name;
+  const char *part_values[HA_FEDERATEDX_VITESS_MAX_PART_NUM];
+  my_ulonglong part_value_num;
 } FEDERATEDX_SHARE;
 
 
@@ -144,7 +158,6 @@ typedef ptrdiff_t FEDERATEDX_IO_OFFSET;
 class federatedx_io
 {
   friend class federatedx_txn;
-  FEDERATEDX_SERVER * const server;
   federatedx_io **owner_ptr;
   federatedx_io *txn_next;
   federatedx_io *idle_next;
@@ -153,6 +166,7 @@ class federatedx_io
   bool readonly;/* indicates that no updates have occurred */
 
 protected:
+  FEDERATEDX_SERVER * const server;
   void set_active(bool new_active)
   { active= new_active; }
 public:
@@ -171,6 +185,7 @@ public:
   const char * get_database() const { return server->database; }
   ushort       get_port() const     { return server->port; }
   const char * get_socket() const   { return server->socket; }
+  const char * get_scheme() const   { return server->scheme; }
 
   static bool handles_scheme(const char *scheme);
   static federatedx_io *construct(MEM_ROOT *server_root,
@@ -181,7 +196,7 @@ public:
   static void operator delete(void *ptr, size_t size)
   { TRASH(ptr, size); }
 
-  virtual int query(const char *buffer, uint length, int scan_mode)=0;
+  virtual int query(const char *buffer, uint length, int scan_mode, void *scan_info)=0;
   virtual FEDERATEDX_IO_RESULT *store_result()=0;
 
   virtual size_t max_query_size() const=0;
@@ -262,6 +277,25 @@ public:
   void stmt_autocommit();
 };
 
+typedef struct partial_read_info {
+    int partial_read_mode;
+
+    // query infos
+    DYNAMIC_STRING partial_read_query;
+    DYNAMIC_STRING partial_read_filter;
+    bool need_for_update;
+
+    // shard read infos
+    const char** shard_names;
+    uint shard_num;
+    uint sharded_offset;
+
+    // range read infos
+    const char** range_values;
+    Field *part_col;
+    uint range_num;
+    uint range_offset;
+} partial_read_info;
 
 /*
   Class definition for the storage engine
@@ -287,6 +321,18 @@ class ha_federatedx: public handler
       Array of all stored results we get during a query execution.
   */
   DYNAMIC_ARRAY results;
+  // the following 4 fields is related to partial read of vitess table
+  partial_read_info pr_info;
+  int partial_read_scan_mode;
+  // the partial read mode from sql hint
+  int partial_read_mode_by_hint;
+  Field *part_col;
+
+  const char *local_part_col_name;
+  const char *local_part_values[HA_FEDERATEDX_VITESS_MAX_PART_NUM];
+  my_ulonglong local_part_value_num;
+  FEDERATEDX_IO_RESULT *local_shard_info_result;
+
   bool position_called;
   uint fetch_num; // stores the fetch num
   int remote_error_number;
@@ -295,6 +341,7 @@ class ha_federatedx: public handler
   bool insert_dup_update, table_will_be_deleted;
   DYNAMIC_STRING bulk_insert;
   DYNAMIC_STRING additionalFilter;
+  bool has_equal_filter;
 
 private:
   /*
@@ -456,6 +503,7 @@ public:
     and allocate it again
   */
   int rnd_init(bool scan);                                      //required
+  void check_partial_read();                                      //required
   int rnd_end();
   int rnd_next(uchar *buf);                                      //required
   int rnd_pos(uchar *buf, uchar *pos);                            //required
