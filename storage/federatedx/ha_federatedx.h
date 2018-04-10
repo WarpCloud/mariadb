@@ -530,6 +530,9 @@ public:
   int external_lock(THD *thd, int lock_type);
   int reset(void);
   int free_result(void);
+  uint init_shard_info(federatedx_io *io);
+  uint init_global_range_info(federatedx_io *io);
+  uint init_local_range_info(federatedx_io *io);
 };
 
 extern const char ident_quote_char;              // Character for quoting
