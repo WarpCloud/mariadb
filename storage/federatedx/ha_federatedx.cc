@@ -3773,6 +3773,182 @@ bool is_valid_shard_name(const char* shard_name, const char* database_name) {
   return validate_shard;
 }
 
+uint ha_federatedx::init_shard_info(federatedx_io *io) {
+  // initialize shard name infomation for vitess table
+  DYNAMIC_ARRAY shard_infos;
+  uint error_code = 0;
+  my_init_dynamic_array(&shard_infos, sizeof(char **), 4, 4, MYF(0));
+  if (io->query("SHOW vitess_shards", 18, SCAN_MODE_DEFAULT, NULL)) {
+    mysql_mutex_lock(&share->s->mutex);
+    if (share->s->shard_num == 0) {
+      share->s->shard_num = 10000;
+    }
+    mysql_mutex_unlock(&share->s->mutex);
+    return 0;
+  } else {
+    FEDERATEDX_IO_RESULT *shard_info_result = NULL;
+    FEDERATEDX_IO_ROW *row;
+    shard_info_result = io->store_result();
+    if (shard_info_result == NULL) {
+      mysql_mutex_lock(&share->s->mutex);
+      if (share->s->shard_num == 0) {
+        share->s->shard_num = 10000;
+      }
+      mysql_mutex_unlock(&share->s->mutex);
+      return 0;
+    } else {
+      my_ulonglong rownum = io->get_num_rows(shard_info_result);
+      for (my_ulonglong i = 0; i < rownum; i++) {
+        if (!(row = io->fetch_row(shard_info_result, NULL))) {
+          io->free_result(shard_info_result);
+          error_code = ER_QUERY_ON_FOREIGN_DATA_SOURCE;
+          return error_code;
+        }
+
+        const char *shard_name = io->get_column_data(row, 0);
+        if (is_valid_shard_name(shard_name, io->get_database())) {
+          insert_dynamic(&shard_infos, &shard_name);
+        }
+      }
+
+      if (shard_infos.elements == 0) {
+        // do not found any valid shard name, must be something wrong
+        // in the remote vitess server
+        io->free_result(shard_info_result);
+        delete_dynamic(&shard_infos);
+        error_code = ER_QUERY_ON_FOREIGN_DATA_SOURCE;
+        return error_code;
+      } else {
+        // set the shard info into server
+        mysql_mutex_lock(&share->s->mutex);
+        if (share->s->shard_num == 0) {
+          for (uint i = 0; i < shard_infos.elements; i++) {
+            const char **shard_name = dynamic_element(&shard_infos, i, const char**);
+            share->s->shard_names[i] = strdup_root(&share->s->mem_root, *shard_name);
+          }
+          share->s->shard_num = shard_infos.elements;
+        }
+        mysql_mutex_unlock(&share->s->mutex);
+        io->free_result(shard_info_result);
+        delete_dynamic(&shard_infos);
+      }
+    }
+    return 0;
+  }
+}
+
+uint ha_federatedx::init_global_range_info(federatedx_io *io) {
+  uint error_code = 0;
+  char range_info_query_buffer[FEDERATEDX_QUERY_BUFFER_SIZE];
+  String query(range_info_query_buffer, sizeof(range_info_query_buffer), &my_charset_bin);
+  query.length(0);
+  query.append(STRING_WITH_LEN("SHOW VITESS_RANGE_INFO "));
+  query.append(STRING_WITH_LEN("`"));
+  query.append(share->table_name, share->table_name_length);
+  query.append(STRING_WITH_LEN("`"));
+  FEDERATEDX_IO_RESULT *shard_info_result = NULL;
+  FEDERATEDX_IO_ROW *row;
+  if (io->query(query.ptr(), query.length(), SCAN_MODE_DEFAULT, NULL)) {
+    mysql_mutex_lock(&share->s->mutex);
+    if (share->part_col_name == 0) {
+      share->part_col_name = strdup_root(&share->mem_root, "no_part_col");
+      share->part_value_num = 0;
+    }
+    mysql_mutex_unlock(&share->s->mutex);
+    return 0;
+  } else {
+    shard_info_result = io->store_result();
+    if (shard_info_result == NULL) {
+      mysql_mutex_lock(&share->s->mutex);
+      if (share->part_col_name == 0) {
+        share->part_col_name = strdup_root(&share->mem_root, "no_part_col");
+        share->part_value_num = 0;
+      }
+      mysql_mutex_unlock(&share->s->mutex);
+      return 0;
+    } else {
+      my_ulonglong rownum = io->get_num_rows(shard_info_result);
+      if (rownum == 0) {
+        // not range info
+        mysql_mutex_lock(&share->s->mutex);
+        if (share->part_col_name == 0) {
+          share->part_col_name = strdup_root(&share->mem_root, "no_part_col");
+          share->part_value_num = rownum;
+        }
+        mysql_mutex_unlock(&share->s->mutex);
+      } else {
+        const char *range_values[HA_FEDERATEDX_VITESS_MAX_PART_NUM];
+        const char *part_col_name;
+        for (my_ulonglong i = 0; i < rownum; i++) {
+          if (!(row = io->fetch_row(shard_info_result, NULL))) {
+            io->free_result(shard_info_result);
+            error_code = ER_QUERY_ON_FOREIGN_DATA_SOURCE;
+            return error_code;
+          }
+          if (i == 0) {
+            part_col_name = io->get_column_data(row, 0);
+          }
+          range_values[i] = io->get_column_data(row, 1);
+        }
+        // todo should use per share mutex
+        mysql_mutex_lock(&share->s->mutex);
+        if (share->part_col_name == 0) {
+          share->part_col_name = strdup_root(&share->mem_root, part_col_name);
+          for (my_ulonglong i = 0; i < rownum; i++) {
+            share->part_values[i] = strdup_root(&share->mem_root, range_values[i]);
+          }
+          share->part_value_num = rownum;
+        }
+        mysql_mutex_unlock(&share->s->mutex);
+      }
+      io->free_result(shard_info_result);
+      return 0;
+    }
+  }
+}
+
+uint ha_federatedx::init_local_range_info(federatedx_io *io) {
+  uint error_code;
+  char range_info_query_buffer[FEDERATEDX_QUERY_BUFFER_SIZE];
+  String query(range_info_query_buffer, sizeof(range_info_query_buffer), &my_charset_bin);
+  query.length(0);
+  query.append(STRING_WITH_LEN("SHOW VITESS_RANGE_INFO "));
+  query.append(share->table_name, share->table_name_length);
+  FEDERATEDX_IO_ROW *row;
+  if (io->query(query.ptr(), query.length(), SCAN_MODE_DEFAULT, NULL)) {
+    local_part_col_name = "no_part_col";
+    local_part_value_num = 0;
+  } else {
+    local_shard_info_result = io->store_result();
+    if (local_shard_info_result == NULL) {
+      local_part_col_name = "no_part_col";
+      local_part_value_num = 0;
+    } else {
+      my_ulonglong rownum = io->get_num_rows(local_shard_info_result);
+      if (rownum == 0) {
+        // not range info
+        local_part_col_name = "no_part_col";
+        local_part_value_num = 0;
+      } else {
+        for (my_ulonglong i = 0; i < rownum; i++) {
+          if (!(row = io->fetch_row(local_shard_info_result, NULL))) {
+            io->free_result(local_shard_info_result);
+            local_part_col_name = "no_part_col";
+            error_code = ER_QUERY_ON_FOREIGN_DATA_SOURCE;
+            return error_code;
+          }
+          if (i == 0) {
+            local_part_col_name = io->get_column_data(row, 0);
+          }
+          local_part_values[i] = io->get_column_data(row, 1);
+        }
+        local_part_value_num = rownum;
+      }
+    }
+  }
+  return 0;
+}
+
 int ha_federatedx::info(uint flag)
 {
   uint error_code;
@@ -3817,166 +3993,23 @@ int ha_federatedx::info(uint flag)
   if (flag & (HA_STATUS_VARIABLE | HA_STATUS_CONST)) {
     // fill the shard info if necessary
     if (share->s->shard_num == 0 && !strcasecmp((*iop)->get_scheme(), "vitess")) {
-      // initialize shard name infomation for vitess table
-      DYNAMIC_ARRAY shard_infos;
-      my_init_dynamic_array(&shard_infos, sizeof(char **), 4, 4, MYF(0));
-      if ((*iop)->query("SHOW vitess_shards", 18, SCAN_MODE_DEFAULT, NULL)) {
-        mysql_mutex_lock(&share->s->mutex);
-        if (share->s->shard_num == 0) {
-          share->s->shard_num = 10000;
-        }
-        mysql_mutex_unlock(&share->s->mutex);
-      } else {
-        FEDERATEDX_IO_RESULT *shard_info_result = NULL;
-        FEDERATEDX_IO_ROW *row;
-        shard_info_result = (*iop)->store_result();
-        if (shard_info_result == NULL) {
-          mysql_mutex_lock(&share->s->mutex);
-          if (share->s->shard_num == 0) {
-            share->s->shard_num = 10000;
-          }
-          mysql_mutex_unlock(&share->s->mutex);
-        } else {
-          my_ulonglong rownum = (*iop)->get_num_rows(shard_info_result);
-          for (my_ulonglong i = 0; i < rownum; i++) {
-            if (!(row = (*iop)->fetch_row(shard_info_result, NULL))) {
-              (*iop)->free_result(shard_info_result);
-              goto error;
-            }
-
-            const char *shard_name = (*iop)->get_column_data(row, 0);
-            if (is_valid_shard_name(shard_name, (*iop)->get_database())) {
-              insert_dynamic(&shard_infos, &shard_name);
-            }
-          }
-
-          if (shard_infos.elements == 0) {
-            // do not found any valid shard name, must be something wrong
-            // in the remote vitess server
-            (*iop)->free_result(shard_info_result);
-            delete_dynamic(&shard_infos);
-            error_code = ER_QUERY_ON_FOREIGN_DATA_SOURCE;
-            goto fail;
-          } else {
-            // set the shard info into server
-            mysql_mutex_lock(&share->s->mutex);
-            if (share->s->shard_num == 0) {
-              for (uint i = 0; i < shard_infos.elements; i++) {
-                const char **shard_name = dynamic_element(&shard_infos, i, const char**);
-                share->s->shard_names[i] = strdup_root(&share->s->mem_root, *shard_name);
-              }
-              share->s->shard_num = shard_infos.elements;
-            }
-            mysql_mutex_unlock(&share->s->mutex);
-            (*iop)->free_result(shard_info_result);
-            delete_dynamic(&shard_infos);
-          }
-        }
+      if ((error_code = init_shard_info(*iop))) {
+        goto fail;
       }
     }
 
+    // fill global range info if necessary
     if (cache_range_info && share->part_col_name == NULL && !strcasecmp((*iop)->get_scheme(), "vitess")) {
-      char range_info_query_buffer[FEDERATEDX_QUERY_BUFFER_SIZE];
-      String query(range_info_query_buffer, sizeof(range_info_query_buffer), &my_charset_bin);
-      query.length(0);
-      query.append(STRING_WITH_LEN("SHOW VITESS_RANGE_INFO "));
-      query.append(STRING_WITH_LEN("`"));
-      query.append(share->table_name, share->table_name_length);
-      query.append(STRING_WITH_LEN("`"));
-      FEDERATEDX_IO_RESULT *shard_info_result = NULL;
-      FEDERATEDX_IO_ROW *row;
-      if ((*iop)->query(query.ptr(), query.length(), SCAN_MODE_DEFAULT, NULL)) {
-        mysql_mutex_lock(&share->s->mutex);
-        if (share->part_col_name == 0) {
-          share->part_col_name = strdup_root(&share->mem_root, "no_part_col");
-          share->part_value_num = 0;
-        }
-        mysql_mutex_unlock(&share->s->mutex);
-      } else {
-        shard_info_result = (*iop)->store_result();
-        if (shard_info_result == NULL) {
-          mysql_mutex_lock(&share->s->mutex);
-          if (share->part_col_name == 0) {
-            share->part_col_name = strdup_root(&share->mem_root, "no_part_col");
-            share->part_value_num = 0;
-          }
-          mysql_mutex_unlock(&share->s->mutex);
-        } else {
-          my_ulonglong rownum = (*iop)->get_num_rows(shard_info_result);
-          if (rownum == 0) {
-            // not range info
-            mysql_mutex_lock(&share->s->mutex);
-            if (share->part_col_name == 0) {
-              share->part_col_name = strdup_root(&share->mem_root, "no_part_col");
-              share->part_value_num = rownum;
-            }
-            mysql_mutex_unlock(&share->s->mutex);
-          } else {
-            const char *range_values[HA_FEDERATEDX_VITESS_MAX_PART_NUM];
-            const char *part_col_name;
-            for (my_ulonglong i = 0; i < rownum; i++) {
-              if (!(row = (*iop)->fetch_row(shard_info_result, NULL))) {
-                (*iop)->free_result(shard_info_result);
-                goto error;
-              }
-              if (i == 0) {
-                part_col_name = (*iop)->get_column_data(row, 0);
-              }
-              range_values[i] = (*iop)->get_column_data(row, 1);
-            }
-            // todo should use per share mutex
-            mysql_mutex_lock(&share->s->mutex);
-            if (share->part_col_name == 0) {
-              share->part_col_name = strdup_root(&share->mem_root, part_col_name);
-              for (my_ulonglong i = 0; i < rownum; i++) {
-                share->part_values[i] = strdup_root(&share->mem_root, range_values[i]);
-              }
-              share->part_value_num = rownum;
-            }
-            mysql_mutex_unlock(&share->s->mutex);
-          }
-          (*iop)->free_result(shard_info_result);
-        }
+      if ((error_code = init_global_range_info(*iop))) {
+        goto error;
       }
     }
 
+    // fill local range info if necessary
     if (support_partial_read && !cache_range_info && local_part_col_name == NULL
         && !strcasecmp((*iop)->get_scheme(), "vitess")) {
-      char range_info_query_buffer[FEDERATEDX_QUERY_BUFFER_SIZE];
-      String query(range_info_query_buffer, sizeof(range_info_query_buffer), &my_charset_bin);
-      query.length(0);
-      query.append(STRING_WITH_LEN("SHOW VITESS_RANGE_INFO "));
-      query.append(share->table_name, share->table_name_length);
-      FEDERATEDX_IO_ROW *row;
-      if ((*iop)->query(query.ptr(), query.length(), SCAN_MODE_DEFAULT, NULL)) {
-        local_part_col_name = "no_part_col";
-        local_part_value_num = 0;
-      } else {
-        local_shard_info_result = (*iop)->store_result();
-        if (local_shard_info_result == NULL) {
-          local_part_col_name = "no_part_col";
-          local_part_value_num = 0;
-        } else {
-          my_ulonglong rownum = (*iop)->get_num_rows(local_shard_info_result);
-          if (rownum == 0) {
-            // not range info
-            local_part_col_name = "no_part_col";
-            local_part_value_num = 0;
-          } else {
-            for (my_ulonglong i = 0; i < rownum; i++) {
-              if (!(row = (*iop)->fetch_row(local_shard_info_result, NULL))) {
-                (*iop)->free_result(local_shard_info_result);
-                local_part_col_name = "no_part_col";
-                goto error;
-              }
-              if (i == 0) {
-                local_part_col_name = (*iop)->get_column_data(row, 0);
-              }
-              local_part_values[i] = (*iop)->get_column_data(row, 1);
-            }
-            local_part_value_num = rownum;
-          }
-        }
+      if ((error_code = init_local_range_info(*iop))) {
+        goto error;
       }
     }
   }
