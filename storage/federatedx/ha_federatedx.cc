@@ -840,6 +840,7 @@ ha_federatedx::ha_federatedx(handlerton *hton,
   part_col = NULL;
   local_part_col_name = NULL;
   local_shard_info_result = NULL;
+  max_query_size = 0;
 }
 
 
@@ -1906,6 +1907,13 @@ ha_rows ha_federatedx::records_in_range(uint inx, key_range *start_key,
 
 */
   DBUG_ENTER("ha_federatedx::records_in_range");
+  if (ha_thd() && optimizer_flag(ha_thd(), OPTIMIZER_SWITCH_FEDX_CBO_WITH_ACTUAL_RECORDS)) {
+    ha_rows ret = stats.records/100;
+    if (ret < FEDERATEDX_RECORDS_IN_RANGE) {
+      ret = FEDERATEDX_RECORDS_IN_RANGE;
+    }
+    DBUG_RETURN(ret);
+  }
   DBUG_RETURN(FEDERATEDX_RECORDS_IN_RANGE);
 }
 
@@ -3389,10 +3397,10 @@ start:
     KEY *key_info = &(table->key_info[active_index]);
     bool need_query = false;
     bool need_construct_column_names = true;
+    my_ulonglong max_in_size = ha_thd() ? FEDERATEDX_MAX_IN_SIZE : ha_thd()->variables.fedx_bkah_size;
 
-    for (uint i = 0;i < FEDERATEDX_MAX_IN_SIZE; i++) {
+    for (uint i = 0;i < max_in_size; i++) {
       if (!(range_res = mrr_funcs.next(mrr_iter, &mrr_cur_range))) {
-
         if (i > 0) {
           in_values.append(STRING_WITH_LEN(", "));
           if (need_construct_column_names) {
@@ -3460,6 +3468,10 @@ prepare_for_next_key_part:
 
       } else {
         // no more key
+        break;
+      }
+
+      if (max_query_size > 0 && in_values.length() > max_query_size * 0.9) {
         break;
       }
     }
@@ -3793,6 +3805,7 @@ int ha_federatedx::info(uint flag)
     if (flag & HA_STATUS_CONST)
       stats.block_size= 4096;
 
+    max_query_size = (*iop)->max_query_size();
     if ((*iop)->table_metadata(&stats, share->table_name,
                                share->table_name_length, flag))
       goto error;
@@ -4067,6 +4080,7 @@ int ha_federatedx::reset(void)
   local_part_col_name = NULL;
   local_part_value_num = 0;
   part_col = NULL;
+  max_query_size = 0;
 
   if (stored_result)
     insert_dynamic(&results, (uchar*) &stored_result);

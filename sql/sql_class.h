@@ -560,6 +560,7 @@ typedef struct system_variables
   ha_rows select_limit;
   ha_rows max_join_size;
   ha_rows max_vitess_complete_read_size;
+  ha_rows fedx_bkah_size;
   ha_rows vitess_partial_read_type;
   ha_rows join_limit_scale;
   ha_rows expensive_subquery_limit;
