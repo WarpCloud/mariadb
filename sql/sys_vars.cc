@@ -2189,6 +2189,13 @@ static Sys_var_harows Sys_max_vitess_complete_read_size(
         VALID_RANGE(1, HA_POS_ERROR), DEFAULT(3000000L), BLOCK_SIZE(1),
         NO_MUTEX_GUARD, NOT_IN_BINLOG);
 
+static Sys_var_harows Sys_fedx_bkah_size(
+        "fedx_bkah_size",
+        "the max size of a complete read for vitess table",
+        SESSION_VAR(fedx_bkah_size), CMD_LINE(REQUIRED_ARG),
+        VALID_RANGE(1, HA_POS_ERROR), DEFAULT(128), BLOCK_SIZE(1),
+        NO_MUTEX_GUARD, NOT_IN_BINLOG);
+
 static Sys_var_harows Sys_vitess_partial_read_type(
         "vitess_partial_read_type",
         "the preferred partial read type for vitess table, 0 range read, 1 shard read, 2 both, others none",
@@ -2488,6 +2495,7 @@ export const char *optimizer_switch_names[]=
   "fedx_range_read",
   "fedx_auto_partial_read_on_limit",
   "fedx_cache_range_info",
+  "fedx_cbo_with_actual_records",
   "default",
   NullS
 };

@@ -333,6 +333,7 @@ class ha_federatedx: public handler
   my_ulonglong local_part_value_num;
   FEDERATEDX_IO_RESULT *local_shard_info_result;
 
+  my_ulonglong max_query_size;
   bool position_called;
   uint fetch_num; // stores the fetch num
   int remote_error_number;
