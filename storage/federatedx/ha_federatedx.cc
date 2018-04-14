@@ -841,6 +841,8 @@ ha_federatedx::ha_federatedx(handlerton *hton,
   local_part_col_name = NULL;
   local_shard_info_result = NULL;
   max_query_size = 0;
+  index_cardinality_init = false;
+  bzero(index_cardinality, sizeof(index_cardinality));
 }
 
 
@@ -1895,6 +1897,165 @@ static void free_share(federatedx_txn *txn, FEDERATEDX_SHARE *share)
   DBUG_VOID_RETURN;
 }
 
+enum range_type {
+    EQUAL = 0,
+    ONE_WAY_RANGE,
+    TWO_WAY_RANGE,
+    NONE,
+};
+
+bool compare_key_part_and_extract_actual_string_length(KEY_PART_INFO *key_part, const uchar *start_ptr,
+                                                       const uchar *end_ptr, uint length, uint *actual_string_length) {
+  bool ret = true;
+  if (key_part->key_part_flag & HA_VAR_LENGTH_PART) {
+    // for var length key, compare the const with actual length
+    uint start_length = uint2korr(start_ptr);
+    uint end_length = uint2korr(end_ptr);
+    if (start_length != end_length) {
+      ret = false;
+    } else {
+      for (uint i = 0; i < start_length; i++) {
+        if (start_ptr[i + HA_KEY_BLOB_LENGTH] != end_ptr[i + HA_KEY_BLOB_LENGTH]) {
+          ret = false;
+          break;
+        }
+      }
+    }
+  } else {
+    for (uint i = 0; i < length; i++) {
+      if (start_ptr[i] != end_ptr[i]) {
+        ret = false;
+        break;
+      }
+    }
+  }
+
+  if (key_part->key_part_flag & HA_VAR_LENGTH_PART) {
+    uint start_length = uint2korr(start_ptr);
+    uint end_length = uint2korr(end_ptr);
+    uint actual_start_length = start_length;
+    for (uint i = 0; i < start_length; i++) {
+      if (start_ptr[i + HA_KEY_BLOB_LENGTH] == 0) {
+        actual_start_length = i;
+        break;
+      }
+    }
+    uint actual_end_length = end_length;
+    for (uint i = 0; i < end_length; i++) {
+      if (end_ptr[i + HA_KEY_BLOB_LENGTH] == 0) {
+        actual_end_length = i;
+        break;
+      }
+    }
+    uint actual_length = actual_end_length > actual_start_length ? actual_start_length : actual_end_length;
+    *actual_string_length = actual_length;
+  }
+  return ret;
+}
+
+void get_actual_string_length(KEY_PART_INFO *key_part, const uchar *ptr, uint length, uint *actual_string_length) {
+  if (key_part->key_part_flag & HA_VAR_LENGTH_PART) {
+    uint length = uint2korr(ptr);
+    uint actual_length = length;
+    for (uint i = 0; i < length; i++) {
+      if (ptr[i + HA_KEY_BLOB_LENGTH] == 0) {
+        actual_length = i;
+        break;
+      }
+    }
+    *actual_string_length = actual_length;
+  }
+}
+
+bool compare_key_and_extract_actual_string_length(KEY *key_info, key_range *start_key,
+                                                  key_range *end_key, uint *actual_string_length) {
+  if (start_key->length != end_key->length) {
+    return false;
+  }
+  uint remainder, length, value_index;
+  KEY_PART_INFO *key_part;
+  bool ret = true;
+  const uchar *start_ptr;
+  const uchar *end_ptr;
+  for (key_part = key_info->key_part, remainder = key_info->user_defined_key_parts,
+          length = start_key->length, start_ptr = start_key->key,
+          end_ptr = end_key->key, value_index = 0; ; remainder--,key_part++,value_index++) {
+      bool is_string = key_part->key_part_flag & HA_VAR_LENGTH_PART;
+      uint store_length = key_part->store_length;
+      uint part_length= MY_MIN(store_length, length);
+      bool start_null = false, end_null = false;
+      if (key_part->null_bit) {
+        if (*start_ptr++) {
+          start_null = true;
+        }
+        if (*end_ptr++) {
+          end_null = true;
+        }
+        if (start_null && end_null) {
+          goto for_next_key_part;
+        }
+      }
+
+      if (!start_null && !end_null) {
+        //both not null
+        bool same = compare_key_part_and_extract_actual_string_length(key_part, start_ptr, end_ptr, part_length, actual_string_length);
+        ret &= same;
+      } else {
+        ret = false;
+        if (is_string) {
+          // get actual string length
+          if (start_null) {
+            get_actual_string_length(key_part, end_ptr, part_length, actual_string_length);
+          }
+          if (end_null) {
+            get_actual_string_length(key_part, start_ptr, part_length, actual_string_length);
+          }
+        }
+      }
+
+for_next_key_part:
+      if (store_length >= length) {
+        break;
+      }
+      length -= store_length;
+      start_ptr += store_length - MY_TEST(key_part->null_bit);
+      end_ptr += store_length - MY_TEST(key_part->null_bit);
+  }
+  return ret;
+}
+
+bool key_range_is_null(KEY *key_info, key_range *key) {
+  if (key == NULL) {
+    return true;
+  }
+  if (key_info->key_part->null_bit && key->key[0]) {
+    return true;
+  }
+  return false;
+}
+range_type get_range_type(KEY *key_info, key_range *start_key, key_range *end_key, uint *actual_key_length) {
+  bool start_key_null = key_range_is_null(key_info, start_key);
+  bool end_key_null = key_range_is_null(key_info, end_key);
+  if (!start_key_null && !end_key_null) {
+    bool same_key = compare_key_and_extract_actual_string_length(key_info, start_key, end_key, actual_key_length);
+    if (same_key) {
+      return EQUAL;
+    } else {
+      return TWO_WAY_RANGE;
+    }
+  } else if (!start_key_null) {
+    if (start_key->flag != HA_READ_KEY_EXACT) {
+      return ONE_WAY_RANGE;
+    }
+    return EQUAL;
+  } else if (!end_key_null) {
+    if (end_key->flag != HA_READ_KEY_EXACT) {
+      return ONE_WAY_RANGE;
+    }
+    return EQUAL;
+  }
+  return NONE;
+}
 
 ha_rows ha_federatedx::records_in_range(uint inx, key_range *start_key,
                                        key_range *end_key)
@@ -1908,7 +2069,52 @@ ha_rows ha_federatedx::records_in_range(uint inx, key_range *start_key,
 */
   DBUG_ENTER("ha_federatedx::records_in_range");
   if (ha_thd() && optimizer_flag(ha_thd(), OPTIMIZER_SWITCH_FEDX_CBO_WITH_ACTUAL_RECORDS)) {
-    ha_rows ret = stats.records/100;
+    ha_rows cardinality = index_cardinality[inx];
+    ha_rows valid_index_percent = ha_thd()->variables.fedx_valid_index_cardinality_percent;
+    ha_rows valid_index_minvalue = ha_thd()->variables.fedx_valid_index_cardinality_minvalue;
+    ha_rows index_one_way_percent = ha_thd()->variables.fedx_index_one_way_percent;
+    ha_rows index_two_way_percent = ha_thd()->variables.fedx_index_two_way_percent;
+    ha_rows invalid_index_expand_factor = ha_thd()->variables.fedx_invalid_index_expand_factor;
+    if (cardinality == 0 || cardinality * 10000 < stats.records * valid_index_percent
+            || cardinality < valid_index_minvalue) {
+      // we really do not want to use invalid index, so just return invalid_index_expand_factor*stats.records
+      DBUG_RETURN(stats.records*invalid_index_expand_factor < FEDERATEDX_RECORDS_IN_RANGE ?
+                  FEDERATEDX_RECORDS_IN_RANGE : stats.records*invalid_index_expand_factor);
+    }
+
+    range_type type;
+    uint actual_key_length = 0;
+    type = get_range_type(&table->key_info[inx], start_key, end_key, &actual_key_length);
+    ha_rows ret;
+      if (type == EQUAL) {
+        ret = stats.records/index_cardinality[inx];
+      } else if (type == ONE_WAY_RANGE) {
+        ret = stats.records * index_one_way_percent /100;
+      } else if (type == TWO_WAY_RANGE) {
+        if (actual_key_length != 0) {
+          ha_rows zero_length_value = stats.records * index_two_way_percent / 100;
+          ha_rows n_length_value = stats.records / index_cardinality[inx];
+          uint key_length = start_key->length;
+          //todo this is for utf8 charset, we should find a better way to figure out the actual key length
+          if (actual_key_length * 3 > key_length) {
+            actual_key_length = key_length;
+          } else {
+            actual_key_length = actual_key_length * 3;
+          }
+          double total = zero_length_value / (double) n_length_value;
+          double scale = pow(total, actual_key_length/(double)key_length);
+          scale = total / scale;
+          double actual_rows = n_length_value * scale;
+          ret = (ha_rows) actual_rows;
+          if (ret < n_length_value) {
+            ret = n_length_value;
+          }
+        } else {
+          ret = stats.records * index_two_way_percent/100;
+        }
+      } else {
+        ret = stats.records;
+      }
     if (ret < FEDERATEDX_RECORDS_IN_RANGE) {
       ret = FEDERATEDX_RECORDS_IN_RANGE;
     }
@@ -3397,7 +3603,7 @@ start:
     KEY *key_info = &(table->key_info[active_index]);
     bool need_query = false;
     bool need_construct_column_names = true;
-    my_ulonglong max_in_size = ha_thd() ? FEDERATEDX_MAX_IN_SIZE : ha_thd()->variables.fedx_bkah_size;
+    my_ulonglong max_in_size = ha_thd() ? ha_thd()->variables.fedx_bkah_size : FEDERATEDX_MAX_IN_SIZE;
 
     for (uint i = 0;i < max_in_size; i++) {
       if (!(range_res = mrr_funcs.next(mrr_iter, &mrr_cur_range))) {
@@ -3773,8 +3979,30 @@ bool is_valid_shard_name(const char* shard_name, const char* database_name) {
   return validate_shard;
 }
 
+double ha_federatedx::scan_time()
+{
+  DBUG_PRINT("info", ("records %lu", (ulong) stats.records));
+  if (ha_thd() && optimizer_flag(ha_thd(), OPTIMIZER_SWITCH_FEDX_CBO_WITH_ACTUAL_RECORDS)) {
+    return (double)(stats.records);
+  }
+  return (double)(stats.records*1000);
+}
+
+double ha_federatedx::read_time(uint index, uint ranges, ha_rows rows)
+{
+  /*
+    Per Brian, this number is bugus, but this method must be implemented,
+    and at a later date, he intends to document this issue for handler code
+  */
+  if (ha_thd() && optimizer_flag(ha_thd(), OPTIMIZER_SWITCH_FEDX_CBO_WITH_ACTUAL_RECORDS)) {
+    return (double) rows+1;
+  }
+  return (double) rows /  20.0+1;
+}
+
 uint ha_federatedx::init_shard_info(federatedx_io *io) {
   // initialize shard name infomation for vitess table
+  DBUG_ENTER("ha_federatedx::init_shard_info");
   DYNAMIC_ARRAY shard_infos;
   uint error_code = 0;
   my_init_dynamic_array(&shard_infos, sizeof(char **), 4, 4, MYF(0));
@@ -3784,7 +4012,7 @@ uint ha_federatedx::init_shard_info(federatedx_io *io) {
       share->s->shard_num = 10000;
     }
     mysql_mutex_unlock(&share->s->mutex);
-    return 0;
+    DBUG_RETURN(0);
   } else {
     FEDERATEDX_IO_RESULT *shard_info_result = NULL;
     FEDERATEDX_IO_ROW *row;
@@ -3795,14 +4023,14 @@ uint ha_federatedx::init_shard_info(federatedx_io *io) {
         share->s->shard_num = 10000;
       }
       mysql_mutex_unlock(&share->s->mutex);
-      return 0;
+      DBUG_RETURN(0);
     } else {
       my_ulonglong rownum = io->get_num_rows(shard_info_result);
       for (my_ulonglong i = 0; i < rownum; i++) {
         if (!(row = io->fetch_row(shard_info_result, NULL))) {
           io->free_result(shard_info_result);
           error_code = ER_QUERY_ON_FOREIGN_DATA_SOURCE;
-          return error_code;
+          DBUG_RETURN(error_code);
         }
 
         const char *shard_name = io->get_column_data(row, 0);
@@ -3817,7 +4045,7 @@ uint ha_federatedx::init_shard_info(federatedx_io *io) {
         io->free_result(shard_info_result);
         delete_dynamic(&shard_infos);
         error_code = ER_QUERY_ON_FOREIGN_DATA_SOURCE;
-        return error_code;
+        DBUG_RETURN(error_code);
       } else {
         // set the shard info into server
         mysql_mutex_lock(&share->s->mutex);
@@ -3833,11 +4061,12 @@ uint ha_federatedx::init_shard_info(federatedx_io *io) {
         delete_dynamic(&shard_infos);
       }
     }
-    return 0;
+    DBUG_RETURN(0);
   }
 }
 
 uint ha_federatedx::init_global_range_info(federatedx_io *io) {
+  DBUG_ENTER("ha_federatedx::init_global_range_info");
   uint error_code = 0;
   char range_info_query_buffer[FEDERATEDX_QUERY_BUFFER_SIZE];
   String query(range_info_query_buffer, sizeof(range_info_query_buffer), &my_charset_bin);
@@ -3855,7 +4084,7 @@ uint ha_federatedx::init_global_range_info(federatedx_io *io) {
       share->part_value_num = 0;
     }
     mysql_mutex_unlock(&share->s->mutex);
-    return 0;
+    DBUG_RETURN(0);
   } else {
     shard_info_result = io->store_result();
     if (shard_info_result == NULL) {
@@ -3865,7 +4094,7 @@ uint ha_federatedx::init_global_range_info(federatedx_io *io) {
         share->part_value_num = 0;
       }
       mysql_mutex_unlock(&share->s->mutex);
-      return 0;
+      DBUG_RETURN(0);
     } else {
       my_ulonglong rownum = io->get_num_rows(shard_info_result);
       if (rownum == 0) {
@@ -3883,7 +4112,7 @@ uint ha_federatedx::init_global_range_info(federatedx_io *io) {
           if (!(row = io->fetch_row(shard_info_result, NULL))) {
             io->free_result(shard_info_result);
             error_code = ER_QUERY_ON_FOREIGN_DATA_SOURCE;
-            return error_code;
+            DBUG_RETURN(error_code);
           }
           if (i == 0) {
             part_col_name = io->get_column_data(row, 0);
@@ -3902,18 +4131,21 @@ uint ha_federatedx::init_global_range_info(federatedx_io *io) {
         mysql_mutex_unlock(&share->s->mutex);
       }
       io->free_result(shard_info_result);
-      return 0;
+      DBUG_RETURN(0);
     }
   }
 }
 
 uint ha_federatedx::init_local_range_info(federatedx_io *io) {
+  DBUG_ENTER("ha_federatedx::init_local_range_info");
   uint error_code;
   char range_info_query_buffer[FEDERATEDX_QUERY_BUFFER_SIZE];
   String query(range_info_query_buffer, sizeof(range_info_query_buffer), &my_charset_bin);
   query.length(0);
   query.append(STRING_WITH_LEN("SHOW VITESS_RANGE_INFO "));
+  query.append(STRING_WITH_LEN("`"));
   query.append(share->table_name, share->table_name_length);
+  query.append(STRING_WITH_LEN("`"));
   FEDERATEDX_IO_ROW *row;
   if (io->query(query.ptr(), query.length(), SCAN_MODE_DEFAULT, NULL)) {
     local_part_col_name = "no_part_col";
@@ -3935,7 +4167,7 @@ uint ha_federatedx::init_local_range_info(federatedx_io *io) {
             io->free_result(local_shard_info_result);
             local_part_col_name = "no_part_col";
             error_code = ER_QUERY_ON_FOREIGN_DATA_SOURCE;
-            return error_code;
+            DBUG_RETURN(error_code);
           }
           if (i == 0) {
             local_part_col_name = io->get_column_data(row, 0);
@@ -3946,7 +4178,76 @@ uint ha_federatedx::init_local_range_info(federatedx_io *io) {
       }
     }
   }
-  return 0;
+  DBUG_RETURN(0);
+}
+
+int ha_federatedx::find_index_num(const char *key_name) {
+  for (uint i = 0; i < table->s->keys; i++) {
+    if (!strcmp(table->key_info[i].name.str, key_name)) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+uint ha_federatedx::init_index_cardinality(federatedx_io *io) {
+  DBUG_ENTER("ha_federatedx::init_index_cardinality");
+  char show_index_query[FEDERATEDX_QUERY_BUFFER_SIZE];
+  String query(show_index_query, sizeof(show_index_query), &my_charset_bin);
+  query.length(0);
+  query.append(STRING_WITH_LEN("SHOW index in "));
+  query.append(STRING_WITH_LEN("`"));
+  query.append(share->table_name, share->table_name_length);
+  query.append(STRING_WITH_LEN("`"));
+  FEDERATEDX_IO_ROW *row;
+  FEDERATEDX_IO_RESULT *index_info = 0;
+  int error;
+  if (io->query(query.ptr(), query.length(), SCAN_MODE_DEFAULT, NULL)) {
+    // if query fails, we set all the cardinality to 1, and try to get
+    // the cardinality next time
+    goto no_index_info;
+  } else {
+    index_info = io->store_result();
+    if (!index_info || (io->get_num_fields(index_info) < 7)) {
+      goto no_index_info;
+    } else {
+      my_ulonglong rownum = io->get_num_rows(index_info);
+      if (rownum == 0) {
+        goto no_index_info;
+      } else {
+        for (my_ulonglong i = 0; i < rownum; i++) {
+          if (!(row = io->fetch_row(index_info, NULL))) {
+            goto no_index_info;
+          }
+          //
+          if (!io->is_column_null(row,2)) {
+            const char* key_name = io->get_column_data(row, 2);
+            int key_num;
+            if ((key_num = find_index_num(key_name)) == -1) {
+              continue;
+            }
+            if (!io->is_column_null(row, 6)) {
+              ha_rows cardinality = (ha_rows) my_strtoll10(io->get_column_data(row, 6), (char**) 0, &error);
+              index_cardinality[key_num] = cardinality;
+            } else {
+              // if no cardinality, set the default value to 1, which means we will never use this index
+              index_cardinality[key_num] = 1;
+            }
+          }
+        }
+        index_cardinality_init = true;
+      }
+    }
+  }
+  io->free_result(index_info);
+  DBUG_RETURN(0);
+
+no_index_info:
+  for (uint i = 0; i < table->s->keys; i++) {
+    index_cardinality[i] = 1;
+  }
+  io->free_result(index_info);
+  DBUG_RETURN(0);
 }
 
 int ha_federatedx::info(uint flag)
@@ -4009,6 +4310,12 @@ int ha_federatedx::info(uint flag)
     if (support_partial_read && !cache_range_info && local_part_col_name == NULL
         && !strcasecmp((*iop)->get_scheme(), "vitess")) {
       if ((error_code = init_local_range_info(*iop))) {
+        goto error;
+      }
+    }
+
+    if (!index_cardinality_init) {
+      if ((error_code = init_index_cardinality(*iop))) {
         goto error;
       }
     }

@@ -343,6 +343,8 @@ class ha_federatedx: public handler
   DYNAMIC_STRING bulk_insert;
   DYNAMIC_STRING additionalFilter;
   bool has_equal_filter;
+  ha_rows index_cardinality[MAX_KEY+1];
+  bool index_cardinality_init;
 
 private:
   /*
@@ -451,22 +453,11 @@ public:
     The reason for "records * 1000" is that such a large number forces
     this to use indexes "
   */
-  double scan_time()
-  {
-    DBUG_PRINT("info", ("records %lu", (ulong) stats.records));
-    return (double)(stats.records*1000);
-  }
+  double scan_time();
   /*
     The next method will never be called if you do not implement indexes.
   */
-  double read_time(uint index, uint ranges, ha_rows rows)
-  {
-    /*
-      Per Brian, this number is bugus, but this method must be implemented,
-      and at a later date, he intends to document this issue for handler code
-    */
-    return (double) rows /  20.0+1;
-  }
+  double read_time(uint index, uint ranges, ha_rows rows);
 
   const key_map *keys_to_use_for_scanning() { return &key_map_full; }
   /*
@@ -533,6 +524,8 @@ public:
   uint init_shard_info(federatedx_io *io);
   uint init_global_range_info(federatedx_io *io);
   uint init_local_range_info(federatedx_io *io);
+  uint init_index_cardinality(federatedx_io *io);
+  int find_index_num(const char* key_name);
 };
 
 extern const char ident_quote_char;              // Character for quoting
