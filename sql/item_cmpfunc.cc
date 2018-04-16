@@ -6266,6 +6266,7 @@ String *Item_cond_and::partial_to_str(String *str) const {
   String str1(buff, sizeof(buff), system_charset_info);
   str1.length(0);
   bool first = true;
+  bool has_any = false;
   list_node *first_node = list.first_node_const();
   for (uint i = 0; i < list.elements; i++) {
     if (!((Item *) first_node->info)->to_str(&str1)) {
@@ -6280,10 +6281,13 @@ String *Item_cond_and::partial_to_str(String *str) const {
       str->append(STRING_WITH_LEN(") and ("));
     }
     str->append(str1.ptr(), str1.length());
+    has_any = true;
     str1.length(0);
     first_node = first_node->next;
   }
-  str->append(STRING_WITH_LEN(")"));
+  if (has_any) {
+      str->append(STRING_WITH_LEN(")"));
+  }
   return str;
 }
 
