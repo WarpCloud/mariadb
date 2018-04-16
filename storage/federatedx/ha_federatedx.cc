@@ -4409,7 +4409,9 @@ int ha_federatedx::reset(void)
   position_called= FALSE;
   dynstr_trunc(&additionalFilter, additionalFilter.length);
   use_default_mrr = TRUE;
-  scan_mode = optimizer_flag(thd, OPTIMIZER_SWITCH_FEDX_SCAN_MODE_OLAP) ? SCAN_MODE_OLAP : SCAN_MODE_OLTP;
+  if (thd) {
+    scan_mode = optimizer_flag(thd, OPTIMIZER_SWITCH_FEDX_SCAN_MODE_OLAP) ? SCAN_MODE_OLAP : SCAN_MODE_OLTP;
+  }
   partial_read_scan_mode = scan_mode;
   is_delete_update_target = FALSE;
   pr_info.sharded_offset = 0;
