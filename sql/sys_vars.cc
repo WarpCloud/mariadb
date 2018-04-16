@@ -2200,7 +2200,7 @@ static Sys_var_harows Sys_fedx_valid_index_cardinality_percent(
         "fedx_valid_index_cardinality_percent",
         "the max size of a complete read for vitess table",
         SESSION_VAR(fedx_valid_index_cardinality_percent), CMD_LINE(REQUIRED_ARG),
-        VALID_RANGE(0, 10000), DEFAULT(30), BLOCK_SIZE(1),
+        VALID_RANGE(0, 10000), DEFAULT(10), BLOCK_SIZE(1),
         NO_MUTEX_GUARD, NOT_IN_BINLOG);
 
 static Sys_var_harows Sys_fedx_valid_index_cardinality_minvalue(
