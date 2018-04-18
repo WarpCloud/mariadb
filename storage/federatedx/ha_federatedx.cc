@@ -3511,7 +3511,9 @@ void ha_federatedx::set_err_status(int err) {
   Diagnostics_area* da = thd->get_stmt_da();
   DBUG_ASSERT(da);
 
+  da->set_overwrite_status(true);
   da->set_error_status(err);
+  DBUG_VOID_RETURN;
 }
 
 int ha_federatedx::free_result()
