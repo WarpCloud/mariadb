@@ -533,6 +533,8 @@ public:
   uint init_shard_info(federatedx_io *io);
   uint init_global_range_info(federatedx_io *io);
   uint init_local_range_info(federatedx_io *io);
+
+  void set_err_status(int result);
 };
 
 extern const char ident_quote_char;              // Character for quoting
