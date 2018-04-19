@@ -3315,15 +3315,15 @@ int ha_federatedx::read_multi_in_first(String *in_filter_str)
   if (additionalFilter.length != 0) {
       if (sql_query.append(STRING_WITH_LEN(" AND ("))) {
           dynstr_trunc(&additionalFilter, additionalFilter.length);
-          DBUG_RETURN(1);
+          DBUG_RETURN(ER_ENGINE_OUT_OF_MEMORY);
       }
       if (sql_query.append(additionalFilter.str, additionalFilter.length)) {
           dynstr_trunc(&additionalFilter, additionalFilter.length);
-          DBUG_RETURN(1);
+          DBUG_RETURN(ER_ENGINE_OUT_OF_MEMORY);
       }
       if (sql_query.append(STRING_WITH_LEN(")"))) {
           dynstr_trunc(&additionalFilter, additionalFilter.length);
-          DBUG_RETURN(1);
+          DBUG_RETURN(ER_ENGINE_OUT_OF_MEMORY);
       }
   }
 
@@ -3490,8 +3490,30 @@ prepare_for_next_key_part:
   }
   while ((result == HA_ERR_END_OF_FILE) && !range_res);
 
+  if (result == 1) {
+    result = ER_UNKNOWN_ERROR;
+  }
+  if (result && result != HA_ERR_END_OF_FILE) {
+    set_err_status(result);
+  }
   DBUG_PRINT("exit",("ha_federatedx::multi_range_read_next result %d", result));
   DBUG_RETURN(result);
+}
+
+void ha_federatedx::set_err_status(int err) {
+  DBUG_ENTER("ha_federatedx::set_err_status");
+  if (!err)
+    return;
+
+  THD* thd = ha_thd();
+  DBUG_ASSERT(thd);
+
+  Diagnostics_area* da = thd->get_stmt_da();
+  DBUG_ASSERT(da);
+
+  da->set_overwrite_status(true);
+  da->set_error_status(err);
+  DBUG_VOID_RETURN;
 }
 
 int ha_federatedx::free_result()
