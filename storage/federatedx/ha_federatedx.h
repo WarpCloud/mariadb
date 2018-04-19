@@ -512,6 +512,7 @@ public:
              HA_CREATE_INFO *create_info);                      //required
   ha_rows records_in_range(uint inx, key_range *start_key,
                                    key_range *end_key);
+  bool is_valid_index(uint inx);
   uint8 table_cache_type() { return HA_CACHE_TBL_NOCACHE; }
 
   THR_LOCK_DATA **store_lock(THD *thd, THR_LOCK_DATA **to,

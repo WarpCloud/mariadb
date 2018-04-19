@@ -2057,6 +2057,23 @@ range_type get_range_type(KEY *key_info, key_range *start_key, key_range *end_ke
   return NONE;
 }
 
+bool ha_federatedx::is_valid_index(uint inx) {
+  DBUG_ENTER("ha_federatedx::is_valid_index");
+  if (ha_thd() && optimizer_flag(ha_thd(), OPTIMIZER_SWITCH_FEDX_CBO_WITH_ACTUAL_RECORDS)) {
+    ha_rows cardinality = index_cardinality[inx];
+    ha_rows valid_index_percent = ha_thd()->variables.fedx_valid_index_cardinality_percent;
+    ha_rows valid_index_minvalue = ha_thd()->variables.fedx_valid_index_cardinality_minvalue;
+    if (cardinality == 0 || cardinality * 10000 < stats.records * valid_index_percent
+        || cardinality < valid_index_minvalue) {
+      DBUG_RETURN(false);
+    } else {
+      DBUG_RETURN(true);
+    }
+  } else {
+    DBUG_RETURN(true);
+  }
+}
+
 ha_rows ha_federatedx::records_in_range(uint inx, key_range *start_key,
                                        key_range *end_key)
 {
@@ -2069,14 +2086,10 @@ ha_rows ha_federatedx::records_in_range(uint inx, key_range *start_key,
 */
   DBUG_ENTER("ha_federatedx::records_in_range");
   if (ha_thd() && optimizer_flag(ha_thd(), OPTIMIZER_SWITCH_FEDX_CBO_WITH_ACTUAL_RECORDS)) {
-    ha_rows cardinality = index_cardinality[inx];
-    ha_rows valid_index_percent = ha_thd()->variables.fedx_valid_index_cardinality_percent;
-    ha_rows valid_index_minvalue = ha_thd()->variables.fedx_valid_index_cardinality_minvalue;
     ha_rows index_one_way_percent = ha_thd()->variables.fedx_index_one_way_percent;
     ha_rows index_two_way_percent = ha_thd()->variables.fedx_index_two_way_percent;
     ha_rows invalid_index_expand_factor = ha_thd()->variables.fedx_invalid_index_expand_factor;
-    if (cardinality == 0 || cardinality * 10000 < stats.records * valid_index_percent
-            || cardinality < valid_index_minvalue) {
+    if (!is_valid_index(inx)) {
       // we really do not want to use invalid index, so just return invalid_index_expand_factor*stats.records
       DBUG_RETURN(stats.records*invalid_index_expand_factor < FEDERATEDX_RECORDS_IN_RANGE ?
                   FEDERATEDX_RECORDS_IN_RANGE : stats.records*invalid_index_expand_factor);
@@ -3983,7 +3996,7 @@ double ha_federatedx::scan_time()
 {
   DBUG_PRINT("info", ("records %lu", (ulong) stats.records));
   if (ha_thd() && optimizer_flag(ha_thd(), OPTIMIZER_SWITCH_FEDX_CBO_WITH_ACTUAL_RECORDS)) {
-    return (double)(stats.records);
+    return (double)(stats.records * ha_thd()->variables.fedx_scan_expand_factor);
   }
   return (double)(stats.records*1000);
 }
@@ -3995,7 +4008,14 @@ double ha_federatedx::read_time(uint index, uint ranges, ha_rows rows)
     and at a later date, he intends to document this issue for handler code
   */
   if (ha_thd() && optimizer_flag(ha_thd(), OPTIMIZER_SWITCH_FEDX_CBO_WITH_ACTUAL_RECORDS)) {
-    return (double) rows+1;
+    if (is_valid_index(index)) {
+      return (double) rows + 1;
+    } else {
+      ha_rows invalid_index_expand_factor = ha_thd()->variables.fedx_invalid_index_expand_factor;
+      double ret = stats.records * invalid_index_expand_factor > rows ? stats.records * invalid_index_expand_factor : rows;
+      ret = ret * ha_thd()->variables.fedx_scan_expand_factor + 1;
+      return ret;
+    }
   }
   return (double) rows /  20.0+1;
 }

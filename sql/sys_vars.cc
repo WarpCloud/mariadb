@@ -2231,6 +2231,12 @@ static Sys_var_harows Sys_fedx_invalid_index_expand_factor(
         VALID_RANGE(0, 10000), DEFAULT(10), BLOCK_SIZE(1),
         NO_MUTEX_GUARD, NOT_IN_BINLOG);
 
+static Sys_var_harows Sys_fedx_scan_expand_factor(
+        "fedx_scan_expand_factor",
+        "the max size of a complete read for vitess table",
+        SESSION_VAR(fedx_scan_expand_factor), CMD_LINE(REQUIRED_ARG),
+        VALID_RANGE(0, 1000000L), DEFAULT(100), BLOCK_SIZE(1),
+        NO_MUTEX_GUARD, NOT_IN_BINLOG);
 
 static Sys_var_harows Sys_vitess_partial_read_type(
         "vitess_partial_read_type",
