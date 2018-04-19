@@ -3491,7 +3491,7 @@ prepare_for_next_key_part:
   while ((result == HA_ERR_END_OF_FILE) && !range_res);
 
   if (result == 1) {
-    result == ER_UNKNOWN_ERROR;
+    result = ER_UNKNOWN_ERROR;
   }
   if (result && result != HA_ERR_END_OF_FILE) {
     set_err_status(result);

@@ -503,6 +503,3 @@ compile_commands.json
 .editorconfig
 .kateconfig
 *.kdev4
-
-.idea/
-cmake-build-debug/
