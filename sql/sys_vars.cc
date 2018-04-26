@@ -2196,6 +2196,48 @@ static Sys_var_harows Sys_fedx_bkah_size(
         VALID_RANGE(1, HA_POS_ERROR), DEFAULT(128), BLOCK_SIZE(1),
         NO_MUTEX_GUARD, NOT_IN_BINLOG);
 
+static Sys_var_harows Sys_fedx_valid_index_cardinality_percent(
+        "fedx_valid_index_cardinality_percent",
+        "the max size of a complete read for vitess table",
+        SESSION_VAR(fedx_valid_index_cardinality_percent), CMD_LINE(REQUIRED_ARG),
+        VALID_RANGE(0, 10000), DEFAULT(10), BLOCK_SIZE(1),
+        NO_MUTEX_GUARD, NOT_IN_BINLOG);
+
+static Sys_var_harows Sys_fedx_valid_index_cardinality_minvalue(
+        "fedx_valid_index_cardinality_minvalue",
+        "the max size of a complete read for vitess table",
+        SESSION_VAR(fedx_valid_index_cardinality_minvalue), CMD_LINE(REQUIRED_ARG),
+        VALID_RANGE(0, 10000000L), DEFAULT(100), BLOCK_SIZE(1),
+        NO_MUTEX_GUARD, NOT_IN_BINLOG);
+
+static Sys_var_harows Sys_fedx_index_one_way_percent(
+        "fedx_index_one_way_percent",
+        "the max size of a complete read for vitess table",
+        SESSION_VAR(fedx_index_one_way_percent), CMD_LINE(REQUIRED_ARG),
+        VALID_RANGE(0, 100), DEFAULT(50), BLOCK_SIZE(1),
+        NO_MUTEX_GUARD, NOT_IN_BINLOG);
+
+static Sys_var_harows Sys_fedx_index_two_way_percent(
+        "fedx_index_two_way_percent",
+        "the max size of a complete read for vitess table",
+        SESSION_VAR(fedx_index_two_way_percent), CMD_LINE(REQUIRED_ARG),
+        VALID_RANGE(0, 100), DEFAULT(25), BLOCK_SIZE(1),
+        NO_MUTEX_GUARD, NOT_IN_BINLOG);
+
+static Sys_var_harows Sys_fedx_invalid_index_expand_factor(
+        "fedx_invalid_index_expand_factor",
+        "the max size of a complete read for vitess table",
+        SESSION_VAR(fedx_invalid_index_expand_factor), CMD_LINE(REQUIRED_ARG),
+        VALID_RANGE(0, 10000), DEFAULT(10), BLOCK_SIZE(1),
+        NO_MUTEX_GUARD, NOT_IN_BINLOG);
+
+static Sys_var_harows Sys_fedx_scan_expand_factor(
+        "fedx_scan_expand_factor",
+        "the max size of a complete read for vitess table",
+        SESSION_VAR(fedx_scan_expand_factor), CMD_LINE(REQUIRED_ARG),
+        VALID_RANGE(0, 1000000L), DEFAULT(100), BLOCK_SIZE(1),
+        NO_MUTEX_GUARD, NOT_IN_BINLOG);
+
 static Sys_var_harows Sys_vitess_partial_read_type(
         "vitess_partial_read_type",
         "the preferred partial read type for vitess table, 0 range read, 1 shard read, 2 both, others none",
