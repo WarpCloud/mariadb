@@ -2943,6 +2943,8 @@ public:
   */
   Table_flags ha_table_flags() const { return cached_table_flags; }
 
+  virtual void mark_read_columns_needed_for_update_delete(MY_BITMAP *read_map, MY_BITMAP *write_map) { return; }
+
     /**
      * the ha_pushed_condition return a string representing the pushed condtions
      * @return
