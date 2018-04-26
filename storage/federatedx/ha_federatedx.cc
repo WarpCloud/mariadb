@@ -843,6 +843,8 @@ ha_federatedx::ha_federatedx(handlerton *hton,
   max_query_size = 0;
   index_cardinality_init = false;
   bzero(index_cardinality, sizeof(index_cardinality));
+  vindex_init = false;
+  bzero(&vindex_set, sizeof(vindex_set));
 }
 
 
@@ -2714,13 +2716,23 @@ int ha_federatedx::update_row(const uchar *old_data, const uchar *new_data)
     this.
   */
   bool has_a_primary_key= MY_TEST(table->s->primary_key != MAX_KEY);
-  
+  bool need_convert = false;
+  if (has_a_primary_key && !strcasecmp(share->scheme, "vitess") && bitmap_is_overlapping(table->write_set, &vindex_set)
+          && bitmap_is_set_all(table->read_set)) {
+    // update vindex column for vitess table, which is not allowed in vitess
+    // we convert the update to insert and delete
+    need_convert = true;
+  }
+
   /*
     buffers for following strings
   */
   char field_value_buffer[STRING_BUFFER_USUAL_SIZE];
   char update_buffer[FEDERATEDX_QUERY_BUFFER_SIZE];
   char where_buffer[FEDERATEDX_QUERY_BUFFER_SIZE];
+  char insert_buffer[STRING_BUFFER_USUAL_SIZE];
+  char values_buffer[FEDERATEDX_QUERY_BUFFER_SIZE];
+  char delete_buffer[FEDERATEDX_QUERY_BUFFER_SIZE];
 
   /* Work area for field values */
   String field_value(field_value_buffer, sizeof(field_value_buffer),
@@ -2733,6 +2745,18 @@ int ha_federatedx::update_row(const uchar *old_data, const uchar *new_data)
   String where_string(where_buffer,
                       sizeof(where_buffer),
                       &my_charset_bin);
+  /* stores the insert clause */
+  String insert_string(insert_buffer,
+                      sizeof(insert_buffer),
+                      &my_charset_bin);
+  /* stores the values clause */
+  String values_string(values_buffer,
+                      sizeof(values_buffer),
+                      &my_charset_bin);
+  /* stores the delete query */
+  String delete_string(delete_buffer,
+                       sizeof(delete_buffer),
+                       &my_charset_bin);
   uchar *record= table->record[0];
   int error;
   DBUG_ENTER("ha_federatedx::update_row");
@@ -2742,6 +2766,9 @@ int ha_federatedx::update_row(const uchar *old_data, const uchar *new_data)
   field_value.length(0);
   update_string.length(0);
   where_string.length(0);
+  insert_string.length(0);
+  values_string.length(0);
+  delete_string.length(0);
 
   if (ignore_duplicates)
     update_string.append(STRING_WITH_LEN("UPDATE IGNORE "));
@@ -2750,6 +2777,16 @@ int ha_federatedx::update_row(const uchar *old_data, const uchar *new_data)
   append_ident(&update_string, share->table_name,
                share->table_name_length, ident_quote_char);
   update_string.append(STRING_WITH_LEN(" SET "));
+
+  if (need_convert) {
+    insert_string.append("INSERT INTO ");
+    append_ident(&insert_string, share->table_name,
+                 share->table_name_length, ident_quote_char);
+    insert_string.append(STRING_WITH_LEN("("));
+    delete_string.append("DELETE FROM ");
+    append_ident(&delete_string, share->table_name,
+                 share->table_name_length, ident_quote_char);
+  }
 
   /*
     In this loop, we want to match column names to values being inserted
@@ -2763,26 +2800,45 @@ int ha_federatedx::update_row(const uchar *old_data, const uchar *new_data)
 
   for (Field **field= table->field; *field; field++)
   {
+    if (need_convert) {
+      append_ident(&insert_string, (*field)->field_name.str,
+                   (*field)->field_name.length, ident_quote_char);
+      insert_string.append(STRING_WITH_LEN(", "));
+    }
+    bool value_set = false;
     if (bitmap_is_set(table->write_set, (*field)->field_index))
     {
+      value_set = true;
       append_ident(&update_string, (*field)->field_name.str,
                    (*field)->field_name.length,
                    ident_quote_char);
       update_string.append(STRING_WITH_LEN(" = "));
 
-      if ((*field)->is_null())
+      if ((*field)->is_null()) {
         update_string.append(STRING_WITH_LEN(" NULL "));
+        if (need_convert) {
+          values_string.append(STRING_WITH_LEN(" NULL "));
+        }
+      }
       else
       {
         /* otherwise = */
         my_bitmap_map *old_map= tmp_use_all_columns(table, table->read_set);
         bool needs_quote= (*field)->str_needs_quotes();
-	(*field)->val_str(&field_value);
+	    (*field)->val_str(&field_value);
         if (needs_quote)
           update_string.append(value_quote_char);
         field_value.print(&update_string);
         if (needs_quote)
           update_string.append(value_quote_char);
+
+        if (need_convert) {
+          if (needs_quote)
+            values_string.append(value_quote_char);
+          field_value.print(&values_string);
+          if (needs_quote)
+            values_string.append(value_quote_char);
+        }
         field_value.length(0);
         tmp_restore_column_map(table->read_set, old_map);
       }
@@ -2794,8 +2850,12 @@ int ha_federatedx::update_row(const uchar *old_data, const uchar *new_data)
       append_ident(&where_string, (*field)->field_name.str,
                    (*field)->field_name.length,
                    ident_quote_char);
-      if (field_in_record_is_null(table, *field, (char*) old_data))
+      if (field_in_record_is_null(table, *field, (char*) old_data)) {
         where_string.append(STRING_WITH_LEN(" IS NULL "));
+        if (!value_set && need_convert) {
+          values_string.append(STRING_WITH_LEN(" NULL "));
+        }
+      }
       else
       {
         bool needs_quote= (*field)->str_needs_quotes();
@@ -2807,14 +2867,29 @@ int ha_federatedx::update_row(const uchar *old_data, const uchar *new_data)
         field_value.print(&where_string);
         if (needs_quote)
           where_string.append(value_quote_char);
+
+        if (!value_set && need_convert) {
+          if (needs_quote)
+            values_string.append(value_quote_char);
+          field_value.print(&values_string);
+          if (needs_quote)
+            values_string.append(value_quote_char);
+        }
         field_value.length(0);
       }
       where_string.append(STRING_WITH_LEN(" AND "));
     }
+    values_string.append(STRING_WITH_LEN(", "));
   }
 
   /* Remove last ', '. This works as there must be at least on updated field */
   update_string.length(update_string.length() - sizeof_trailing_comma);
+
+  if (need_convert) {
+    values_string.length(values_string.length() - sizeof_trailing_comma);
+    insert_string.length(insert_string.length() - sizeof_trailing_comma);
+    insert_string.append(STRING_WITH_LEN(")"));
+  }
 
   if (where_string.length())
   {
@@ -2822,6 +2897,10 @@ int ha_federatedx::update_row(const uchar *old_data, const uchar *new_data)
     where_string.length(where_string.length() - sizeof_trailing_and);
     update_string.append(STRING_WITH_LEN(" WHERE "));
     update_string.append(where_string);
+    if (need_convert) {
+      delete_string.append(STRING_WITH_LEN(" WHERE "));
+      delete_string.append(where_string);
+    }
   }
 
   /*
@@ -2834,9 +2913,25 @@ int ha_federatedx::update_row(const uchar *old_data, const uchar *new_data)
   if ((error= txn->acquire(share, ha_thd(), FALSE, &io)))
     DBUG_RETURN(error);
 
-  if (io->query(update_string.ptr(), update_string.length(), SCAN_MODE_OLTP, NULL))
-  {
-    DBUG_RETURN(stash_remote_error());
+  if (need_convert) {
+    insert_string.append(STRING_WITH_LEN(" VALUES("));
+    insert_string.append(values_string);
+    insert_string.append(STRING_WITH_LEN(")"));
+    if (io->query(delete_string.ptr(), delete_string.length(), SCAN_MODE_OLTP, NULL)) {
+      DBUG_RETURN(stash_remote_error());
+    }
+    uint affected_rows = io->affected_rows();
+    if (affected_rows == 1) {
+      if (io->query(insert_string.ptr(), insert_string.length(), SCAN_MODE_OLTP, NULL)) {
+        DBUG_RETURN(stash_remote_error());
+      }
+    } else if (affected_rows > 1) {
+      DBUG_RETURN(HA_ERR_FOUND_DUPP_UNIQUE);
+    }
+  } else {
+    if (io->query(update_string.ptr(), update_string.length(), SCAN_MODE_OLTP, NULL)) {
+      DBUG_RETURN(stash_remote_error());
+    }
   }
   DBUG_RETURN(0);
 }
@@ -3436,10 +3531,9 @@ void ha_federatedx::append_select_from(String& sql_query)
 
     sql_query.set_charset(system_charset_info);
     sql_query.append(STRING_WITH_LEN("SELECT "));
-    uint field_idx = 1;
     MY_BITMAP *def_set = table->def_read_set.bitmap ? &table->def_read_set : NULL;
     MY_BITMAP *tmp_set = table->tmp_set.bitmap ? &table->tmp_set : NULL;
-    for (Field **field = table->field; *field; field++, field_idx++) {
+    for (Field **field = table->field; *field; field++) {
         if (skip_cp || is_bit_set(def_set, tmp_set, table->read_set,(*field)->field_index)) {
             append_ident(&sql_query, (*field)->field_name.str,
                          (*field)->field_name.length, ident_quote_char);
@@ -4210,6 +4304,69 @@ uint ha_federatedx::init_local_range_info(federatedx_io *io) {
   DBUG_RETURN(0);
 }
 
+void ha_federatedx::mark_read_columns_needed_for_update_delete(MY_BITMAP *read_map, MY_BITMAP *write_map) {
+  if (vindex_set.bitmap == NULL || vindex_set.n_bits != read_map->n_bits) {
+    return;
+  }
+  if (bitmap_is_overlapping(write_map, &vindex_set)) {
+    //todo should fetch all needed column information in update_row(), that will be much more efficient
+    // however, I do not find a 100% safe way to do this, so for the first version, select all the columns
+    // when for updating query
+    bitmap_set_all(read_map);
+  } else {
+    // vindex column is not updated, so just vindex column is needed
+    bitmap_union(read_map, &vindex_set);
+  }
+  return;
+}
+
+uint ha_federatedx::init_vindex_info(federatedx_io *io) {
+  uint error_code;
+  DBUG_ENTER("ha_federatedx::init_vindex_info");
+  char vindex_query_buffer[FEDERATEDX_QUERY_BUFFER_SIZE];
+  String query(vindex_query_buffer, sizeof(vindex_query_buffer), &my_charset_bin);
+  query.length(0);
+  query.append(STRING_WITH_LEN("SHOW VITESS_VINDEXES in "));
+  query.append(STRING_WITH_LEN("`"));
+  query.append(share->table_name, share->table_name_length);
+  query.append(STRING_WITH_LEN("`"));
+  FEDERATEDX_IO_ROW *row;
+  if (io->query(query.ptr(), query.length(), SCAN_MODE_DEFAULT, NULL)) {
+    goto error;
+  } else {
+    FEDERATEDX_IO_RESULT *vindex_result = io->store_result();
+    if (vindex_result == NULL) {
+        goto error;
+    } else {
+      my_ulonglong rownum = io->get_num_rows(vindex_result);
+      if (rownum == 0) {
+        // no vindex info
+        vindex_init = TRUE;
+      } else {
+        for (my_ulonglong i = 0; i < rownum; i++) {
+          if (!(row = io->fetch_row(vindex_result, NULL))) {
+            io->free_result(vindex_result);
+            goto error;
+          }
+          const char* column_name = io->get_column_data(row, 0);
+          for (Field **field = table->field; *field; field++) {
+            if (!strcasecmp((*field)->field_name.str, column_name)) {
+              bitmap_set_bit(&vindex_set, (*field)->field_index);
+              break;
+            }
+          }
+        }
+      }
+      vindex_init = true;
+      io->free_result(vindex_result);
+    }
+  }
+  DBUG_RETURN(0);
+error:
+  error_code = ER_QUERY_ON_FOREIGN_DATA_SOURCE;
+  DBUG_RETURN(error_code);
+}
+
 int ha_federatedx::find_index_num(const char *key_name) {
   for (uint i = 0; i < table->s->keys; i++) {
     if (!strcmp(table->key_info[i].name.str, key_name)) {
@@ -4315,38 +4472,53 @@ int ha_federatedx::info(uint flag)
     if ((*iop)->table_metadata(&stats, share->table_name,
                                share->table_name_length, flag))
       goto error;
-  }
-
-  if (flag & HA_STATUS_AUTO)
-    stats.auto_increment_value= (*iop)->last_insert_id();
-
-  if (flag & (HA_STATUS_VARIABLE | HA_STATUS_CONST)) {
-    // fill the shard info if necessary
-    if (share->s->shard_num == 0 && !strcasecmp((*iop)->get_scheme(), "vitess")) {
-      if ((error_code = init_shard_info(*iop))) {
-        goto fail;
-      }
-    }
-
-    // fill global range info if necessary
-    if (cache_range_info && share->part_col_name == NULL && !strcasecmp((*iop)->get_scheme(), "vitess")) {
-      if ((error_code = init_global_range_info(*iop))) {
-        goto error;
-      }
-    }
-
-    // fill local range info if necessary
-    if (support_partial_read && !cache_range_info && local_part_col_name == NULL
-        && !strcasecmp((*iop)->get_scheme(), "vitess")) {
-      if ((error_code = init_local_range_info(*iop))) {
-        goto error;
-      }
-    }
 
     if (!index_cardinality_init) {
       if ((error_code = init_index_cardinality(*iop))) {
         goto error;
       }
+    }
+  }
+
+  if (flag & HA_STATUS_AUTO)
+    stats.auto_increment_value= (*iop)->last_insert_id();
+
+  if ((flag & (HA_STATUS_VARIABLE | HA_STATUS_CONST)) && (!strcasecmp((*iop)->get_scheme(), "vitess"))) {
+    // vitess related information
+
+    // 1. shard info
+    if (share->s->shard_num == 0) {
+      if ((error_code = init_shard_info(*iop))) {
+        goto fail;
+      }
+    }
+
+    // 2. range info(global)
+    if (cache_range_info && share->part_col_name == NULL) {
+      if ((error_code = init_global_range_info(*iop))) {
+        goto error;
+      }
+    }
+
+    // 3. range info(local)
+    if (support_partial_read && !cache_range_info && local_part_col_name == NULL) {
+      if ((error_code = init_local_range_info(*iop))) {
+        goto error;
+      }
+    }
+
+    // 4. vindex info
+    if (!vindex_init) {
+        if (vindex_set.bitmap == NULL) {
+          uint field_count = table->s->fields;
+          my_bitmap_map* bitmaps=
+                  (my_bitmap_map*) alloc_root(&table->mem_root, bitmap_buffer_size(field_count));
+          my_bitmap_init(&vindex_set, (my_bitmap_map*) bitmaps, field_count,
+                         FALSE);
+        }
+        if ((error_code = init_vindex_info(*iop))) {
+          goto error;
+        }
     }
   }
   /*
