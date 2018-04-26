@@ -3776,31 +3776,19 @@ error:
 
 */
 
-bool is_valid_shard_name(const char* shard_name, const char* database_name) {
-  bool validate_shard = true;
-
-  for (int j = 0; ; j++) {
-    if (database_name[j] != '\0') {
-      if (database_name[j] != shard_name[j]) {
-        validate_shard = false;
-        break;
-      }
-    } else {
-      if (shard_name[j] != '/') {
-        validate_shard = false;
-      }
-      break;
-    }
-  }
-  return validate_shard;
-}
-
 uint ha_federatedx::init_shard_info(federatedx_io *io) {
   // initialize shard name infomation for vitess table
   DYNAMIC_ARRAY shard_infos;
   uint error_code = 0;
   my_init_dynamic_array(&shard_infos, sizeof(char **), 4, 4, MYF(0));
-  if (io->query("SHOW vitess_shards", 18, SCAN_MODE_DEFAULT, NULL)) {
+  char shard_buffer[FEDERATEDX_QUERY_BUFFER_SIZE];
+  String shard_query(shard_buffer, sizeof(shard_buffer), &my_charset_bin);
+  shard_query.length(0);
+  shard_query.append(STRING_WITH_LEN("SHOW VITESS_SHARDS "));
+  shard_query.append(STRING_WITH_LEN("`"));
+  shard_query.append(share->s->database);
+  shard_query.append(STRING_WITH_LEN("`"));
+  if (io->query(shard_query.ptr(), shard_query.length(), SCAN_MODE_DEFAULT, NULL)) {
     mysql_mutex_lock(&share->s->mutex);
     if (share->s->shard_num == 0) {
       share->s->shard_num = 10000;
@@ -3828,9 +3816,7 @@ uint ha_federatedx::init_shard_info(federatedx_io *io) {
         }
 
         const char *shard_name = io->get_column_data(row, 0);
-        if (is_valid_shard_name(shard_name, io->get_database())) {
-          insert_dynamic(&shard_infos, &shard_name);
-        }
+        insert_dynamic(&shard_infos, &shard_name);
       }
 
       if (shard_infos.elements == 0) {
@@ -3935,7 +3921,9 @@ uint ha_federatedx::init_local_range_info(federatedx_io *io) {
   String query(range_info_query_buffer, sizeof(range_info_query_buffer), &my_charset_bin);
   query.length(0);
   query.append(STRING_WITH_LEN("SHOW VITESS_RANGE_INFO "));
+  query.append(STRING_WITH_LEN("`"));
   query.append(share->table_name, share->table_name_length);
+  query.append(STRING_WITH_LEN("`"));
   FEDERATEDX_IO_ROW *row;
   if (io->query(query.ptr(), query.length(), SCAN_MODE_DEFAULT, NULL)) {
     local_part_col_name = "no_part_col";
