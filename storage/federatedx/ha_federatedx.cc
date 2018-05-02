@@ -845,6 +845,8 @@ ha_federatedx::ha_federatedx(handlerton *hton,
   bzero(index_cardinality, sizeof(index_cardinality));
   vindex_init = false;
   bzero(&vindex_set, sizeof(vindex_set));
+  pk_num = -1;
+  bzero(&pk_set, sizeof(pk_set));
 }
 
 
@@ -2716,8 +2718,25 @@ int ha_federatedx::update_row(const uchar *old_data, const uchar *new_data)
     this.
   */
   bool has_a_primary_key= MY_TEST(table->s->primary_key != MAX_KEY);
+  bool use_pk_in_filter = false;
+  if (vindex_init && pk_num > 0 && ha_thd()->variables.fedx_pk_update_delete_level) {
+    ha_rows pk_level = ha_thd()->variables.fedx_pk_update_delete_level;
+    if (pk_level == 2) {
+      use_pk_in_filter = true;
+    } else if (pk_level == 1 && pk_num == 1) {
+      use_pk_in_filter = true;
+    }
+  }
+
+  if (use_pk_in_filter) {
+    if (!bitmap_is_subset(&pk_set, table->read_set)) {
+      // should not reach here
+      use_pk_in_filter = false;
+    }
+  }
+
   bool need_convert = false;
-  if (has_a_primary_key && !strcasecmp(share->scheme, "vitess") && bitmap_is_overlapping(table->write_set, &vindex_set)
+  if (has_a_primary_key && vindex_init && bitmap_is_overlapping(table->write_set, &vindex_set)
           && bitmap_is_set_all(table->read_set)) {
     // update vindex column for vitess table, which is not allowed in vitess
     // we convert the update to insert and delete
@@ -2733,6 +2752,7 @@ int ha_federatedx::update_row(const uchar *old_data, const uchar *new_data)
   char insert_buffer[STRING_BUFFER_USUAL_SIZE];
   char values_buffer[FEDERATEDX_QUERY_BUFFER_SIZE];
   char delete_buffer[FEDERATEDX_QUERY_BUFFER_SIZE];
+  char tmp_buffer[FEDERATEDX_QUERY_BUFFER_SIZE];
 
   /* Work area for field values */
   String field_value(field_value_buffer, sizeof(field_value_buffer),
@@ -2757,6 +2777,9 @@ int ha_federatedx::update_row(const uchar *old_data, const uchar *new_data)
   String delete_string(delete_buffer,
                        sizeof(delete_buffer),
                        &my_charset_bin);
+  String tmp_string(tmp_buffer,
+                       sizeof(tmp_buffer),
+                       &my_charset_bin);
   uchar *record= table->record[0];
   int error;
   DBUG_ENTER("ha_federatedx::update_row");
@@ -2769,6 +2792,7 @@ int ha_federatedx::update_row(const uchar *old_data, const uchar *new_data)
   insert_string.length(0);
   values_string.length(0);
   delete_string.length(0);
+  tmp_string.length(0);
 
   if (ignore_duplicates)
     update_string.append(STRING_WITH_LEN("UPDATE IGNORE "));
@@ -2813,12 +2837,10 @@ int ha_federatedx::update_row(const uchar *old_data, const uchar *new_data)
                    (*field)->field_name.length,
                    ident_quote_char);
       update_string.append(STRING_WITH_LEN(" = "));
+      tmp_string.length(0);
 
       if ((*field)->is_null()) {
-        update_string.append(STRING_WITH_LEN(" NULL "));
-        if (need_convert) {
-          values_string.append(STRING_WITH_LEN(" NULL "));
-        }
+        tmp_string.append(STRING_WITH_LEN(" NULL "));
       }
       else
       {
@@ -2826,60 +2848,76 @@ int ha_federatedx::update_row(const uchar *old_data, const uchar *new_data)
         my_bitmap_map *old_map= tmp_use_all_columns(table, table->read_set);
         bool needs_quote= (*field)->str_needs_quotes();
 	    (*field)->val_str(&field_value);
-        if (needs_quote)
-          update_string.append(value_quote_char);
-        field_value.print(&update_string);
-        if (needs_quote)
-          update_string.append(value_quote_char);
 
-        if (need_convert) {
-          if (needs_quote)
-            values_string.append(value_quote_char);
-          field_value.print(&values_string);
-          if (needs_quote)
-            values_string.append(value_quote_char);
-        }
+        if (needs_quote)
+          tmp_string.append(value_quote_char);
+        field_value.print(&tmp_string);
+        if (needs_quote)
+          tmp_string.append(value_quote_char);
+
         field_value.length(0);
         tmp_restore_column_map(table->read_set, old_map);
+      }
+
+      update_string.append(tmp_string);
+      if (need_convert) {
+        values_string.append(tmp_string);
       }
       update_string.append(STRING_WITH_LEN(", "));
     }
 
     if (bitmap_is_set(table->read_set, (*field)->field_index))
     {
-      append_ident(&where_string, (*field)->field_name.str,
-                   (*field)->field_name.length,
-                   ident_quote_char);
+      bool need_add_to_where = true;
+      if (use_pk_in_filter && !(bitmap_is_set(&pk_set, (*field)->field_index) ||
+              bitmap_is_set(&vindex_set, (*field)->field_index))) {
+        need_add_to_where = false;
+      }
+
+      if (need_add_to_where) {
+        append_ident(&where_string, (*field)->field_name.str,
+                     (*field)->field_name.length,
+                     ident_quote_char);
+      }
+
       if (field_in_record_is_null(table, *field, (char*) old_data)) {
-        where_string.append(STRING_WITH_LEN(" IS NULL "));
+        if (need_add_to_where) {
+          where_string.append(STRING_WITH_LEN(" IS NULL "));
+        }
         if (!value_set && need_convert) {
           values_string.append(STRING_WITH_LEN(" NULL "));
         }
       }
       else
       {
+        tmp_string.length(0);
         bool needs_quote= (*field)->str_needs_quotes();
-        where_string.append(STRING_WITH_LEN(" = "));
         (*field)->val_str(&field_value,
                           (old_data + (*field)->offset(record)));
-        if (needs_quote)
-          where_string.append(value_quote_char);
-        field_value.print(&where_string);
-        if (needs_quote)
-          where_string.append(value_quote_char);
 
-        if (!value_set && need_convert) {
-          if (needs_quote)
-            values_string.append(value_quote_char);
-          field_value.print(&values_string);
-          if (needs_quote)
-            values_string.append(value_quote_char);
-        }
+        if (needs_quote)
+          tmp_string.append(value_quote_char);
+        field_value.print(&tmp_string);
+        if (needs_quote)
+          tmp_string.append(value_quote_char);
+
         field_value.length(0);
+        if (need_add_to_where) {
+          where_string.append(STRING_WITH_LEN(" = "));
+          where_string.append(tmp_string);
+        }
+        if (!value_set && need_convert) {
+          values_string.append(tmp_string);
+        }
       }
-      where_string.append(STRING_WITH_LEN(" AND "));
+      if (need_add_to_where) {
+        where_string.append(STRING_WITH_LEN(" AND "));
+      }
     }
-    values_string.append(STRING_WITH_LEN(", "));
+
+    if (need_convert) {
+      values_string.append(STRING_WITH_LEN(", "));
+    }
   }
 
   /* Remove last ', '. This works as there must be at least on updated field */
@@ -2961,6 +2999,24 @@ int ha_federatedx::delete_row(const uchar *buf)
   int error;
   DBUG_ENTER("ha_federatedx::delete_row");
 
+  bool use_pk_in_filter = false;
+  if (vindex_init && pk_num > 0 && ha_thd()->variables.fedx_pk_update_delete_level) {
+    ha_rows pk_level = ha_thd()->variables.fedx_pk_update_delete_level;
+    if (pk_level == 2) {
+      use_pk_in_filter = true;
+    } else if (pk_level == 1 && pk_num == 1) {
+      use_pk_in_filter = true;
+    }
+  }
+
+  if (use_pk_in_filter) {
+    if (!bitmap_is_subset(&pk_set, table->read_set)) {
+      // should not reach here, as we set the pk field in
+      // read_set in mark_read_columns_needed_for_update_delete
+      use_pk_in_filter = false;
+    }
+  }
+
   delete_string.length(0);
   delete_string.append(STRING_WITH_LEN("DELETE FROM "));
   append_ident(&delete_string, share->table_name,
@@ -2970,9 +3026,15 @@ int ha_federatedx::delete_row(const uchar *buf)
   for (Field **field= table->field; *field; field++)
   {
     Field *cur_field= *field;
-    found++;
-    if (bitmap_is_set(table->read_set, cur_field->field_index))
+    bool part_of_filter = bitmap_is_set(table->read_set, cur_field->field_index);
+    if (use_pk_in_filter && !(bitmap_is_set(&pk_set, cur_field->field_index) || bitmap_is_set(&vindex_set, cur_field->field_index))) {
+      // if use_pk_in_filter is true, columns not in the pk/vindex is not used as part of filter
+      part_of_filter = false;
+    }
+
+    if (part_of_filter)
     {
+      found++;
       append_ident(&delete_string, (*field)->field_name.str,
                    (*field)->field_name.length, ident_quote_char);
       data_string.length(0);
@@ -3000,7 +3062,10 @@ int ha_federatedx::delete_row(const uchar *buf)
   if (!found)
     delete_string.length(delete_string.length() - sizeof_trailing_where);
 
-  delete_string.append(STRING_WITH_LEN(" LIMIT 1"));
+  if (!use_pk_in_filter) {
+    // do not need to add limit 1 since pk is used in filter
+    delete_string.append(STRING_WITH_LEN(" LIMIT 1"));
+  }
   DBUG_PRINT("info",
              ("Delete sql: %s", delete_string.c_ptr_quick()));
 
@@ -4305,19 +4370,28 @@ uint ha_federatedx::init_local_range_info(federatedx_io *io) {
 }
 
 void ha_federatedx::mark_read_columns_needed_for_update_delete(MY_BITMAP *read_map, MY_BITMAP *write_map) {
-  if (vindex_set.bitmap == NULL || vindex_set.n_bits != read_map->n_bits) {
-    return;
+  // set pk column field
+  if (pk_num > 0 && ha_thd() && ha_thd()->variables.fedx_pk_update_delete_level) {
+    ha_rows pk_level = ha_thd()->variables.fedx_pk_update_delete_level;
+    if (pk_level == 2) {
+      bitmap_union(read_map, &pk_set);
+    } else if (pk_level == 1 && pk_num == 1) {
+      bitmap_union(read_map, &pk_set);
+    }
   }
-  if (bitmap_is_overlapping(write_map, &vindex_set)) {
-    //todo should fetch all needed column information in update_row(), that will be much more efficient
-    // however, I do not find a 100% safe way to do this, so for the first version, select all the columns
-    // when for updating query
-    bitmap_set_all(read_map);
-  } else {
-    // vindex column is not updated, so just vindex column is needed
-    bitmap_union(read_map, &vindex_set);
+
+  // set vindex column field
+  if (vindex_init) {
+    if (bitmap_is_overlapping(write_map, &vindex_set)) {
+      //todo should fetch all needed column information in update_row(), that will be much more efficient
+      // however, I do not find a 100% safe way to do this, so for the first version, select all the columns
+      // when for updating query
+      bitmap_set_all(read_map);
+    } else {
+      // vindex column is not updated, so just vindex column is needed
+      bitmap_union(read_map, &vindex_set);
+    }
   }
-  return;
 }
 
 uint ha_federatedx::init_vindex_info(federatedx_io *io) {
@@ -4341,7 +4415,7 @@ uint ha_federatedx::init_vindex_info(federatedx_io *io) {
       my_ulonglong rownum = io->get_num_rows(vindex_result);
       if (rownum == 0) {
         // no vindex info
-        vindex_init = TRUE;
+        vindex_init = true;
       } else {
         for (my_ulonglong i = 0; i < rownum; i++) {
           if (!(row = io->fetch_row(vindex_result, NULL))) {
@@ -4436,6 +4510,33 @@ no_index_info:
   DBUG_RETURN(0);
 }
 
+void ha_federatedx::init_pk_info() {
+  if (table->def_read_set.n_bits != table->s->fields) {
+    return;
+  }
+  bool has_primary_key = MY_TEST(table->s->primary_key != MAX_KEY);
+  if (has_primary_key) {
+    if (pk_set.bitmap == NULL) {
+      // first allocate bitmap
+      uint field_count = table->s->fields;
+      my_bitmap_map* bitmaps=
+              (my_bitmap_map*) alloc_root(&table->mem_root, bitmap_buffer_size(field_count));
+      my_bitmap_init(&pk_set, (my_bitmap_map*) bitmaps, field_count,
+                     FALSE);
+    }
+    bitmap_clear_all(&pk_set);
+
+    KEY pk = table->key_info[table->s->primary_key];
+    for (uint j = 0; j < pk.user_defined_key_parts; j++) {
+      Field *field = pk.key_part[j].field;
+      bitmap_set_bit(&pk_set, field->field_index);
+    }
+    pk_num = pk.user_defined_key_parts;
+  } else {
+    pk_num = 0;
+  }
+}
+
 int ha_federatedx::info(uint flag)
 {
   uint error_code;
@@ -4478,6 +4579,11 @@ int ha_federatedx::info(uint flag)
         goto error;
       }
     }
+
+    if (pk_num < 0) {
+      init_pk_info();
+    }
+
   }
 
   if (flag & HA_STATUS_AUTO)
@@ -4509,16 +4615,18 @@ int ha_federatedx::info(uint flag)
 
     // 4. vindex info
     if (!vindex_init) {
+      if (table->def_read_set.n_bits == table->s->fields) {
         if (vindex_set.bitmap == NULL) {
           uint field_count = table->s->fields;
-          my_bitmap_map* bitmaps=
-                  (my_bitmap_map*) alloc_root(&table->mem_root, bitmap_buffer_size(field_count));
-          my_bitmap_init(&vindex_set, (my_bitmap_map*) bitmaps, field_count,
+          my_bitmap_map* bitmaps =
+                  (my_bitmap_map *) alloc_root(&table->mem_root, bitmap_buffer_size(field_count));
+          my_bitmap_init(&vindex_set, (my_bitmap_map *) bitmaps, field_count,
                          FALSE);
         }
         if ((error_code = init_vindex_info(*iop))) {
           goto error;
         }
+      }
     }
   }
   /*
