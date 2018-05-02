@@ -314,6 +314,8 @@ class ha_federatedx: public handler
   void *current;
   MY_BITMAP vindex_set;
   bool vindex_init;
+  MY_BITMAP pk_set;
+  int pk_num;
   // if the table is update/delete target, we should add 'for update' to the remote
   // select statement to avoid lost update in concurrency update
   // todo: eventually, the flag should be removed, and the federatedx handler should use
@@ -532,6 +534,7 @@ public:
   uint init_index_cardinality(federatedx_io *io);
   int find_index_num(const char* key_name);
   uint init_vindex_info(federatedx_io *io);
+  void init_pk_info();
   virtual void mark_read_columns_needed_for_update_delete(MY_BITMAP *read_map, MY_BITMAP *write_map);
 };
 

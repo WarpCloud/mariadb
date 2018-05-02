@@ -2245,6 +2245,13 @@ static Sys_var_harows Sys_vitess_partial_read_type(
         VALID_RANGE(0, 3), DEFAULT(0), BLOCK_SIZE(1),
         NO_MUTEX_GUARD, NOT_IN_BINLOG);
 
+static Sys_var_harows Sys_fedx_pk_update_delete_level(
+        "fedx_pk_update_delete_level",
+        "the max size of a complete read for vitess table",
+        SESSION_VAR(fedx_pk_update_delete_level), CMD_LINE(REQUIRED_ARG),
+        VALID_RANGE(0, 2), DEFAULT(1), BLOCK_SIZE(1),
+        NO_MUTEX_GUARD, NOT_IN_BINLOG);
+
 static Sys_var_harows Sys_join_limit_scale(
         "join_limit_scale",
         "the join limit scale for federatedx table",
