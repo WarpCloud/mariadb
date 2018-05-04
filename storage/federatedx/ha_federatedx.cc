@@ -4384,8 +4384,6 @@ void ha_federatedx::mark_read_columns_needed_for_update_delete(MY_BITMAP *read_m
   if (vindex_init) {
     if (bitmap_is_overlapping(write_map, &vindex_set)) {
       //todo should fetch all needed column information in update_row(), that will be much more efficient
-      // however, I do not find a 100% safe way to do this, so for the first version, select all the columns
-      // when for updating query
       bitmap_set_all(read_map);
     } else {
       // vindex column is not updated, so just vindex column is needed
