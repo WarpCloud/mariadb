@@ -2093,6 +2093,7 @@ ha_rows ha_federatedx::records_in_range(uint inx, key_range *start_key,
     ha_rows index_one_way_percent = ha_thd()->variables.fedx_index_one_way_percent;
     ha_rows index_two_way_percent = ha_thd()->variables.fedx_index_two_way_percent;
     ha_rows invalid_index_expand_factor = ha_thd()->variables.fedx_invalid_index_expand_factor;
+    ha_rows valid_index_max_result_rowcount = ha_thd()->variables.fedx_valid_index_max_result_rowcount;
     if (!is_valid_index(inx)) {
       // we really do not want to use invalid index, so just return invalid_index_expand_factor*stats.records
       DBUG_RETURN(stats.records*invalid_index_expand_factor < FEDERATEDX_RECORDS_IN_RANGE ?
@@ -2132,6 +2133,12 @@ ha_rows ha_federatedx::records_in_range(uint inx, key_range *start_key,
       } else {
         ret = stats.records;
       }
+    if (ret >= valid_index_max_result_rowcount) {
+      // if the result rowcount is too large, do not use it as a federated index
+      DBUG_RETURN(stats.records*invalid_index_expand_factor < FEDERATEDX_RECORDS_IN_RANGE ?
+                  FEDERATEDX_RECORDS_IN_RANGE : stats.records*invalid_index_expand_factor);
+    }
+
     if (ret < FEDERATEDX_RECORDS_IN_RANGE) {
       ret = FEDERATEDX_RECORDS_IN_RANGE;
     }
