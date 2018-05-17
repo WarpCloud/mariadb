@@ -563,6 +563,7 @@ typedef struct system_variables
   ha_rows fedx_bkah_size;
   ha_rows fedx_valid_index_cardinality_percent;
   ha_rows fedx_valid_index_cardinality_minvalue;
+  ha_rows fedx_valid_index_max_result_rowcount;
   ha_rows fedx_index_one_way_percent;
   ha_rows fedx_index_two_way_percent;
   ha_rows fedx_invalid_index_expand_factor;

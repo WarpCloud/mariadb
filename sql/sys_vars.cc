@@ -2210,6 +2210,13 @@ static Sys_var_harows Sys_fedx_valid_index_cardinality_minvalue(
         VALID_RANGE(0, 10000000L), DEFAULT(100), BLOCK_SIZE(1),
         NO_MUTEX_GUARD, NOT_IN_BINLOG);
 
+static Sys_var_harows Sys_fedx_valid_index_max_result_rowcount(
+        "fedx_valid_index_max_result_rowcount",
+        "the max size of a complete read for vitess table",
+        SESSION_VAR(fedx_valid_index_max_result_rowcount), CMD_LINE(REQUIRED_ARG),
+        VALID_RANGE(0, HA_POS_ERROR), DEFAULT(200000L), BLOCK_SIZE(1),
+        NO_MUTEX_GUARD, NOT_IN_BINLOG);
+
 static Sys_var_harows Sys_fedx_index_one_way_percent(
         "fedx_index_one_way_percent",
         "the max size of a complete read for vitess table",
