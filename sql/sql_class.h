@@ -561,6 +561,7 @@ typedef struct system_variables
   ha_rows max_join_size;
   ha_rows max_vitess_complete_read_size;
   ha_rows fedx_bkah_size;
+  ha_rows fedx_small_table_threshold;
   ha_rows fedx_valid_index_cardinality_percent;
   ha_rows fedx_valid_index_cardinality_minvalue;
   ha_rows fedx_valid_index_max_result_rowcount;

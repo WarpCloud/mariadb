@@ -1953,6 +1953,23 @@ bool compare_key_part_and_extract_actual_string_length(KEY_PART_INFO *key_part, 
     }
     uint actual_length = actual_end_length > actual_start_length ? actual_start_length : actual_end_length;
     *actual_string_length = actual_length;
+  } else if (key_part->field->type() == MYSQL_TYPE_STRING) {
+    uint actual_start_length = length;
+    for (uint i = 0; i < length; i++) {
+      if (start_ptr[i] == 0) {
+        actual_start_length = i;
+        break;
+      }
+    }
+    uint actual_end_length = length;
+    for (uint i = 0; i < length; i++) {
+      if (end_ptr[i] == 0) {
+        actual_end_length = i;
+        break;
+      }
+    }
+    uint actual_length = actual_end_length > actual_start_length ? actual_start_length : actual_end_length;
+    *actual_string_length = actual_length;
   }
   return ret;
 }
@@ -1984,7 +2001,7 @@ bool compare_key_and_extract_actual_string_length(KEY *key_info, key_range *star
   for (key_part = key_info->key_part, remainder = key_info->user_defined_key_parts,
           length = start_key->length, start_ptr = start_key->key,
           end_ptr = end_key->key, value_index = 0; ; remainder--,key_part++,value_index++) {
-      bool is_string = key_part->key_part_flag & HA_VAR_LENGTH_PART;
+      bool is_string = key_part->key_part_flag & HA_VAR_LENGTH_PART || key_part->field->type() == MYSQL_TYPE_STRING;
       uint store_length = key_part->store_length;
       uint part_length= MY_MIN(store_length, length);
       bool start_null = false, end_null = false;
@@ -2063,7 +2080,7 @@ range_type get_range_type(KEY *key_info, key_range *start_key, key_range *end_ke
 
 bool ha_federatedx::is_valid_index(uint inx) {
   DBUG_ENTER("ha_federatedx::is_valid_index");
-  if (ha_thd() && optimizer_flag(ha_thd(), OPTIMIZER_SWITCH_FEDX_CBO_WITH_ACTUAL_RECORDS)) {
+  if (ha_thd() && optimizer_flag(ha_thd(), OPTIMIZER_SWITCH_FEDX_CBO_WITH_ACTUAL_RECORDS) && index_cardinality_init) {
     ha_rows cardinality = index_cardinality[inx];
     ha_rows valid_index_percent = ha_thd()->variables.fedx_valid_index_cardinality_percent;
     ha_rows valid_index_minvalue = ha_thd()->variables.fedx_valid_index_cardinality_minvalue;
@@ -2089,11 +2106,15 @@ ha_rows ha_federatedx::records_in_range(uint inx, key_range *start_key,
 
 */
   DBUG_ENTER("ha_federatedx::records_in_range");
-  if (ha_thd() && optimizer_flag(ha_thd(), OPTIMIZER_SWITCH_FEDX_CBO_WITH_ACTUAL_RECORDS)) {
+  if (ha_thd() && optimizer_flag(ha_thd(), OPTIMIZER_SWITCH_FEDX_CBO_WITH_ACTUAL_RECORDS) && index_cardinality_init) {
     ha_rows index_one_way_percent = ha_thd()->variables.fedx_index_one_way_percent;
     ha_rows index_two_way_percent = ha_thd()->variables.fedx_index_two_way_percent;
     ha_rows invalid_index_expand_factor = ha_thd()->variables.fedx_invalid_index_expand_factor;
     ha_rows valid_index_max_result_rowcount = ha_thd()->variables.fedx_valid_index_max_result_rowcount;
+    ha_rows small_table_threshold = ha_thd()->variables.fedx_small_table_threshold;
+    if (stats.records <= small_table_threshold) {
+      DBUG_RETURN(FEDERATEDX_RECORDS_IN_RANGE);
+    }
     if (!is_valid_index(inx)) {
       // we really do not want to use invalid index, so just return invalid_index_expand_factor*stats.records
       DBUG_RETURN(stats.records*invalid_index_expand_factor < FEDERATEDX_RECORDS_IN_RANGE ?
@@ -3158,7 +3179,7 @@ int ha_federatedx::index_read_idx_with_result_set(uchar *buf, uint index,
                                                  FEDERATEDX_IO_RESULT **result)
 {
   int retval;
-  char error_buffer[FEDERATEDX_QUERY_BUFFER_SIZE];
+  char error_buffer[FEDERATEDX_QUERY_ERROR_BUFFER_SIZE];
   char index_value[STRING_BUFFER_USUAL_SIZE];
   char sql_query_buffer[FEDERATEDX_QUERY_BUFFER_SIZE];
   String index_string(index_value,
@@ -4579,9 +4600,11 @@ int ha_federatedx::info(uint flag)
                                share->table_name_length, flag))
       goto error;
 
-    if (!index_cardinality_init) {
-      if ((error_code = init_index_cardinality(*iop))) {
-        goto error;
+    if (flag & HA_STATUS_INIT_FEDX_INFO) {
+      if (!index_cardinality_init) {
+        if ((error_code = init_index_cardinality(*iop))) {
+          goto error;
+        }
       }
     }
 
@@ -4594,7 +4617,7 @@ int ha_federatedx::info(uint flag)
   if (flag & HA_STATUS_AUTO)
     stats.auto_increment_value= (*iop)->last_insert_id();
 
-  if ((flag & (HA_STATUS_VARIABLE | HA_STATUS_CONST)) && (!strcasecmp((*iop)->get_scheme(), "vitess"))) {
+  if ((flag & HA_STATUS_VARIABLE) && (flag & HA_STATUS_INIT_FEDX_INFO) && (!strcasecmp((*iop)->get_scheme(), "vitess"))) {
     // vitess related information
 
     // 1. shard info

@@ -414,6 +414,7 @@ enum ha_base_keytype {
   when only HA_STATUS_VARIABLE but it won't be used.
 */
 #define HA_STATUS_VARIABLE_EXTRA 128U
+#define HA_STATUS_INIT_FEDX_INFO 256U
 
 /*
   Errorcodes given by handler functions

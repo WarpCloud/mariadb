@@ -891,8 +891,9 @@ bool Protocol::send_result_set_metadata(List<Item> *list, uint flags)
       pos[6]= field.type;
       int2store(pos+7,field.flags);
       pos[9]= (char) field.decimals;
-      pos[10]= 0;				// For the future
-      pos[11]= 0;				// For the future
+      int2store(pos+10,item->charset_for_protocol()->number);
+      //pos[10]= 0;				// For the future
+      //pos[11]= 0;				// For the future
       pos+= 12;
     }
     else
