@@ -578,6 +578,10 @@ bool federatedx_io_mysql::table_metadata(ha_statistics *stats,
   if (!is_column_null(row, 4))
     stats->records= (ha_rows) my_strtoll10(get_column_data(row, 4),
 	                                   (char**) 0, &error);
+  if (stats->records == 0) {
+    stats->records = FEDERATEDX_RECORDS_IN_RANGE;
+  }
+
   if (!is_column_null(row, 5))
     stats->mean_rec_length= (ulong) my_strtoll10(get_column_data(row, 5),
 	                                         (char**) 0, &error);

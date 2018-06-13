@@ -90,6 +90,7 @@ typedef struct st_fedrated_server {
 #define HA_FEDERATEDX_ERROR_WITH_REMOTE_SYSTEM 10000
 
 #define FEDERATEDX_QUERY_BUFFER_SIZE STRING_BUFFER_USUAL_SIZE * 5
+#define FEDERATEDX_QUERY_ERROR_BUFFER_SIZE 512
 #define FEDERATEDX_RECORDS_IN_RANGE 2
 #define FEDERATEDX_MAX_KEY_LENGTH 3500 // Same as innodb
 #define FEDERATEDX_MAX_IN_SIZE 128 // max in size when construct a in filter
@@ -341,7 +342,7 @@ class ha_federatedx: public handler
   bool position_called;
   uint fetch_num; // stores the fetch num
   int remote_error_number;
-  char remote_error_buf[FEDERATEDX_QUERY_BUFFER_SIZE];
+  char remote_error_buf[FEDERATEDX_QUERY_ERROR_BUFFER_SIZE];
   bool ignore_duplicates, replace_duplicates;
   bool insert_dup_update, table_will_be_deleted;
   DYNAMIC_STRING bulk_insert;
