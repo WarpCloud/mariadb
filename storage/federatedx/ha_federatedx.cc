@@ -1937,55 +1937,30 @@ bool compare_key_part_and_extract_actual_string_length(KEY_PART_INFO *key_part, 
   if (key_part->key_part_flag & HA_VAR_LENGTH_PART) {
     uint start_length = uint2korr(start_ptr);
     uint end_length = uint2korr(end_ptr);
-    uint actual_start_length = start_length;
-    for (uint i = 0; i < start_length; i++) {
-      if (start_ptr[i + HA_KEY_BLOB_LENGTH] == 0) {
-        actual_start_length = i;
-        break;
-      }
-    }
-    uint actual_end_length = end_length;
-    for (uint i = 0; i < end_length; i++) {
-      if (end_ptr[i + HA_KEY_BLOB_LENGTH] == 0) {
-        actual_end_length = i;
-        break;
-      }
-    }
-    uint actual_length = actual_end_length > actual_start_length ? actual_start_length : actual_end_length;
-    *actual_string_length = actual_length;
-  } else if (key_part->field->type() == MYSQL_TYPE_STRING) {
-    uint actual_start_length = length;
-    for (uint i = 0; i < length; i++) {
-      if (start_ptr[i] == 0) {
-        actual_start_length = i;
-        break;
-      }
-    }
-    uint actual_end_length = length;
-    for (uint i = 0; i < length; i++) {
-      if (end_ptr[i] == 0) {
-        actual_end_length = i;
-        break;
-      }
-    }
-    uint actual_length = actual_end_length > actual_start_length ? actual_start_length : actual_end_length;
-    *actual_string_length = actual_length;
-  }
-  return ret;
-}
-
-void get_actual_string_length(KEY_PART_INFO *key_part, const uchar *ptr, uint length, uint *actual_string_length) {
-  if (key_part->key_part_flag & HA_VAR_LENGTH_PART) {
-    uint length = uint2korr(ptr);
-    uint actual_length = length;
-    for (uint i = 0; i < length; i++) {
-      if (ptr[i + HA_KEY_BLOB_LENGTH] == 0) {
+    uint common_length = start_length > end_length ? end_length : start_length;
+    uint actual_length = 0;
+    for (uint i = 0; i < common_length; i++) {
+      if (start_ptr[i + HA_KEY_BLOB_LENGTH] != end_ptr[i + HA_KEY_BLOB_LENGTH] || start_ptr[i + HA_KEY_BLOB_LENGTH] == 0 || end_ptr[i + HA_KEY_BLOB_LENGTH] == 0) {
         actual_length = i;
         break;
       }
     }
-    *actual_string_length = actual_length;
+    if (actual_length > 0) {
+      *actual_string_length = actual_length;
+    }
+  } else if (key_part->field->type() == MYSQL_TYPE_STRING) {
+    uint actual_length = 0;
+    for (uint i = 0; i < length; i++) {
+      if (start_ptr[i] != end_ptr[i] || start_ptr[i] == 0 || end_ptr[i] == 0) {
+        actual_length = i;
+        break;
+      }
+    }
+    if (actual_length > 0) {
+      *actual_string_length = actual_length;
+    }
   }
+  return ret;
 }
 
 bool compare_key_and_extract_actual_string_length(KEY *key_info, key_range *start_key,
@@ -2001,7 +1976,6 @@ bool compare_key_and_extract_actual_string_length(KEY *key_info, key_range *star
   for (key_part = key_info->key_part, remainder = key_info->user_defined_key_parts,
           length = start_key->length, start_ptr = start_key->key,
           end_ptr = end_key->key, value_index = 0; ; remainder--,key_part++,value_index++) {
-      bool is_string = key_part->key_part_flag & HA_VAR_LENGTH_PART || key_part->field->type() == MYSQL_TYPE_STRING;
       uint store_length = key_part->store_length;
       uint part_length= MY_MIN(store_length, length);
       bool start_null = false, end_null = false;
@@ -2023,15 +1997,6 @@ bool compare_key_and_extract_actual_string_length(KEY *key_info, key_range *star
         ret &= same;
       } else {
         ret = false;
-        if (is_string) {
-          // get actual string length
-          if (start_null) {
-            get_actual_string_length(key_part, end_ptr, part_length, actual_string_length);
-          }
-          if (end_null) {
-            get_actual_string_length(key_part, start_ptr, part_length, actual_string_length);
-          }
-        }
       }
 
 for_next_key_part:
