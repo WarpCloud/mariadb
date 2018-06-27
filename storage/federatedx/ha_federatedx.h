@@ -349,6 +349,7 @@ class ha_federatedx: public handler
   DYNAMIC_STRING additionalFilter;
   bool has_equal_filter;
   ha_rows index_cardinality[MAX_KEY+1];
+  ha_rows records_per_shard;
   bool index_cardinality_init;
 
 private:
@@ -412,6 +413,7 @@ public:
     int multi_range_read_init(RANGE_SEQ_IF *seq_funcs, void *seq_init_param,
                                    uint n_ranges, uint mode, HANDLER_BUFFER *buf);
     bool use_default_mrr;
+    bool partial_ppd;
     /*
     This is a list of flags that says what the storage engine
     implements. The current table flags are documented in

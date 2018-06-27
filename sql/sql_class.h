@@ -561,6 +561,11 @@ typedef struct system_variables
   ha_rows max_join_size;
   ha_rows max_vitess_complete_read_size;
   ha_rows fedx_bkah_size;
+  ha_rows fedx_vitess_table_records_mode;
+  ha_rows fedx_vitess_table_records_factor;
+  ha_rows fedx_vitess_push_limit_for_simple_dml;
+  ha_rows fedx_vitess_limit_expand_factor;
+  ha_rows fedx_vitess_min_str_len_for_cbo;
   ha_rows fedx_small_table_threshold;
   ha_rows fedx_valid_index_cardinality_percent;
   ha_rows fedx_valid_index_cardinality_minvalue;
