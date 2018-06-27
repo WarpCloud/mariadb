@@ -2196,11 +2196,28 @@ static Sys_var_harows Sys_fedx_bkah_size(
         VALID_RANGE(1, HA_POS_ERROR), DEFAULT(128), BLOCK_SIZE(1),
         NO_MUTEX_GUARD, NOT_IN_BINLOG);
 
+static Sys_var_harows Sys_fedx_vitess_table_records_mode(
+        "fedx_vitess_table_records_mode",
+        "how to update the records in table status of vitess table "
+                "0: use records from one shard(shard 0)"
+                "1: use records records_per_shard * shard_num"
+                "2: use records * fedx_vitess_table_records_factor",
+        SESSION_VAR(fedx_vitess_table_records_mode), CMD_LINE(REQUIRED_ARG),
+        VALID_RANGE(0, 2), DEFAULT(1), BLOCK_SIZE(1),
+        NO_MUTEX_GUARD, NOT_IN_BINLOG);
+
+static Sys_var_harows Sys_fedx_vitess_table_records_factor(
+        "fedx_vitess_table_records_factor",
+        "only valid when fedx_vitess_table_records_mode = 2",
+        SESSION_VAR(fedx_vitess_table_records_factor), CMD_LINE(REQUIRED_ARG),
+        VALID_RANGE(0, HA_POS_ERROR), DEFAULT(1), BLOCK_SIZE(1),
+        NO_MUTEX_GUARD, NOT_IN_BINLOG);
+
 static Sys_var_harows Sys_fedx_small_table_threshold(
         "fedx_small_table_threshold",
         "the max size of a small fedx table",
         SESSION_VAR(fedx_small_table_threshold), CMD_LINE(REQUIRED_ARG),
-        VALID_RANGE(1, HA_POS_ERROR), DEFAULT(200), BLOCK_SIZE(1),
+        VALID_RANGE(1, HA_POS_ERROR), DEFAULT(2000), BLOCK_SIZE(1),
         NO_MUTEX_GUARD, NOT_IN_BINLOG);
 
 static Sys_var_harows Sys_fedx_valid_index_cardinality_percent(
@@ -2214,14 +2231,14 @@ static Sys_var_harows Sys_fedx_valid_index_cardinality_minvalue(
         "fedx_valid_index_cardinality_minvalue",
         "the max size of a complete read for vitess table",
         SESSION_VAR(fedx_valid_index_cardinality_minvalue), CMD_LINE(REQUIRED_ARG),
-        VALID_RANGE(0, 10000000L), DEFAULT(100), BLOCK_SIZE(1),
+        VALID_RANGE(0, 10000000L), DEFAULT(1), BLOCK_SIZE(1),
         NO_MUTEX_GUARD, NOT_IN_BINLOG);
 
 static Sys_var_harows Sys_fedx_valid_index_max_result_rowcount(
         "fedx_valid_index_max_result_rowcount",
         "the max size of a complete read for vitess table",
         SESSION_VAR(fedx_valid_index_max_result_rowcount), CMD_LINE(REQUIRED_ARG),
-        VALID_RANGE(0, HA_POS_ERROR), DEFAULT(200000L), BLOCK_SIZE(1),
+        VALID_RANGE(0, HA_POS_ERROR), DEFAULT(1600000L), BLOCK_SIZE(1),
         NO_MUTEX_GUARD, NOT_IN_BINLOG);
 
 static Sys_var_harows Sys_fedx_index_one_way_percent(
@@ -2243,6 +2260,27 @@ static Sys_var_harows Sys_fedx_invalid_index_expand_factor(
         "the max size of a complete read for vitess table",
         SESSION_VAR(fedx_invalid_index_expand_factor), CMD_LINE(REQUIRED_ARG),
         VALID_RANGE(0, 10000), DEFAULT(10), BLOCK_SIZE(1),
+        NO_MUTEX_GUARD, NOT_IN_BINLOG);
+
+static Sys_var_harows Sys_fedx_vitess_push_limit_for_simple_dml(
+        "fedx_vitess_push_limit_for_simple_dml",
+        "the max size of a complete read for vitess table",
+        SESSION_VAR(fedx_vitess_push_limit_for_simple_dml), CMD_LINE(REQUIRED_ARG),
+        VALID_RANGE(0, 1), DEFAULT(0), BLOCK_SIZE(1),
+        NO_MUTEX_GUARD, NOT_IN_BINLOG);
+
+static Sys_var_harows Sys_fedx_vitess_limit_expand_factor(
+        "fedx_vitess_limit_expand_factor",
+        "the max size of a complete read for vitess table",
+        SESSION_VAR(fedx_vitess_limit_expand_factor), CMD_LINE(REQUIRED_ARG),
+        VALID_RANGE(1, 10000), DEFAULT(2), BLOCK_SIZE(1),
+        NO_MUTEX_GUARD, NOT_IN_BINLOG);
+
+static Sys_var_harows Sys_fedx_vitess_min_str_len_for_cbo(
+        "fedx_vitess_min_str_len_for_cbo",
+        "the max size of a complete read for vitess table",
+        SESSION_VAR(fedx_vitess_min_str_len_for_cbo), CMD_LINE(REQUIRED_ARG),
+        VALID_RANGE(1, 10000), DEFAULT(3), BLOCK_SIZE(1),
         NO_MUTEX_GUARD, NOT_IN_BINLOG);
 
 static Sys_var_harows Sys_fedx_scan_expand_factor(

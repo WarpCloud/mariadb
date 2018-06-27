@@ -842,6 +842,8 @@ ha_federatedx::ha_federatedx(handlerton *hton,
   local_shard_info_result = NULL;
   max_query_size = 0;
   index_cardinality_init = false;
+  records_per_shard = 0;
+  partial_ppd = TRUE;
   bzero(index_cardinality, sizeof(index_cardinality));
   vindex_init = false;
   bzero(&vindex_set, sizeof(vindex_set));
@@ -1598,6 +1600,7 @@ const COND *ha_federatedx::cond_push(const Item *cond) {
     //((Item *)cond)->print(&filter, QT_ORDINARY);
     //filter.length();
     if (additionalFilter.length != 0) {
+      partial_ppd = FALSE;
       DBUG_RETURN(0);
     }
     filter.length(0);
@@ -2049,7 +2052,7 @@ bool ha_federatedx::is_valid_index(uint inx) {
     ha_rows cardinality = index_cardinality[inx];
     ha_rows valid_index_percent = ha_thd()->variables.fedx_valid_index_cardinality_percent;
     ha_rows valid_index_minvalue = ha_thd()->variables.fedx_valid_index_cardinality_minvalue;
-    if (cardinality == 0 || cardinality * 10000 < stats.records * valid_index_percent
+    if (cardinality == 0 || cardinality * 10000 < records_per_shard * valid_index_percent
         || cardinality < valid_index_minvalue) {
       DBUG_RETURN(false);
     } else {
@@ -2089,6 +2092,9 @@ ha_rows ha_federatedx::records_in_range(uint inx, key_range *start_key,
     range_type type;
     uint actual_key_length = 0;
     type = get_range_type(&table->key_info[inx], start_key, end_key, &actual_key_length);
+    if (actual_key_length < ha_thd()->variables.fedx_vitess_min_str_len_for_cbo) {
+      actual_key_length = 0;
+    }
     ha_rows ret;
       if (type == EQUAL) {
         ret = stats.records/index_cardinality[inx];
@@ -3174,9 +3180,21 @@ int ha_federatedx::index_read_idx_with_result_set(uchar *buf, uint index,
                         NULL, 0, 0);
   sql_query.append(index_string);
 
-
   bool force_oltp = false;
   if (is_delete_update_target || statement_lock_type >= TL_WRITE_DELAYED) {
+    if (ha_thd()->lex->sql_command == SQLCOM_DELETE && !partial_ppd
+            && ha_thd()->variables.fedx_vitess_push_limit_for_simple_dml) {
+      ha_rows expand_factor = ha_thd()->variables.fedx_vitess_limit_expand_factor;
+      ha_rows limit = 0;
+      if (ha_thd()->lex && ha_thd()->lex->current_select) {
+        limit = ha_thd()->lex->current_select->get_limit();
+      }
+      if (limit) {
+        limit = limit * expand_factor;
+        sql_query.append(STRING_WITH_LEN(" LIMIT "));
+        sql_query.append_ulonglong(limit);
+      }
+    }
     sql_query.append(STRING_WITH_LEN(" FOR UPDATE"));
     force_oltp = true;
 
@@ -3268,6 +3286,19 @@ int ha_federatedx::read_range_first(const key_range *start_key,
 
   bool force_oltp = false;
   if (is_delete_update_target || statement_lock_type >= TL_WRITE_DELAYED) {
+    if (ha_thd()->lex->sql_command == SQLCOM_DELETE && !partial_ppd
+        && ha_thd()->variables.fedx_vitess_push_limit_for_simple_dml) {
+      ha_rows expand_factor = ha_thd()->variables.fedx_vitess_limit_expand_factor;
+      ha_rows limit = 0;
+      if (ha_thd()->lex && ha_thd()->lex->current_select) {
+        limit = ha_thd()->lex->current_select->get_limit();
+      }
+      if (limit) {
+        limit = limit * expand_factor;
+        sql_query.append(STRING_WITH_LEN(" LIMIT "));
+        sql_query.append_ulonglong(limit);
+      }
+    }
     sql_query.append(STRING_WITH_LEN(" FOR UPDATE"));
     force_oltp = true;
   }
@@ -3523,6 +3554,19 @@ int ha_federatedx::rnd_init(bool scan)
 
     bool force_oltp = false;
     if (is_delete_update_target || statement_lock_type >= TL_WRITE_DELAYED) {
+      if (ha_thd()->lex->sql_command == SQLCOM_DELETE && !partial_ppd
+          && ha_thd()->variables.fedx_vitess_push_limit_for_simple_dml) {
+        ha_rows expand_factor = ha_thd()->variables.fedx_vitess_limit_expand_factor;
+        ha_rows limit = 0;
+        if (ha_thd()->lex && ha_thd()->lex->current_select) {
+          limit = ha_thd()->lex->current_select->get_limit();
+        }
+        if (limit) {
+          limit = limit * expand_factor;
+          sql_query.append(STRING_WITH_LEN(" LIMIT "));
+          sql_query.append_ulonglong(limit);
+        }
+      }
       sql_query.append(STRING_WITH_LEN(" FOR UPDATE"));
       force_oltp = true;
       if (pr_info.partial_read_mode != PARTIAL_READ_NONE) {
@@ -4551,6 +4595,14 @@ int ha_federatedx::info(uint flag)
       goto fail;
   }
 
+  if ((flag & HA_STATUS_VARIABLE) && (flag & HA_STATUS_INIT_FEDX_INFO) && (!strcasecmp((*iop)->get_scheme(), "vitess"))) {
+    if (share->s->shard_num == 0) {
+      if ((error_code = init_shard_info(*iop))) {
+        goto fail;
+      }
+    }
+  }
+
   if (flag & (HA_STATUS_VARIABLE | HA_STATUS_CONST))
   {
     /*
@@ -4564,6 +4616,19 @@ int ha_federatedx::info(uint flag)
     if ((*iop)->table_metadata(&stats, share->table_name,
                                share->table_name_length, flag))
       goto error;
+    records_per_shard = stats.records;
+
+    if (!strcasecmp((*iop)->get_scheme(), "vitess") && share->s->shard_num > 0) {
+      ha_rows records_mode = thd->variables.fedx_vitess_table_records_mode;
+      ha_rows records_factor = thd->variables.fedx_vitess_table_records_factor;
+      if (records_mode == 0) {
+        //do nothing
+      } else if (records_mode == 1) {
+        stats.records = stats.records * share->s->shard_num;
+      } else if (records_mode == 2) {
+        stats.records = stats.records * records_factor;
+      }
+    }
 
     if (flag & HA_STATUS_INIT_FEDX_INFO) {
       if (!index_cardinality_init) {
@@ -4585,28 +4650,21 @@ int ha_federatedx::info(uint flag)
   if ((flag & HA_STATUS_VARIABLE) && (flag & HA_STATUS_INIT_FEDX_INFO) && (!strcasecmp((*iop)->get_scheme(), "vitess"))) {
     // vitess related information
 
-    // 1. shard info
-    if (share->s->shard_num == 0) {
-      if ((error_code = init_shard_info(*iop))) {
-        goto fail;
-      }
-    }
-
-    // 2. range info(global)
+    // 1. range info(global)
     if (cache_range_info && share->part_col_name == NULL) {
       if ((error_code = init_global_range_info(*iop))) {
         goto error;
       }
     }
 
-    // 3. range info(local)
+    // 2. range info(local)
     if (support_partial_read && !cache_range_info && local_part_col_name == NULL) {
       if ((error_code = init_local_range_info(*iop))) {
         goto error;
       }
     }
 
-    // 4. vindex info
+    // 3. vindex info
     if (!vindex_init) {
       if (table->def_read_set.n_bits == table->s->fields) {
         if (vindex_set.bitmap == NULL) {
@@ -4711,6 +4769,7 @@ int ha_federatedx::reset(void)
   position_called= FALSE;
   dynstr_trunc(&additionalFilter, additionalFilter.length);
   use_default_mrr = TRUE;
+  partial_ppd = TRUE;
   if (thd) {
     scan_mode = optimizer_flag(thd, OPTIMIZER_SWITCH_FEDX_SCAN_MODE_OLAP) ? SCAN_MODE_OLAP : SCAN_MODE_OLTP;
   }
