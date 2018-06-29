@@ -1942,22 +1942,30 @@ bool compare_key_part_and_extract_actual_string_length(KEY_PART_INFO *key_part, 
     uint end_length = uint2korr(end_ptr);
     uint common_length = start_length > end_length ? end_length : start_length;
     uint actual_length = 0;
-    for (uint i = 0; i < common_length; i++) {
+    uint i = 0;
+    for (i = 0; i < common_length; i++) {
       if (start_ptr[i + HA_KEY_BLOB_LENGTH] != end_ptr[i + HA_KEY_BLOB_LENGTH] || start_ptr[i + HA_KEY_BLOB_LENGTH] == 0 || end_ptr[i + HA_KEY_BLOB_LENGTH] == 0) {
         actual_length = i;
         break;
       }
+    }
+    if (i == common_length) {
+      actual_length = common_length;
     }
     if (actual_length > 0) {
       *actual_string_length = actual_length;
     }
   } else if (key_part->field->type() == MYSQL_TYPE_STRING) {
     uint actual_length = 0;
-    for (uint i = 0; i < length; i++) {
+    uint i = 0;
+    for (i = 0; i < length; i++) {
       if (start_ptr[i] != end_ptr[i] || start_ptr[i] == 0 || end_ptr[i] == 0) {
         actual_length = i;
         break;
       }
+    }
+    if (i == length) {
+      actual_length = length;
     }
     if (actual_length > 0) {
       *actual_string_length = actual_length;
