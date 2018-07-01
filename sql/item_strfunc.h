@@ -71,7 +71,7 @@ public:
     (void) val_str(&tmp);
   }
 
-  virtual String *to_str(String *str) const;
+  virtual String *to_str(String *str, THD *thd) const;
 
 };
 

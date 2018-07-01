@@ -561,6 +561,7 @@ typedef struct system_variables
   ha_rows max_join_size;
   ha_rows max_vitess_complete_read_size;
   ha_rows fedx_bkah_size;
+  ha_rows fedx_batch_insert_size;
   ha_rows fedx_vitess_table_records_mode;
   ha_rows fedx_vitess_table_records_factor;
   ha_rows fedx_vitess_push_limit_for_simple_dml;

@@ -773,14 +773,14 @@ bool Item_func_connection_id::fix_fields(THD *thd, Item **ref)
   return FALSE;
 }
 
-String *Item_num_op::to_str(String *str) const {
+String *Item_num_op::to_str(String *str, THD *thd) const {
       if (arg_count != 2) {
         return 0;
       }
       char buff[1024];
       String str1(buff, sizeof(buff), system_charset_info);
       str1.length(0);
-      if (args[0]->to_str(&str1)) {
+      if (args[0]->to_str(&str1, thd)) {
         if (!is_component_item(args[0])) {
           str->append(STRING_WITH_LEN("("));
         }
@@ -796,7 +796,7 @@ String *Item_num_op::to_str(String *str) const {
       str->append(STRING_WITH_LEN(" "));
       str->append(name, strlen(name));
       str->append(STRING_WITH_LEN(" "));
-      if (args[1]->to_str(&str1)) {
+      if (args[1]->to_str(&str1, thd)) {
         if (!is_component_item(args[1])) {
           str->append(STRING_WITH_LEN("("));
         }
@@ -1868,7 +1868,7 @@ double Item_func_neg::real_op()
   return -value;
 }
 
-String *Item_func_neg::to_str(String *str) const {
+String *Item_func_neg::to_str(String *str, THD *thd) const {
   if (arg_count != 1) {
     return 0;
   }
@@ -1876,7 +1876,7 @@ String *Item_func_neg::to_str(String *str) const {
   String str1(buff, sizeof(buff), system_charset_info);
   str1.length(0);
   str->append(STRING_WITH_LEN("-"));
-  if (args[0]->to_str(&str1)) {
+  if (args[0]->to_str(&str1, thd)) {
     if (!is_component_item(args[0])) {
       str->append(STRING_WITH_LEN("("));
     }
@@ -1984,7 +1984,7 @@ void Item_func_neg::fix_length_and_dec()
   DBUG_VOID_RETURN;
 }
 
-String *Item_func_num1::to_str(String *str) const {
+String *Item_func_num1::to_str(String *str, THD *thd) const {
   if (arg_count != 1) {
     return 0;
   }
@@ -1994,7 +1994,7 @@ String *Item_func_num1::to_str(String *str) const {
   const char * name = func_name();
   str->append(name, strlen(name));
   str->append(STRING_WITH_LEN("("));
-  if (args[0]->to_str(&str1)) {
+  if (args[0]->to_str(&str1, thd)) {
     str->append(str1.ptr(), str1.length());
     str1.length(0);
   } else {

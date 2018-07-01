@@ -2196,6 +2196,13 @@ static Sys_var_harows Sys_fedx_bkah_size(
         VALID_RANGE(1, HA_POS_ERROR), DEFAULT(128), BLOCK_SIZE(1),
         NO_MUTEX_GUARD, NOT_IN_BINLOG);
 
+static Sys_var_harows Sys_fedx_batch_insert_size(
+        "fedx_batch_insert_size",
+        "the max size of a complete read for vitess table",
+        SESSION_VAR(fedx_batch_insert_size), CMD_LINE(REQUIRED_ARG),
+        VALID_RANGE(0, HA_POS_ERROR), DEFAULT(2000), BLOCK_SIZE(1),
+        NO_MUTEX_GUARD, NOT_IN_BINLOG);
+
 static Sys_var_harows Sys_fedx_vitess_table_records_mode(
         "fedx_vitess_table_records_mode",
         "how to update the records in table status of vitess table "
@@ -2597,6 +2604,8 @@ export const char *optimizer_switch_names[]=
   "fedx_auto_partial_read_on_limit",
   "fedx_cache_range_info",
   "fedx_cbo_with_actual_records",
+  "fedx_ppd_on_item_cache",
+  "fedx_init_rec_per_key",
   "default",
   NullS
 };

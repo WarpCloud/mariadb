@@ -7688,7 +7688,7 @@ void Item_field::print(String *str, enum_query_type query_type)
   Item_ident::print(str, query_type);
 }
 
-String *Item_field::to_str(String *str) const {
+String *Item_field::to_str(String *str, THD *thd) const {
   if (field && field->table->const_table)
   {
     char buff[MAX_FIELD_WIDTH];
@@ -8107,7 +8107,7 @@ error:
   return TRUE;
 }
 
-String* Item_ref::to_str(String *str) const
+String* Item_ref::to_str(String *str, THD *thd) const
 {
   if (ref)
   {
@@ -8117,7 +8117,7 @@ String* Item_ref::to_str(String *str) const
       return str;
     }
     else {
-      return (*ref)->to_str(str);
+      return (*ref)->to_str(str, thd);
     }
   }
   else
@@ -9858,9 +9858,9 @@ void Item_cache::print(String *str, enum_query_type query_type)
   str->append(')');
 }
 
-String *Item_cache::to_str(String *str) const {
+String *Item_cache::to_str(String *str, THD *thd) const {
   if (example) {
-    return example->to_str(str);
+    return example->to_str(str, thd);
   } else {
     return 0;
   }
@@ -9889,6 +9889,23 @@ bool  Item_cache_int::cache_value()
   null_value= example->null_value;
   unsigned_flag= example->unsigned_flag;
   return TRUE;
+}
+
+String* Item_cache_int::to_str(String* str, THD *thd) const
+{
+  String *ret = Item_cache::to_str(str, thd);
+  if (ret) {
+    return ret;
+  }
+  if (example && fixed && thd &&
+          optimizer_flag(thd, OPTIMIZER_SWITCH_FEDX_PPD_ON_ITEM_CACHE)) {
+    longlong v = example->val_int_result();
+    if (!example->null_value) {
+      str->append_longlong(v);
+      return str;
+    }
+  }
+  return 0;
 }
 
 
@@ -10302,6 +10319,26 @@ String* Item_cache_str::val_str(String *str)
   if (!has_value())
     return 0;
   return value;
+}
+
+String* Item_cache_str::to_str(String *str, THD *thd) const
+{
+  String *ret = Item_cache::to_str(str, thd);
+  if (ret) {
+    return ret;
+  }
+  if (example && fixed && thd
+      && optimizer_flag(thd, OPTIMIZER_SWITCH_FEDX_PPD_ON_ITEM_CACHE)) {
+    char buffer_local[STRING_BUFFER_USUAL_SIZE];
+    String *value_local, value_buff_local;
+    value_buff_local.set(buffer_local, sizeof(buffer_local), example->collation.collation);
+    value_local = example->str_result(&value_buff_local);
+    if (!example->null_value) {
+      append_unescaped(str, value_local->ptr(), value_local->length());
+      return str;
+    }
+  }
+  return 0;
 }
 
 
