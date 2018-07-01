@@ -691,7 +691,7 @@ public:
   Item_func_num1(THD *thd, Item *a, Item *b): Item_func_numhybrid(thd, a, b) {}
   bool check_partition_func_processor(void *int_arg) { return FALSE; }
   bool check_vcol_func_processor(void *arg) { return FALSE; }
-  virtual String *to_str(String *str) const;
+  virtual String *to_str(String *str, THD *thd) const;
 
 };
 
@@ -734,7 +734,7 @@ class Item_num_op :public Item_func_numhybrid
       set_handler(type_handler_long_or_longlong());
   }
   bool need_parentheses_in_default() { return true; }
-  virtual String *to_str(String *str) const;
+  virtual String *to_str(String *str, THD *thd) const;
 
 };
 
@@ -1173,7 +1173,7 @@ public:
   bool need_parentheses_in_default() { return true; }
   Item *get_copy(THD *thd)
   { return get_item_copy<Item_func_neg>(thd, this); }
-  virtual String *to_str(String *str) const;
+  virtual String *to_str(String *str, THD *thd) const;
 
 };
 
@@ -2045,7 +2045,7 @@ public:
     return mark_unsupported_function(func_name(), "()", arg, VCOL_NON_DETERMINISTIC);
   }
   // do not push udf
-  virtual String *to_str(String *str) const { return 0;};
+  virtual String *to_str(String *str, THD *thd) const { return 0;};
 };
 
 
@@ -2836,7 +2836,7 @@ public:
   }
 
   // do not push stored function
-  virtual String *to_str(String *str) const { return 0;};
+  virtual String *to_str(String *str, THD *thd) const { return 0;};
 
   void update_null_value()
   { 

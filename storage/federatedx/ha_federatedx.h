@@ -346,6 +346,7 @@ class ha_federatedx: public handler
   bool ignore_duplicates, replace_duplicates;
   bool insert_dup_update, table_will_be_deleted;
   DYNAMIC_STRING bulk_insert;
+  ha_rows bulk_insert_size;
   DYNAMIC_STRING additionalFilter;
   bool has_equal_filter;
   ha_rows index_cardinality[MAX_KEY+1];
@@ -535,6 +536,7 @@ public:
 
   void set_err_status(int result);
   uint init_index_cardinality(federatedx_io *io);
+  void init_rec_per_key();
   int find_index_num(const char* key_name);
   uint init_vindex_info(federatedx_io *io);
   void init_pk_info();

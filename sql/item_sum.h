@@ -1300,7 +1300,7 @@ public:
   bool add();
 
   // do not push stored function
-  virtual String *to_str(String *str) const { return 0;};
+  virtual String *to_str(String *str, THD *thd) const { return 0;};
 
   /* val_xx functions */
   longlong val_int()

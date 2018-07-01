@@ -831,6 +831,7 @@ ha_federatedx::ha_federatedx(handlerton *hton,
    txn(0), io(0), stored_result(0)
 {
   bzero(&bulk_insert, sizeof(bulk_insert));
+  bulk_insert_size = 0;
   bzero(&additionalFilter, sizeof(additionalFilter));
   init_dynamic_string(&additionalFilter, NULL, FEDERATEDX_QUERY_BUFFER_SIZE, FEDERATEDX_QUERY_BUFFER_SIZE);
   bzero(&pr_info.partial_read_query, sizeof(pr_info.partial_read_query));
@@ -1592,7 +1593,7 @@ const COND *ha_federatedx::cond_push(const Item *cond) {
     String filter(buff, sizeof(buff), system_charset_info);
     filter.length(0);
     cond->walk_const(&Item::has_equal_condition, false, &has_equal_filter);
-    res = cond->to_str(&filter);
+    res = cond->to_str(&filter, ha_thd());
     if (res != 0 && res->length() > 0) {
         dynstr_append_mem(&additionalFilter, res->ptr(), res->length());
     }
@@ -1604,7 +1605,7 @@ const COND *ha_federatedx::cond_push(const Item *cond) {
       DBUG_RETURN(0);
     }
     filter.length(0);
-    res = cond->partial_to_str(&filter);
+    res = cond->partial_to_str(&filter, ha_thd());
     if (res != 0 && res->length() > 0) {
       dynstr_append_mem(&additionalFilter, res->ptr(), res->length());
     }
@@ -2402,6 +2403,7 @@ int ha_federatedx::write_row(uchar *buf)
   uint tmp_length;
   int error= 0;
   bool use_bulk_insert;
+  ha_rows bulk_insert_max_size = ha_thd()->variables.fedx_batch_insert_size;
   bool auto_increment_update_required= (table->next_number_field != NULL);
 
   /* The string containing the values to be added to the insert */
@@ -2489,14 +2491,17 @@ int ha_federatedx::write_row(uchar *buf)
       cause the statement to overflow the packet size, otherwise set
       auto_increment_update_required to FALSE as no query was executed.
     */
-    if (bulk_insert.length + values_string.length() + bulk_padding >
-        io->max_query_size() && bulk_insert.length)
+    if ((bulk_insert.length + values_string.length() + bulk_padding >
+        io->max_query_size() || (bulk_insert_max_size > 0
+        && bulk_insert_size >= bulk_insert_max_size)) && bulk_insert.length)
     {
       error= io->query(bulk_insert.str, bulk_insert.length, SCAN_MODE_OLTP, NULL);
       bulk_insert.length= 0;
+      bulk_insert_size = 0;
     }
-    else
-      auto_increment_update_required= FALSE;
+    else {
+      auto_increment_update_required = FALSE;
+    }
       
     if (bulk_insert.length == 0)
     {
@@ -2513,7 +2518,8 @@ int ha_federatedx::write_row(uchar *buf)
 
     dynstr_append_mem(&bulk_insert, values_string.ptr(), 
                       values_string.length());
-  }  
+    bulk_insert_size++;
+  }
   else
   {
     error= io->query(values_string.ptr(), values_string.length(), SCAN_MODE_OLTP, NULL);
@@ -2577,6 +2583,7 @@ void ha_federatedx::start_bulk_insert(ha_rows rows, uint flags)
     DBUG_VOID_RETURN;
   
   bulk_insert.length= 0;
+  bulk_insert_size = 0;
   DBUG_VOID_RETURN;
 }
 
@@ -2609,6 +2616,7 @@ int ha_federatedx::end_bulk_insert()
   }
 
   dynstr_free(&bulk_insert);
+  bulk_insert_size = 0;
   
   DBUG_RETURN(my_errno= error);
 }
@@ -4493,6 +4501,19 @@ int ha_federatedx::find_index_num(const char *key_name) {
   return -1;
 }
 
+void ha_federatedx::init_rec_per_key() {
+  KEY *key_info;
+  for(uint key_index = 0; key_index < table->s->keys; key_index++) {
+    key_info = &table->key_info[key_index];
+    if (key_info->user_defined_key_parts == 1) {
+      // only init rec_per_key for key contains 1 columns
+      if (is_valid_index(key_index)) {
+        key_info->rec_per_key[0] = records_per_shard / index_cardinality[key_index];
+      }
+    }
+  }
+}
+
 uint ha_federatedx::init_index_cardinality(federatedx_io *io) {
   DBUG_ENTER("ha_federatedx::init_index_cardinality");
   char show_index_query[FEDERATEDX_QUERY_BUFFER_SIZE];
@@ -4642,6 +4663,10 @@ int ha_federatedx::info(uint flag)
       if (!index_cardinality_init) {
         if ((error_code = init_index_cardinality(*iop))) {
           goto error;
+        }
+        if (index_cardinality_init && optimizer_flag(thd, OPTIMIZER_SWITCH_FEDX_INIT_REC_PER_KEY)) {
+          //set up cardinality info in st_key
+          init_rec_per_key();
         }
       }
     }

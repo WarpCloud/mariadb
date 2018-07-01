@@ -238,6 +238,8 @@
 #define OPTIMIZER_SWITCH_FEDX_AUTO_PARTIAL_READ_ON_LIMIT (1ULL << 39)
 #define OPTIMIZER_SWITCH_FEDX_CACHE_RANGE_INFO           (1ULL << 40)
 #define OPTIMIZER_SWITCH_FEDX_CBO_WITH_ACTUAL_RECORDS    (1ULL << 41)
+#define OPTIMIZER_SWITCH_FEDX_PPD_ON_ITEM_CACHE    (1ULL << 42)
+#define OPTIMIZER_SWITCH_FEDX_INIT_REC_PER_KEY     (1ULL << 43)
 
 #define OPTIMIZER_SWITCH_DEFAULT   (OPTIMIZER_SWITCH_INDEX_MERGE | \
                                     OPTIMIZER_SWITCH_INDEX_MERGE_UNION | \
@@ -268,7 +270,9 @@
                                     OPTIMIZER_SWITCH_SPLIT_MATERIALIZED | \
                                     OPTIMIZER_SWITCH_ENGINE_CONDITION_PUSHDOWN_DML | \
                                     OPTIMIZER_SWITCH_FEDX_CP_DML | \
-                                    OPTIMIZER_SWITCH_FEDX_CP_QUERY)
+                                    OPTIMIZER_SWITCH_FEDX_CP_QUERY | \
+                                    OPTIMIZER_SWITCH_FEDX_PPD_ON_ITEM_CACHE | \
+                                    OPTIMIZER_SWITCH_FEDX_INIT_REC_PER_KEY)
 
 /*
   Replication uses 8 bytes to store SQL_MODE in the binary log. The day you

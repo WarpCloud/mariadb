@@ -112,7 +112,7 @@ bool Item_str_func::fix_fields(THD *thd, Item **ref)
   return res;
 }
 
-String *Item_str_func::to_str(String *str) const {
+String *Item_str_func::to_str(String *str, THD *thd) const {
   char buff[1024];
   String str1(buff, sizeof(buff), system_charset_info);
   str1.length(0);
@@ -126,7 +126,7 @@ String *Item_str_func::to_str(String *str) const {
     } else {
       str->append(STRING_WITH_LEN(", "));
     }
-    if (args[i]->to_str(&str1)) {
+    if (args[i]->to_str(&str1, thd)) {
       str->append(str1.ptr(), str1.length());
       str1.length(0);
     } else {

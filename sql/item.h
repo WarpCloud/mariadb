@@ -676,8 +676,8 @@ public:
   */
   String *val_str() { return val_str(&str_value); }
 
-  virtual String *to_str(String *str) const {return 0;};
-  virtual String *partial_to_str(String *str) const {return 0;};
+  virtual String *to_str(String *str, THD *thd) const {return 0;};
+  virtual String *partial_to_str(String *str, THD *thd) const {return 0;};
   const MY_LOCALE *locale_from_val_str();
 
   LEX_CSTRING name;			/* Name of item */
@@ -2909,7 +2909,7 @@ public:
     }
     return 0;
   }
-  virtual String *to_str(String *str) const;
+  virtual String *to_str(String *str, THD *thd) const;
 
   void cleanup();
   Item_equal *get_item_equal() { return item_equal; }
@@ -3055,7 +3055,7 @@ public:
     str->append(STRING_WITH_LEN("NULL"));
   }
 
-  virtual String *to_str(String *str) const {
+  virtual String *to_str(String *str, THD *thd) const {
     str->append(STRING_WITH_LEN("NULL"));
     return str;
   }
@@ -3513,7 +3513,7 @@ public:
   { return int_eq(value, item); }
   Item *get_copy(THD *thd)
   { return get_item_copy<Item_int>(thd, this); }
-  virtual String *to_str(String *str) const {
+  virtual String *to_str(String *str, THD *thd) const {
     str->append_longlong(value);
     return str;
   }
@@ -3748,7 +3748,7 @@ public:
     fix_from_value(dv, Metadata(&str_value, repertoire));
     set_name(thd, name_par, (uint) safe_strlen(name_par), system_charset_info);
   }
-    virtual String *to_str(String *str) const {
+    virtual String *to_str(String *str, THD *thd) const {
       str->append("'");
       str->append_for_single_quote(str_value.ptr(), str_value.length());
       str->append("'");
@@ -4673,7 +4673,7 @@ public:
   {
     (*ref)->restore_to_before_no_rows_in_result();
   }
-    virtual String* to_str(String *str) const;
+    virtual String* to_str(String *str, THD *thd) const;
   virtual void print(String *str, enum_query_type query_type);
   void cleanup();
   Item_field *field_for_view_update()
@@ -5876,7 +5876,7 @@ public:
 
   virtual void keep_array() {}
   virtual void print(String *str, enum_query_type query_type);
-  virtual String *to_str(String *str) const;
+  virtual String *to_str(String *str, THD *thd) const;
   bool eq_def(const Field *field)
   { 
     return cached_field ? cached_field->eq_def (field) : FALSE;
@@ -5976,6 +5976,7 @@ public:
   String* val_str(String *str);
   my_decimal *val_decimal(my_decimal *);
   bool cache_value();
+  String* to_str(String *str, THD *thd) const;
   int save_in_field(Field *field, bool no_conversions);
   Item *convert_to_basic_const_item(THD *thd);
   Item *get_copy(THD *thd)
@@ -6093,6 +6094,7 @@ public:
   double val_real();
   longlong val_int();
   String* val_str(String *);
+  String* to_str(String *, THD *thd) const;
   my_decimal *val_decimal(my_decimal *);
   CHARSET_INFO *charset() const { return value->charset(); };
   int save_in_field(Field *field, bool no_conversions);
@@ -6193,6 +6195,7 @@ public:
     DBUG_VOID_RETURN;
   }
   bool cache_value();
+  String *to_str(String *str, THD *thd) const {return 0;};
   virtual void set_null();
   Item *get_copy(THD *thd)
   { return get_item_copy<Item_cache_row>(thd, this); }
