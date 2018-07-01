@@ -4507,7 +4507,7 @@ void ha_federatedx::init_rec_per_key() {
     key_info = &table->key_info[key_index];
     if (key_info->user_defined_key_parts == 1) {
       // only init rec_per_key for key contains 1 columns
-      if (is_valid_index(key_index)) {
+      if (is_valid_index(key_index) && index_cardinality[key_index] > 0) {
         key_info->rec_per_key[0] = records_per_shard / index_cardinality[key_index];
       }
     }
