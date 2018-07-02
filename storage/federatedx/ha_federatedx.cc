@@ -1975,6 +1975,52 @@ bool compare_key_part_and_extract_actual_string_length(KEY_PART_INFO *key_part, 
   return ret;
 }
 
+bool key_range_is_null(KEY *key_info, key_range *key) {
+  if (key == NULL) {
+    return true;
+  }
+  return key_info->key_part->null_bit && key->key[0];
+}
+
+bool is_isnull_filter(KEY *key_info, key_range *start_key, key_range *end_key) {
+  if (start_key == NULL || end_key == NULL) {
+    return false;
+  }
+  if (start_key->length != end_key->length) {
+    return false;
+  }
+  return key_range_is_null(key_info, start_key) && key_range_is_null(key_info, end_key);
+  /*uint remainder, length, value_index;
+  KEY_PART_INFO *key_part;
+  const uchar *start_ptr;
+  const uchar *end_ptr;
+  for (key_part = key_info->key_part, remainder = key_info->user_defined_key_parts,
+          length = start_key->length, start_ptr = start_key->key,
+          end_ptr = end_key->key, value_index = 0; ; remainder--,key_part++,value_index++) {
+      uint store_length = key_part->store_length;
+      bool start_null = false, end_null = false;
+      if (key_part->null_bit) {
+        if (*start_ptr++) {
+          start_null = true;
+        }
+        if (*end_ptr++) {
+          end_null = true;
+        }
+        if (start_null && end_null) {
+          return true;
+        }
+      }
+
+      if (store_length >= length) {
+        break;
+      }
+      length -= store_length;
+      start_ptr += store_length - MY_TEST(key_part->null_bit);
+      end_ptr += store_length - MY_TEST(key_part->null_bit);
+  }*/
+  return false;
+}
+
 bool compare_key_and_extract_actual_string_length(KEY *key_info, key_range *start_key,
                                                   key_range *end_key, uint *actual_string_length) {
   if (start_key->length != end_key->length) {
@@ -2022,15 +2068,6 @@ for_next_key_part:
   return ret;
 }
 
-bool key_range_is_null(KEY *key_info, key_range *key) {
-  if (key == NULL) {
-    return true;
-  }
-  if (key_info->key_part->null_bit && key->key[0]) {
-    return true;
-  }
-  return false;
-}
 range_type get_range_type(KEY *key_info, key_range *start_key, key_range *end_key, uint *actual_key_length) {
   bool start_key_null = key_range_is_null(key_info, start_key);
   bool end_key_null = key_range_is_null(key_info, end_key);
@@ -2083,6 +2120,15 @@ ha_rows ha_federatedx::records_in_range(uint inx, key_range *start_key,
 
 */
   DBUG_ENTER("ha_federatedx::records_in_range");
+  if (is_isnull_filter(&table->key_info[inx], start_key, end_key)) {
+    // there is a bug for is null index read:
+    // delete from xxx where key is null
+    // when enable is null filter read, the access type is 'range',
+    // and the generated filter(by create_where_from_key) is
+    // xx is null and xx is not null
+    // do not found root cause so far, just disable is null filter to avoid wrong result
+    DBUG_RETURN(HA_POS_ERROR);
+  }
   if (ha_thd() && optimizer_flag(ha_thd(), OPTIMIZER_SWITCH_FEDX_CBO_WITH_ACTUAL_RECORDS) && index_cardinality_init) {
     ha_rows index_one_way_percent = ha_thd()->variables.fedx_index_one_way_percent;
     ha_rows index_two_way_percent = ha_thd()->variables.fedx_index_two_way_percent;
@@ -3698,7 +3744,11 @@ ha_rows ha_federatedx::multi_range_read_info_const(uint keyno, RANGE_SEQ_IF *seq
     use_default_mrr = false;
   } else {
     *flags |= HA_MRR_USE_DEFAULT_IMPL;
+    *flags &= ~HA_MRR_SORTED;
     use_default_mrr = true;
+    //if (*flags & HA_MRR_SORTED) {
+    //  rows = HA_POS_ERROR;
+    //}
   }
   DBUG_PRINT("info",("federatedx rows=%llu", rows));
   return rows;
@@ -3724,7 +3774,12 @@ ha_rows ha_federatedx::multi_range_read_info(uint keyno, uint n_ranges, uint n_r
     use_default_mrr = false;
   } else {
     *flags |= HA_MRR_USE_DEFAULT_IMPL;
+    *flags &= ~HA_MRR_SORTED;
     use_default_mrr = true;
+    //if (*flags & HA_MRR_SORTED) {
+    //  //federatedx does not support mrr_sorted
+    //  rows = HA_POS_ERROR;
+    //}
   }
   DBUG_PRINT("info",("federatedx rows=%llu", rows));
   return rows;

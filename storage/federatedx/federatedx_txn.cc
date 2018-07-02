@@ -241,13 +241,14 @@ int federatedx_txn::txn_commit()
     for (io= txn_list; io; io= io->txn_next)
     {
       int rc= 0;
+      bool is_active = io->active;
 
-      if (io->active)
+      if (is_active)
 	rc= io->commit();
       else
 	io->rollback();
 
-      if (io->active && rc)
+      if (is_active && rc)
 	error= -1;
 
       io->reset();

@@ -94,6 +94,7 @@ public:
 
   int savepoint_set(ulong sp);
   ulong savepoint_release(ulong sp);
+  virtual void check_persistence_connect();
   ulong savepoint_rollback(ulong sp);
   void savepoint_restrict(ulong sp);
 
@@ -172,7 +173,7 @@ int federatedx_io_mysql::commit()
 {
   int error= 0;
   DBUG_ENTER("federatedx_io_mysql::commit");
-  
+
   if (!actual_autocommit && (error= actual_query("COMMIT", 6, NULL)))
     rollback();
   
@@ -208,6 +209,11 @@ ulong federatedx_io_mysql::last_savepoint() const
   DBUG_RETURN(savept ? savept->level : 0);
 }
 
+void federatedx_io_mysql::check_persistence_connect() {
+  if (!mysql.net.vio) {
+    actual_autocommit = true;
+  }
+}
 
 ulong federatedx_io_mysql::actual_savepoint() const
 {
@@ -381,6 +387,7 @@ bool federatedx_io_mysql::test_all_restrict() const
 int federatedx_io_mysql::query(const char *buffer, uint length, int scan_mode, void *scan_info)
 {
   int error;
+  check_persistence_connect();
   bool wants_autocommit= requested_autocommit | is_readonly();
   DBUG_ENTER("federatedx_io_mysql::query");
 
@@ -673,6 +680,7 @@ int federatedx_io_mysql::mysql_connect()
                           get_socket(), 0))
     DBUG_RETURN(ER_CONNECT_TO_FOREIGN_DATA_SOURCE);
   mysql.reconnect= 1;
+  actual_autocommit = true;
 
   DBUG_RETURN(0);
 }
@@ -685,6 +693,7 @@ public:
     ~federatedx_io_vitess();
 
     int query(const char *buffer, uint length, int scan_mode, void *scan_info);
+    virtual void check_persistence_connect();
     int mysql_connect();
     int actual_query(const char *buffer, uint length, void *info);
 };
@@ -706,8 +715,16 @@ federatedx_io_vitess::~federatedx_io_vitess() {
   DBUG_VOID_RETURN;
 }
 
+void federatedx_io_vitess::check_persistence_connect() {
+  if (!mysql.net.vio) {
+    actual_autocommit = true;
+    current_scan_mode = SCAN_MODE_OLTP;
+  }
+}
+
 int federatedx_io_vitess::query(const char *buffer, uint length, int scan_mode, void *scan_info) {
   int error;
+  check_persistence_connect();
   bool wants_autocommit= requested_autocommit | is_readonly();
   DBUG_ENTER("federatedx_io_vitess::query");
 
