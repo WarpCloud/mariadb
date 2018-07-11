@@ -8162,7 +8162,8 @@ TABLE_LIST *st_select_lex::add_table_to_list(THD *thd,
 					     enum_mdl_type mdl_type,
 					     List<Index_hint> *index_hints_arg,
                                              List<String> *partition_names,
-                                             LEX_STRING *option)
+                                             LEX_STRING *option,
+                                             LEX_CSTRING scan_mode)
 {
   TABLE_LIST *ptr;
   TABLE_LIST *UNINIT_VAR(previous_table_ref); /* The table preceding the current one. */
@@ -8212,6 +8213,7 @@ TABLE_LIST *st_select_lex::add_table_to_list(THD *thd,
   else
     ptr->is_fqtn= FALSE;
 
+  ptr->scan_mode = scan_mode;
   ptr->alias= alias_str;
   ptr->is_alias= alias ? TRUE : FALSE;
   if (lower_case_table_names)

@@ -34,6 +34,7 @@
 #include "sql_class.h"                          // THD
 #include "sql_base.h"
 #include "sql_sort.h"                           // SORT_ADDON_FIELD
+#include "sql_select.h"
 
 static int rr_quick(READ_RECORD *info);
 int rr_sequential(READ_RECORD *info);
@@ -308,7 +309,8 @@ bool init_read_record(READ_RECORD *info,THD *thd, TABLE *table,
                                     thd->variables.read_buff_size);
   }
   /* Condition pushdown to storage engine */
-  if ((table->file->ha_table_flags() & HA_CAN_TABLE_CONDITION_PUSHDOWN) &&
+  if (optimizer_flag(thd, deprecated_ENGINE_CONDITION_PUSHDOWN) &&
+      (table->file->ha_table_flags() & HA_CAN_TABLE_CONDITION_PUSHDOWN) &&
       select && select->cond && 
       (select->cond->used_tables() & table->map) &&
       !table->file->pushed_cond)

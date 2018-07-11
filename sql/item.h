@@ -581,6 +581,8 @@ typedef struct st_dyncall_create_def DYNCALL_CREATE_DEF;
 
 
 typedef bool (Item::*Item_processor) (void *arg);
+
+typedef bool (Item::*Item_processor_const) (void *arg) const;
 /*
   Analyzer function
     SYNOPSIS
@@ -764,6 +766,8 @@ public:
   */
   String *val_str() { return val_str(&str_value); }
 
+  virtual String *to_str(String *str, THD *thd) const {return 0;};
+  virtual String *partial_to_str(String *str, THD *thd) const {return 0;};
   const MY_LOCALE *locale_from_val_str();
 
   LEX_CSTRING name;			/* Name of item */
@@ -780,7 +784,7 @@ public:
   int  marker;
   bool maybe_null;			/* If item may be null */
   bool in_rollup;                       /* If used in GROUP BY list
-                                           of a query with ROLLUP */ 
+                                           of a query with ROLLUP */
   bool null_value;			/* if item is null */
   bool with_sum_func;                   /* True if item contains a sum func */
   bool with_param;                      /* True if contains an SP parameter */
@@ -1604,6 +1608,11 @@ public:
     return (this->*processor)(arg);
   }
 
+  virtual bool walk_const(Item_processor_const processor, bool walk_subquery, void *arg) const
+  {
+    return (this->*processor)(arg);
+  }
+
   virtual Item* transform(THD *thd, Item_transformer transformer, uchar *arg);
 
   /*
@@ -1668,6 +1677,7 @@ public:
   virtual bool limit_index_condition_pushdown_processor(void *arg) { return 0; }
   virtual bool exists2in_processor(void *arg) { return 0; }
   virtual bool find_selective_predicates_list_processor(void *arg) { return 0; }
+  virtual bool has_equal_condition(void *arg) const { return 0; }
 
   /* 
     TRUE if the expression depends only on the table indicated by tab_map
@@ -2154,6 +2164,15 @@ protected:
     for (uint i= 0; i < arg_count; i++)
     {
       if (args[i]->walk(processor, walk_subquery, arg))
+        return true;
+    }
+    return false;
+  }
+  bool walk_args_const(Item_processor_const processor, bool walk_subquery, void *arg) const
+  {
+    for (uint i= 0; i < arg_count; i++)
+    {
+      if (args[i]->walk_const(processor, walk_subquery, arg))
         return true;
     }
     return false;
@@ -3059,6 +3078,8 @@ public:
     }
     return 0;
   }
+  virtual String *to_str(String *str, THD *thd) const;
+
   void cleanup();
   Item_equal *get_item_equal() { return item_equal; }
   void set_item_equal(Item_equal *item_eq) { item_equal= item_eq; }
@@ -3200,6 +3221,11 @@ public:
   virtual inline void print(String *str, enum_query_type query_type)
   {
     str->append(STRING_WITH_LEN("NULL"));
+  }
+
+  virtual String *to_str(String *str, THD *thd) const {
+    str->append(STRING_WITH_LEN("NULL"));
+    return str;
   }
 
   Item *safe_charset_converter(THD *thd, CHARSET_INFO *tocs);
@@ -3658,6 +3684,10 @@ public:
   { return int_eq(value, item); }
   Item *get_copy(THD *thd)
   { return get_item_copy<Item_int>(thd, this); }
+  virtual String *to_str(String *str, THD *thd) const {
+    str->append_longlong(value);
+    return str;
+  }
 };
 
 
@@ -3894,7 +3924,14 @@ public:
     fix_from_value(dv, Metadata(&str_value, repertoire));
     set_name(thd, name_par, safe_strlen(name_par), system_charset_info);
   }
-  void print_value(String *to) const
+    virtual String *to_str(String *str, THD *thd) const {
+      str->append("'");
+      str->append_for_single_quote(str_value.ptr(), str_value.length());
+      str->append("'");
+      return str;
+    }
+
+    void print_value(String *to) const
   {
     str_value.print(to);
   }
@@ -4663,6 +4700,7 @@ public:
   Item* build_clone(THD *thd);
 };
 
+extern bool is_component_item(const Item *item);
 class sp_head;
 class sp_name;
 struct st_sp_security_context;
@@ -4828,6 +4866,7 @@ public:
   {
     (*ref)->restore_to_before_no_rows_in_result();
   }
+    virtual String* to_str(String *str, THD *thd) const;
   virtual void print(String *str, enum_query_type query_type);
   void cleanup();
   Item_field *field_for_view_update()
@@ -4836,7 +4875,7 @@ public:
   {
     return (*ref)->get_load_data_outvar();
   }
-  virtual Ref_Type ref_type() { return REF; }
+  virtual Ref_Type ref_type() const { return REF; }
 
   // Row emulation: forwarding of ROW-related calls to ref
   uint cols() const
@@ -4954,7 +4993,7 @@ public:
   bool val_bool();
   bool is_null();
   bool get_date(MYSQL_TIME *ltime, ulonglong fuzzydate);
-  virtual Ref_Type ref_type() { return DIRECT_REF; }
+  virtual Ref_Type ref_type() const { return DIRECT_REF; }
   Item *get_copy(THD *thd)
   { return get_item_copy<Item_direct_ref>(thd, this); }
 };
@@ -5181,7 +5220,7 @@ public:
     item->name= name;
     return item;
   }
-  virtual Ref_Type ref_type() { return VIEW_REF; }
+  virtual Ref_Type ref_type() const { return VIEW_REF; }
   Item_equal *get_item_equal() { return item_equal; }
   void set_item_equal(Item_equal *item_eq) { item_equal= item_eq; }
   Item_equal *find_item_equal(COND_EQUAL *cond_equal);
@@ -5348,7 +5387,7 @@ public:
     return (*ref)->const_item() ? 0 : OUTER_REF_TABLE_BIT;
   }
   table_map not_null_tables() const { return 0; }
-  virtual Ref_Type ref_type() { return OUTER_REF; }
+  virtual Ref_Type ref_type() const { return OUTER_REF; }
   bool check_inner_refs_processor(void * arg); 
 };
 
@@ -6048,7 +6087,8 @@ public:
 
   virtual void keep_array() {}
   virtual void print(String *str, enum_query_type query_type);
-  bool eq_def(const Field *field) 
+  virtual String *to_str(String *str, THD *thd) const;
+  bool eq_def(const Field *field)
   { 
     return cached_field ? cached_field->eq_def (field) : FALSE;
   }
@@ -6149,6 +6189,7 @@ public:
   bool get_date(MYSQL_TIME *ltime, ulonglong fuzzydate)
   { return get_date_from_int(ltime, fuzzydate); }
   bool cache_value();
+  String* to_str(String *str, THD *thd) const;
   int save_in_field(Field *field, bool no_conversions);
   Item *convert_to_basic_const_item(THD *thd);
   Item *get_copy(THD *thd)
@@ -6283,6 +6324,7 @@ public:
   double val_real();
   longlong val_int();
   String* val_str(String *);
+  String* to_str(String *, THD *thd) const;
   my_decimal *val_decimal(my_decimal *);
   bool get_date(MYSQL_TIME *ltime, ulonglong fuzzydate)
   { return get_date_from_string(ltime, fuzzydate); }
@@ -6390,6 +6432,7 @@ public:
     DBUG_VOID_RETURN;
   }
   bool cache_value();
+  String *to_str(String *str, THD *thd) const {return 0;};
   virtual void set_null();
   Item *get_copy(THD *thd)
   { return get_item_copy<Item_cache_row>(thd, this); }

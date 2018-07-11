@@ -216,6 +216,13 @@ bool federatedx_txn::txn_begin()
     savepoint_level= savepoint_stmt= 0;
     sp_acquire(&level);
   }
+  // always set active flag to true when inside a transaction
+  federatedx_io *io;
+  for (io= txn_list; io; io= io->txn_next)
+  {
+    io->set_active(true);
+  }
+
 
   DBUG_RETURN(level == 1);
 }
@@ -234,13 +241,14 @@ int federatedx_txn::txn_commit()
     for (io= txn_list; io; io= io->txn_next)
     {
       int rc= 0;
+      bool is_active = io->active;
 
-      if (io->active)
+      if (is_active)
 	rc= io->commit();
       else
 	io->rollback();
 
-      if (io->active && rc)
+      if (is_active && rc)
 	error= -1;
 
       io->reset();

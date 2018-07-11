@@ -376,6 +376,12 @@ public:
     - or replaced to an Item_int_with_ref
   */
   bool setup_args_and_comparator(THD *thd, Arg_comparator *cmp);
+  bool walk_const(Item_processor_const processor, bool walk_subquery, void *arg) const
+  {
+    if (walk_args_const(processor, walk_subquery, arg))
+      return true;
+    return (this->*processor)(arg);
+  }
 };
 
 
@@ -710,6 +716,8 @@ public:
   Item_func_num1(THD *thd, Item *a, Item *b): Item_func_numhybrid(thd, a, b) {}
   bool check_partition_func_processor(void *int_arg) { return FALSE; }
   bool check_vcol_func_processor(void *arg) { return FALSE; }
+  virtual String *to_str(String *str, THD *thd) const;
+
 };
 
 
@@ -751,6 +759,8 @@ class Item_num_op :public Item_func_numhybrid
       set_handler(type_handler_long_or_longlong());
   }
   bool need_parentheses_in_default() { return true; }
+  virtual String *to_str(String *str, THD *thd) const;
+
 };
 
 
@@ -1191,6 +1201,8 @@ public:
   bool need_parentheses_in_default() { return true; }
   Item *get_copy(THD *thd)
   { return get_item_copy<Item_func_neg>(thd, this); }
+  virtual String *to_str(String *str, THD *thd) const;
+
 };
 
 
@@ -2066,6 +2078,8 @@ public:
   {
     return type_handler()->Item_get_date(this, ltime, fuzzydate);
   }
+  // do not push udf
+  virtual String *to_str(String *str, THD *thd) const { return 0;};
 };
 
 
@@ -2893,6 +2907,9 @@ public:
     str->copy(buf);
     return str;
   }
+
+  // do not push stored function
+  virtual String *to_str(String *str, THD *thd) const { return 0;};
 
   void update_null_value()
   { 

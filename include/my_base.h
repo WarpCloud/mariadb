@@ -424,6 +424,7 @@ enum ha_base_keytype {
   Treat empty table as empty (ignore HA_STATUS_TIME hack).
 */
 #define HA_STATUS_OPEN           256U
+#define HA_STATUS_INIT_FEDX_INFO 512U 
 
 /*
   Errorcodes given by handler functions

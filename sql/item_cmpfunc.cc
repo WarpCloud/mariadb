@@ -2032,8 +2032,34 @@ bool Item_func_between::eval_not_null_tables(void *opt_arg)
                           (args[1]->not_null_tables() &
                            args[2]->not_null_tables()));
   return 0;
-}  
+}
 
+String *Item_func_between::to_str(String *str, THD *thd) const {
+  char buff[1024];
+  String str1(buff, sizeof(buff), system_charset_info);
+  str1.length(0);
+  if (!args[0]->to_str(&str1, thd)) {
+    goto err;
+  }
+  str->append(str1.ptr(), str1.length());
+  str1.length(0);
+  if (negated)
+    str->append(STRING_WITH_LEN(" not"));
+  str->append(STRING_WITH_LEN(" between "));
+  if (!args[1]->to_str(&str1, thd)) {
+    goto err;
+  }
+  str->append(str1.ptr(), str1.length());
+  str1.length(0);
+  str->append(STRING_WITH_LEN(" and "));
+  if (!args[2]->to_str(&str1, thd)) {
+    goto err;
+  }
+  str->append(str1.ptr(), str1.length());
+  return str;
+    err:
+  return 0;
+}
 
 bool Item_func_between::count_sargable_conds(void *arg)
 {
@@ -4074,6 +4100,36 @@ bool Item_func_in::count_sargable_conds(void *arg)
   return 0;
 }
 
+String *Item_func_in::to_str(String *str, THD *thd) const {
+  char buff[1024];
+  String str1(buff, sizeof(buff), system_charset_info);
+  str1.length(0);
+  if (!args[0]->to_str(&str1, thd)) {
+    goto err;
+  }
+  str->append(str1.ptr(), str1.length());
+  str1.length(0);
+  if (negated) {
+    str->append(STRING_WITH_LEN(" not in ("));
+  } else {
+    str->append(STRING_WITH_LEN(" in ("));
+  }
+  for (uint i = 1; i < arg_count; i++) {
+    if (!args[i]->to_str(&str1, thd)) {
+      goto err;
+    }
+    if (i != 1) {
+      str->append(STRING_WITH_LEN(", "));
+    }
+    str->append(str1.ptr(), str1.length());
+    str1.length(0);
+  }
+  str->append(STRING_WITH_LEN(")"));
+  return str;
+    err:
+  return 0;
+}
+
 
 bool Item_func_in::list_contains_null()
 {
@@ -5144,6 +5200,22 @@ longlong Item_func_isnotnull::val_int()
   return args[0]->is_null() ? 0 : 1;
 }
 
+String *Item_func_isnotnull::to_str(String *str, THD *thd) const {
+  if (arg_count != 1) {
+    return 0;
+  }
+  char buff[1024];
+  String str1(buff, sizeof(buff), system_charset_info);
+  str1.length(0);
+  if (args[0]->to_str(&str1, thd)) {
+    str->append(str1.ptr(), str1.length());
+    str->append(STRING_WITH_LEN(" IS NOT NULL"));
+    str1.length(0);
+  } else {
+    return 0;
+  }
+  return str;
+}
 
 void Item_func_isnotnull::print(String *str, enum_query_type query_type)
 {
@@ -5156,6 +5228,35 @@ bool Item_bool_func2::count_sargable_conds(void *arg)
 {
   ((SELECT_LEX*) arg)->cond_count++;
   return 0;
+}
+
+String *Item_func_like::to_str(String *str, THD *thd) const {
+  if (arg_count != 2) {
+    return 0;
+  }
+  char buff[1024];
+  String str1(buff, sizeof(buff), system_charset_info);
+  str1.length(0);
+  if (args[0]->to_str(&str1, thd)) {
+    str->append(str1.ptr(), str1.length());
+    str1.length(0);
+  } else {
+    return 0;
+  }
+  if (negated) {
+    str->append(STRING_WITH_LEN(" not"));
+  }
+  const char * name = func_name();
+  str->append(STRING_WITH_LEN(" "));
+  str->append(name, strlen(name));
+  str->append(STRING_WITH_LEN(" "));
+  if (args[1]->to_str(&str1, thd)) {
+    str->append(str1.ptr(), str1.length());
+    str1.length(0);
+  } else {
+    return 0;
+  }
+  return str;
 }
 
 void Item_func_like::print(String *str, enum_query_type query_type)
@@ -6013,6 +6114,22 @@ Item *Item_func_not::neg_transformer(THD *thd)	/* NOT(x)  ->  x */
   return args[0];
 }
 
+String *Item_func_not::to_str(String *str, THD *thd) const {
+  if (arg_count != 1) {
+    return 0;
+  }
+  char buff[1024];
+  String str1(buff, sizeof(buff), system_charset_info);
+  str1.length(0);
+  if (!args[0]->to_str(&str1, thd)) {
+    return 0;
+  }
+  str->append(STRING_WITH_LEN("not ("));
+  str->append(str1.ptr(), str1.length());
+  str->append(STRING_WITH_LEN(")"));
+  return str;
+}
+
 
 bool Item_func_not::fix_fields(THD *thd, Item **ref)
 {
@@ -6080,6 +6197,24 @@ Item *Item_func_isnull::neg_transformer(THD *thd)
   return item;
 }
 
+String *Item_func_isnull::to_str(String *str, THD *thd) const {
+  if (arg_count != 1) {
+    return 0;
+  }
+  char buff[1024];
+  String str1(buff, sizeof(buff), system_charset_info);
+  str1.length(0);
+  if (args[0]->to_str(&str1, thd)) {
+    if (!str->append(str1.ptr(), str1.length())) {
+      str->append(STRING_WITH_LEN(" IS NULL"));
+      str1.length(0);
+    }
+  } else {
+    return 0;
+  }
+  return str;
+}
+
 
 /**
   a IS NOT NULL  ->  a IS NULL.
@@ -6099,6 +6234,85 @@ Item *Item_cond_and::neg_transformer(THD *thd)	/* NOT(a AND b AND ...)  -> */
   return item;
 }
 
+String *Item_cond_and::to_str(String *str, THD *thd) const {
+  char buff[1024];
+  String str1(buff, sizeof(buff), system_charset_info);
+  str1.length(0);
+  bool first = true;
+  list_node *first_node = list.first_node_const();
+  for(uint i = 0; i < list.elements; i++) {
+    if (first) {
+      str->append(STRING_WITH_LEN("("));
+      first = false;
+    } else {
+      str->append(STRING_WITH_LEN(") and ("));
+    }
+    if (((Item *)first_node->info)->to_str(&str1, thd)) {
+      str->append(str1.ptr(), str1.length());
+      str1.length(0);
+      first_node = first_node->next;
+    } else {
+      return 0;
+    }
+  }
+  str->append(STRING_WITH_LEN(")"));
+  return str;
+}
+
+String *Item_cond_and::partial_to_str(String *str, THD *thd) const {
+  char buff[1024];
+  String str1(buff, sizeof(buff), system_charset_info);
+  str1.length(0);
+  bool first = true;
+  bool has_any = false;
+  list_node *first_node = list.first_node_const();
+  for (uint i = 0; i < list.elements; i++) {
+    if (!((Item *) first_node->info)->to_str(&str1, thd)) {
+      first_node = first_node->next;
+      str1.length(0);
+      continue;
+    }
+    if (first) {
+      str->append(STRING_WITH_LEN("("));
+      first = false;
+    } else {
+      str->append(STRING_WITH_LEN(") and ("));
+    }
+    str->append(str1.ptr(), str1.length());
+    has_any = true;
+    str1.length(0);
+    first_node = first_node->next;
+  }
+  if (has_any) {
+      str->append(STRING_WITH_LEN(")"));
+  }
+  return str;
+}
+
+String *Item_cond_or::to_str(String *str, THD *thd) const {
+  char buff[1024];
+  String str1(buff, sizeof(buff), system_charset_info);
+  str1.length(0);
+  bool first = true;
+  list_node *first_node = list.first_node_const();
+  for(uint i = 0; i < list.elements; i++) {
+    if (first) {
+      str->append(STRING_WITH_LEN("("));
+      first = false;
+    } else {
+      str->append(STRING_WITH_LEN(") or ("));
+    }
+    if (((Item *)first_node->info)->to_str(&str1, thd)) {
+      str->append(str1.ptr(), str1.length());
+      str1.length(0);
+      first_node = first_node->next;
+    } else {
+      return 0;
+    }
+  }
+  str->append(STRING_WITH_LEN(")"));
+  return str;
+}
 
 Item *Item_cond_or::neg_transformer(THD *thd)	/* NOT(a OR b OR ...)  -> */
 					/* NOT a AND NOT b AND ... */
@@ -6173,6 +6387,32 @@ Item *Item_bool_rowready_func2::negated_item(THD *thd)
 {
   DBUG_ASSERT(0);
   return 0;
+}
+
+String *Item_bool_rowready_func2::to_str(String *str, THD *thd) const {
+  if (arg_count != 2) {
+    return 0;
+  }
+  char buff[1024];
+  String str1(buff, sizeof(buff), system_charset_info);
+  str1.length(0);
+  if (args[0]->to_str(&str1, thd)) {
+    str->append(str1.ptr(), str1.length());
+    str1.length(0);
+  } else {
+    return 0;
+  }
+  const char * name = func_name();
+  str->append(STRING_WITH_LEN(" "));
+  str->append(name, strlen(name));
+  str->append(STRING_WITH_LEN(" "));
+  if (args[1]->to_str(&str1, thd)) {
+    str->append(str1.ptr(), str1.length());
+    str1.length(0);
+  } else {
+    return 0;
+  }
+  return str;
 }
 
 

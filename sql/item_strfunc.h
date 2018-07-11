@@ -72,6 +72,9 @@ public:
     StringBuffer<MAX_FIELD_WIDTH> tmp;
     (void) val_str(&tmp);
   }
+
+  virtual String *to_str(String *str, THD *thd) const;
+
 };
 
 

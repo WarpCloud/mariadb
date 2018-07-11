@@ -689,7 +689,8 @@ public:
     cache_cond(NULL),
     pushed_index_cond(NULL),
     sjm_nest(NULL),
-    pre_join_sort(NULL)
+    pre_join_sort(NULL),
+    pushed_cond_string(NULL)
   {}
   ~Explain_table_access() { delete sjm_nest; }
 
@@ -773,6 +774,9 @@ public:
   */
   Item *where_cond;
   Item *cache_cond;
+
+    // valid if tags include "ET_USING_WHERE_WITH_PUSHED_CONDITION"
+  const DYNAMIC_STRING *pushed_cond_string;
   
   /*
     This is either pushed index condition, or BKA's index condition. 
