@@ -521,6 +521,8 @@ public:
                                       cond);
     return this;
   }
+  virtual String *to_str(String *str, THD *thd) const;
+
   void fix_length_and_dec();
   int set_cmp_func()
   {
@@ -598,6 +600,8 @@ public:
   virtual void print(String *str, enum_query_type query_type);
   Item *get_copy(THD *thd)
   { return get_item_copy<Item_func_not>(thd, this); }
+  virtual String *to_str(String *str, THD *thd) const;
+
 };
 
 class Item_maxmin_subselect;
@@ -726,6 +730,7 @@ public:
   friend class  Arg_comparator;
   Item *get_copy(THD *thd)
   { return get_item_copy<Item_func_eq>(thd, this); }
+  virtual bool has_equal_condition(void *arg) const { (*(bool *)arg) = true; return 0; }
 };
 
 class Item_func_equal :public Item_bool_rowready_func2
@@ -750,6 +755,7 @@ public:
   }
   Item *get_copy(THD *thd)
   { return get_item_copy<Item_func_equal>(thd, this); }
+  virtual bool has_equal_condition(void *arg) const { (*(bool *)arg) = true; return 0; }
 };
 
 
@@ -935,6 +941,8 @@ public:
   longlong val_int_cmp_int();
   longlong val_int_cmp_real();
   longlong val_int_cmp_decimal();
+  virtual String *to_str(String *str, THD *thd) const;
+
 };
 
 
@@ -2403,6 +2411,9 @@ public:
   bool to_be_transformed_into_in_subq(THD *thd);
   bool create_value_list_for_tvc(THD *thd, List< List<Item> > *values);
   Item *in_predicate_to_in_subs_transformer(THD *thd, uchar *arg);
+  virtual String *to_str(String *str, THD *thd) const;
+  virtual bool has_equal_condition(void *arg) const { if (!negated) (*(bool *)arg) = true; return 0; }
+
 };
 
 class cmp_item_row :public cmp_item
@@ -2484,7 +2495,9 @@ public:
   void print(String *str, enum_query_type query_type);
   enum precedence precedence() const { return CMP_PRECEDENCE; }
 
-  bool arg_is_datetime_notnull_field()
+  virtual String *to_str(String *str, THD *thd) const;
+
+    bool arg_is_datetime_notnull_field()
   {
     Item **args= arguments();
     if (args[0]->real_item()->type() == Item::FIELD_ITEM)
@@ -2568,6 +2581,8 @@ public:
   void top_level_item() { abort_on_null=1; }
   Item *get_copy(THD *thd)
   { return get_item_copy<Item_func_isnotnull>(thd, this); }
+  virtual String *to_str(String *str, THD *thd) const;
+
 };
 
 
@@ -2654,7 +2669,10 @@ public:
     */
     return compare_collation() == &my_charset_bin ? COND_TRUE : COND_OK;
   }
-  void add_key_fields(JOIN *join, KEY_FIELD **key_fields, uint *and_level,
+
+  virtual String *to_str(String *str, THD *thd) const;
+
+    void add_key_fields(JOIN *join, KEY_FIELD **key_fields, uint *and_level,
                       table_map usable_tables, SARGABLE_PARAM **sargables);
   SEL_TREE *get_mm_tree(RANGE_OPT_PARAM *param, Item **cond_ptr);
   Item* propagate_equal_fields(THD *thd, const Context &ctx, COND_EQUAL *cond)
@@ -3282,6 +3300,9 @@ public:
   SEL_TREE *get_mm_tree(RANGE_OPT_PARAM *param, Item **cond_ptr);
   Item *get_copy(THD *thd)
   { return get_item_copy<Item_cond_and>(thd, this); }
+  virtual String *to_str(String *str, THD *thd) const;
+  virtual String *partial_to_str(String *str, THD *thd) const;
+
 };
 
 inline bool is_cond_and(Item *item)
@@ -3309,6 +3330,9 @@ public:
   Item *neg_transformer(THD *thd);
   Item *get_copy(THD *thd)
   { return get_item_copy<Item_cond_or>(thd, this); }
+  virtual String *to_str(String *str, THD *thd) const;
+  bool walk_const(Item_processor_const processor, bool walk_subquery, void *arg) const {return 0;}
+
 };
 
 class Item_func_dyncol_check :public Item_bool_func

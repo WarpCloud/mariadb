@@ -10546,7 +10546,7 @@ make_join_select(JOIN *join,SQL_SELECT *select,COND *cond)
             tab->table->file->pushed_cond= NULL;
             if ((tab->table->file->ha_table_flags() &
                   HA_CAN_TABLE_CONDITION_PUSHDOWN) &&
-                !first_inner_tab)
+                !first_inner_tab && optimizer_flag(thd, deprecated_ENGINE_CONDITION_PUSHDOWN))
             {
               COND *push_cond= 
               make_cond_for_table(thd, tmp_cond, current_map, current_map,
@@ -11655,6 +11655,9 @@ uint check_join_cache_usage(JOIN_TAB *tab,
       flags= HA_MRR_NO_NULL_ENDPOINTS | HA_MRR_SINGLE_POINT;
       if (tab->table->covering_keys.is_set(tab->ref.key))
         flags|= HA_MRR_INDEX_ONLY;
+      if (optimizer_flag(join->thd, OPTIMIZER_SWITCH_FEDX_MRR)) {
+          flags |= HA_MRR_FEDX_MRR;
+      }
       rows= tab->table->file->multi_range_read_info(tab->ref.key, 10, 20,
                                                     tab->ref.key_parts,
                                                     &bufsz, &flags, &cost);
@@ -25221,12 +25224,16 @@ bool JOIN_TAB::save_explain_data(Explain_table_access *eta,
                (cache_select && cache_select->cond))
       {
         const COND *pushed_cond= table->file->pushed_cond;
+        const DYNAMIC_STRING *pushed_cond_string = table->file->ha_pushed_condition();
 
-        if ((table->file->ha_table_flags() &
-              HA_CAN_TABLE_CONDITION_PUSHDOWN) &&
-            pushed_cond)
+        if (optimizer_flag(thd, deprecated_ENGINE_CONDITION_PUSHDOWN) &&
+                (table->file->ha_table_flags() & HA_CAN_TABLE_CONDITION_PUSHDOWN) &&
+                (pushed_cond || (pushed_cond_string != 0 && pushed_cond_string->length > 0)))
         {
           eta->push_extra(ET_USING_WHERE_WITH_PUSHED_CONDITION);
+          if (pushed_cond_string != 0 && pushed_cond_string->length > 0) {
+            eta->pushed_cond_string = pushed_cond_string;
+          }
         }
         else
         {

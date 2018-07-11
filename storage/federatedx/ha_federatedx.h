@@ -42,6 +42,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "handler.h"
 
 class federatedx_io;
+#define HA_FEDERATEDX_VITESS_MAX_SHARD 100
+#define HA_FEDERATEDX_VITESS_MAX_PART_NUM 999
 
 /*
   FEDERATEDX_SERVER will eventually be a structure that will be shared among
@@ -65,6 +67,8 @@ typedef struct st_fedrated_server {
   ushort port;
 
   const char *csname;
+  const char *shard_names[HA_FEDERATEDX_VITESS_MAX_SHARD];
+  uint shard_num;
 
   mysql_mutex_t mutex;
   federatedx_io *idle_list;
@@ -86,8 +90,26 @@ typedef struct st_fedrated_server {
 #define HA_FEDERATEDX_ERROR_WITH_REMOTE_SYSTEM 10000
 
 #define FEDERATEDX_QUERY_BUFFER_SIZE STRING_BUFFER_USUAL_SIZE * 5
+#define FEDERATEDX_QUERY_ERROR_BUFFER_SIZE 512
 #define FEDERATEDX_RECORDS_IN_RANGE 2
 #define FEDERATEDX_MAX_KEY_LENGTH 3500 // Same as innodb
+#define FEDERATEDX_MAX_IN_SIZE 128 // max in size when construct a in filter
+
+#define SCAN_MODE_UNKNOWN 0
+// the vitess workload is oltp, all commands are allowed
+#define SCAN_MODE_OLTP 1
+// the vitess workload is olap, dml is not allowed
+#define SCAN_MODE_OLAP 2
+// either oltp and olap is ok, for commands other than query and dml
+#define SCAN_MODE_EITHER 3
+// default scan mode for query and dml
+#define SCAN_MODE_DEFAULT SCAN_MODE_OLTP
+
+#define PARTIAL_READ_NONE 0
+#define PARTIAL_READ_SHARD_READ 1
+#define PARTIAL_READ_RANGE_READ 2
+#define PARTIAL_READ_SHARD_RANGE_READ 3
+#define PARTIAL_READ_DEFAULT 4
 
 /*
   FEDERATEDX_SHARE is a structure that will be shared amoung all open handlers
@@ -124,6 +146,9 @@ typedef struct st_federatedx_share {
   uint use_count;
   THR_LOCK lock;
   FEDERATEDX_SERVER *s;
+  const char *part_col_name;
+  const char *part_values[HA_FEDERATEDX_VITESS_MAX_PART_NUM];
+  my_ulonglong part_value_num;
 } FEDERATEDX_SHARE;
 
 
@@ -134,7 +159,6 @@ typedef ptrdiff_t FEDERATEDX_IO_OFFSET;
 class federatedx_io
 {
   friend class federatedx_txn;
-  FEDERATEDX_SERVER * const server;
   federatedx_io **owner_ptr;
   federatedx_io *txn_next;
   federatedx_io *idle_next;
@@ -143,6 +167,7 @@ class federatedx_io
   bool readonly;/* indicates that no updates have occurred */
 
 protected:
+  FEDERATEDX_SERVER * const server;
   void set_active(bool new_active)
   { active= new_active; }
 public:
@@ -161,6 +186,7 @@ public:
   const char * get_database() const { return server->database; }
   ushort       get_port() const     { return server->port; }
   const char * get_socket() const   { return server->socket; }
+  const char * get_scheme() const   { return server->scheme; }
 
   static bool handles_scheme(const char *scheme);
   static federatedx_io *construct(MEM_ROOT *server_root,
@@ -173,7 +199,7 @@ public:
   static void operator delete(void *, MEM_ROOT *)
   { }
 
-  virtual int query(const char *buffer, size_t length)=0;
+  virtual int query(const char *buffer, size_t length, int scan_mode, void *scan_info)=0;
   virtual FEDERATEDX_IO_RESULT *store_result()=0;
 
   virtual size_t max_query_size() const=0;
@@ -205,7 +231,7 @@ public:
   virtual void free_result(FEDERATEDX_IO_RESULT *io_result)=0;
   virtual unsigned int get_num_fields(FEDERATEDX_IO_RESULT *io_result)=0;
   virtual my_ulonglong get_num_rows(FEDERATEDX_IO_RESULT *io_result)=0;
-  virtual FEDERATEDX_IO_ROW *fetch_row(FEDERATEDX_IO_RESULT *io_result)=0;
+  virtual FEDERATEDX_IO_ROW *fetch_row(FEDERATEDX_IO_RESULT *io_result, void **current)=0;
   virtual ulong *fetch_lengths(FEDERATEDX_IO_RESULT *io_result)=0;
   virtual const char *get_column_data(FEDERATEDX_IO_ROW *row,
                                       unsigned int column)=0;
@@ -214,7 +240,7 @@ public:
 
   virtual size_t get_ref_length() const=0;
   virtual void mark_position(FEDERATEDX_IO_RESULT *io_result,
-                             void *ref)=0;
+                             void *ref, void *offset)=0;
   virtual int seek_position(FEDERATEDX_IO_RESULT **io_result,
                             const void *ref)=0;
   virtual void set_thd(void *thd) { }
@@ -254,6 +280,25 @@ public:
   void stmt_autocommit();
 };
 
+typedef struct partial_read_info {
+    int partial_read_mode;
+
+    // query infos
+    DYNAMIC_STRING partial_read_query;
+    DYNAMIC_STRING partial_read_filter;
+    bool need_for_update;
+
+    // shard read infos
+    const char** shard_names;
+    uint shard_num;
+    uint sharded_offset;
+
+    // range read infos
+    const char** range_values;
+    Field *part_col;
+    uint range_num;
+    uint range_offset;
+} partial_read_info;
 
 /*
   Class definition for the storage engine
@@ -263,21 +308,52 @@ class ha_federatedx: public handler
   friend int federatedx_db_init(void *p);
 
   THR_LOCK_DATA lock;      /* MySQL lock */
+  thr_lock_type statement_lock_type;
   FEDERATEDX_SHARE *share;    /* Shared lock info */
   federatedx_txn *txn;
   federatedx_io *io;
   FEDERATEDX_IO_RESULT *stored_result;
+  int scan_mode;
+  void *current;
+  MY_BITMAP vindex_set;
+  bool vindex_init;
+  MY_BITMAP pk_set;
+  int pk_num;
+  // if the table is update/delete target, we should add 'for update' to the remote
+  // select statement to avoid lost update in concurrency update
+  // todo: eventually, the flag should be removed, and the federatedx handler should use
+  // lock type to decide whether 'for update' should be used or not
+  bool is_delete_update_target;
   /**
       Array of all stored results we get during a query execution.
   */
   DYNAMIC_ARRAY results;
+  // the following 4 fields is related to partial read of vitess table
+  partial_read_info pr_info;
+  int partial_read_scan_mode;
+  // the partial read mode from sql hint
+  int partial_read_mode_by_hint;
+  Field *part_col;
+
+  const char *local_part_col_name;
+  const char *local_part_values[HA_FEDERATEDX_VITESS_MAX_PART_NUM];
+  my_ulonglong local_part_value_num;
+  FEDERATEDX_IO_RESULT *local_shard_info_result;
+
+  my_ulonglong max_query_size;
   bool position_called;
   uint fetch_num; // stores the fetch num
   int remote_error_number;
-  char remote_error_buf[FEDERATEDX_QUERY_BUFFER_SIZE];
+  char remote_error_buf[FEDERATEDX_QUERY_ERROR_BUFFER_SIZE];
   bool ignore_duplicates, replace_duplicates;
   bool insert_dup_update, table_will_be_deleted;
   DYNAMIC_STRING bulk_insert;
+  ha_rows bulk_insert_size;
+  DYNAMIC_STRING additionalFilter;
+  bool has_equal_filter;
+  ha_rows index_cardinality[MAX_KEY+1];
+  ha_rows records_per_shard;
+  bool index_cardinality_init;
 
 private:
   /*
@@ -315,14 +391,33 @@ private:
   int real_connect(FEDERATEDX_SHARE *my_share, uint create_flag);
 public:
   ha_federatedx(handlerton *hton, TABLE_SHARE *table_arg);
-  ~ha_federatedx() {}
+  ~ha_federatedx() { dynstr_free(&additionalFilter);}
   /*
     The name of the index type that will be used for display
     don't implement this method unless you really have indexes
    */
   // perhaps get index type
   const char *index_type(uint inx) { return "REMOTE"; }
-  /*
+
+    const COND *cond_push(const Item *cond);
+    void set_delete_update_target() { is_delete_update_target = true;}
+    void set_scan_mode(LEX_CSTRING scan_mode);
+    const DYNAMIC_STRING *ha_pushed_condition() const;
+    // zqdai add column pruning logic
+    void append_select_from(String& query);
+    ha_rows multi_range_read_info_const(uint keyno, RANGE_SEQ_IF *seq,
+                                         void *seq_init_param, uint n_ranges_arg,
+                                         uint *bufsz, uint *flags, Cost_estimate *cost);
+    ha_rows multi_range_read_info(uint keyno, uint n_ranges, uint n_rows,
+                                           uint key_parts, uint *bufsz,
+                                           uint *flags, Cost_estimate *cost);
+    int multi_range_read_next(range_id_t *range_info);
+    int read_multi_in_first(String *in_filter_str);
+    int multi_range_read_init(RANGE_SEQ_IF *seq_funcs, void *seq_init_param,
+                                   uint n_ranges, uint mode, HANDLER_BUFFER *buf);
+    bool use_default_mrr;
+    bool partial_ppd;
+    /*
     This is a list of flags that says what the storage engine
     implements. The current table flags are documented in
     handler.h
@@ -334,7 +429,8 @@ public:
             | HA_REC_NOT_IN_SEQ | HA_AUTO_PART_KEY | HA_CAN_INDEX_BLOBS |
             HA_BINLOG_ROW_CAPABLE | HA_BINLOG_STMT_CAPABLE | HA_CAN_REPAIR |
             HA_PRIMARY_KEY_REQUIRED_FOR_DELETE |
-            HA_PARTIAL_COLUMN_READ | HA_NULL_IN_KEY);
+            HA_PARTIAL_COLUMN_READ | HA_NULL_IN_KEY
+            | HA_CAN_TABLE_CONDITION_PUSHDOWN);
   }
   /*
     This is a bitmap of flags that says how the storage engine
@@ -367,22 +463,11 @@ public:
     The reason for "records * 1000" is that such a large number forces
     this to use indexes "
   */
-  double scan_time()
-  {
-    DBUG_PRINT("info", ("records %lu", (ulong) stats.records));
-    return (double)(stats.records*1000);
-  }
+  double scan_time();
   /*
     The next method will never be called if you do not implement indexes.
   */
-  double read_time(uint index, uint ranges, ha_rows rows)
-  {
-    /*
-      Per Brian, this number is bugus, but this method must be implemented,
-      and at a later date, he intends to document this issue for handler code
-    */
-    return (double) rows /  20.0+1;
-  }
+  double read_time(uint index, uint ranges, ha_rows rows);
 
   const key_map *keys_to_use_for_scanning() { return &key_map_full; }
   /*
@@ -420,6 +505,7 @@ public:
     and allocate it again
   */
   int rnd_init(bool scan);                                      //required
+  void check_partial_read();                                      //required
   int rnd_end();
   int rnd_next(uchar *buf);                                      //required
   int rnd_pos(uchar *buf, uchar *pos);                            //required
@@ -436,6 +522,7 @@ public:
              HA_CREATE_INFO *create_info);                      //required
   ha_rows records_in_range(uint inx, key_range *start_key,
                                    key_range *end_key);
+  bool is_valid_index(uint inx);
   uint8 table_cache_type() { return HA_CACHE_TBL_NOCACHE; }
 
   THR_LOCK_DATA **store_lock(THD *thd, THR_LOCK_DATA **to,
@@ -445,6 +532,17 @@ public:
   int external_lock(THD *thd, int lock_type);
   int reset(void);
   int free_result(void);
+  uint init_shard_info(federatedx_io *io);
+  uint init_global_range_info(federatedx_io *io);
+  uint init_local_range_info(federatedx_io *io);
+
+  void set_err_status(int result);
+  uint init_index_cardinality(federatedx_io *io);
+  void init_rec_per_key();
+  int find_index_num(const char* key_name);
+  uint init_vindex_info(federatedx_io *io);
+  void init_pk_info();
+  virtual void mark_read_columns_needed_for_update_delete(MY_BITMAP *read_map, MY_BITMAP *write_map);
 };
 
 extern const char ident_quote_char;              // Character for quoting
@@ -457,6 +555,8 @@ extern bool append_ident(String *string, const char *name, size_t length,
 
 
 extern federatedx_io *instantiate_io_mysql(MEM_ROOT *server_root,
+                                           FEDERATEDX_SERVER *server);
+extern federatedx_io *instantiate_io_vitess(MEM_ROOT *server_root,
                                            FEDERATEDX_SERVER *server);
 extern federatedx_io *instantiate_io_null(MEM_ROOT *server_root,
                                           FEDERATEDX_SERVER *server);

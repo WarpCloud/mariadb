@@ -1969,6 +1969,10 @@ retry_share:
 
   table->reginfo.lock_type=TL_READ;		/* Assume read */
 
+  if (table->file) {
+    table->file->set_scan_mode(table_list->scan_mode);
+  }
+
  reset:
   /*
     Check that there is no reference to a condition from an earlier query

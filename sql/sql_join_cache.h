@@ -1138,6 +1138,24 @@ public:
 
 };
 
+/*
+    The class JOIN_TAB_SCAN_FEDX_BNLH is a companion class for the classes
+    JOIN_CACHE_BNLH for federatedx table.
+ */
+/*class JOIN_TAB_SCAN_FEDX_BNLH: public JOIN_TAB_SCAN
+{
+
+public:
+
+    JOIN_TAB_SCAN_FEDX_BNLH(JOIN *j, JOIN_TAB *tab)
+            :JOIN_TAB_SCAN(j, tab) {}
+
+    uint aux_buffer_incr(ulong recno);
+
+    int open();
+
+    int next();
+};*/
 
 /*
   The class JOIN_CACHE_BNLH is used when the BNLH join algorithm is

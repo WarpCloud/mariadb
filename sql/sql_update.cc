@@ -308,6 +308,7 @@ int mysql_update(THD *thd,
   ha_rows       dup_key_found;
   bool          need_sort= TRUE;
   bool          reverse= FALSE;
+  bool ppd_done = FALSE;
 #ifndef NO_EMBEDDED_ACCESS_CHECKS
   uint		want_privilege;
 #endif
@@ -363,6 +364,7 @@ int mysql_update(THD *thd,
     DBUG_RETURN(1);
 
   table= table_list->table;
+  table->file->set_delete_update_target();
 
   if (!table_list->single_table_updatable())
   {
@@ -627,12 +629,15 @@ int mysql_update(THD *thd,
       !table->check_virtual_columns_marked_for_write())
   {
     DBUG_PRINT("info", ("Trying direct update"));
-    if (select && select->cond &&
+    if ((table->file->ha_table_flags() & HA_CAN_TABLE_CONDITION_PUSHDOWN) &&
+        optimizer_flag(thd, OPTIMIZER_SWITCH_ENGINE_CONDITION_PUSHDOWN_DML) &&
+        select && select->cond &&
         (select->cond->used_tables() == table->map))
     {
       DBUG_ASSERT(!table->file->pushed_cond);
       if (!table->file->cond_push(select->cond))
         table->file->pushed_cond= select->cond;
+      ppd_done = true;
     }
 
     if (!table->file->info_push(INFO_KIND_UPDATE_FIELDS, &fields) &&
@@ -644,6 +649,16 @@ int mysql_update(THD *thd,
       /* Direct update is not using_filesort and is not using_io_buffer */
       goto update_begin;
     }
+  }
+
+  if (!ppd_done && (table->file->ha_table_flags() & HA_CAN_TABLE_CONDITION_PUSHDOWN) &&
+      optimizer_flag(thd, OPTIMIZER_SWITCH_ENGINE_CONDITION_PUSHDOWN_DML) &&
+      select && select->cond &&
+      (select->cond->used_tables() == table->map))
+  {
+    DBUG_ASSERT(!table->file->pushed_cond);
+    if (!table->file->cond_push(select->cond))
+      table->file->pushed_cond= select->cond;
   }
 
   if (query_plan.using_filesort || query_plan.using_io_buffer)
@@ -1967,8 +1982,10 @@ void multi_update::prepare_to_read_rows()
     might read rows from const tables
   */
 
-  for (TABLE_LIST *tl= update_tables; tl; tl= tl->next_local)
+  for (TABLE_LIST *tl= update_tables; tl; tl= tl->next_local) {
+    tl->table->file->set_delete_update_target();
     tl->table->mark_columns_needed_for_update();
+  }
 }
 
 

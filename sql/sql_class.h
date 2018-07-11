@@ -579,6 +579,25 @@ typedef struct system_variables
 
   ha_rows select_limit;
   ha_rows max_join_size;
+  ha_rows max_vitess_complete_read_size;
+  ha_rows fedx_bkah_size;
+  ha_rows fedx_batch_insert_size;
+  ha_rows fedx_vitess_table_records_mode;
+  ha_rows fedx_vitess_table_records_factor;
+  ha_rows fedx_vitess_push_limit_for_simple_dml;
+  ha_rows fedx_vitess_limit_expand_factor;
+  ha_rows fedx_vitess_min_str_len_for_cbo;
+  ha_rows fedx_small_table_threshold;
+  ha_rows fedx_valid_index_cardinality_percent;
+  ha_rows fedx_valid_index_cardinality_minvalue;
+  ha_rows fedx_valid_index_max_result_rowcount;
+  ha_rows fedx_index_one_way_percent;
+  ha_rows fedx_index_two_way_percent;
+  ha_rows fedx_invalid_index_expand_factor;
+  ha_rows fedx_scan_expand_factor;
+  ha_rows vitess_partial_read_type;
+  ha_rows fedx_pk_update_delete_level;
+  ha_rows join_limit_scale;
   ha_rows expensive_subquery_limit;
   ulong auto_increment_increment, auto_increment_offset;
   ulong column_compression_zlib_strategy;

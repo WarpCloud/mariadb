@@ -31,6 +31,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <my_global.h>
 #include "sql_priv.h"
 #include <mysqld_error.h>
+#include <field.h>
 
 #include "ha_federatedx.h"
 
@@ -63,20 +64,20 @@ struct mysql_position
 
 class federatedx_io_mysql :public federatedx_io
 {
+protected:
   MYSQL mysql; /* MySQL connection */
-  MYSQL_ROWS *current;
   DYNAMIC_ARRAY savepoints;
   bool requested_autocommit;
   bool actual_autocommit;
 
-  int actual_query(const char *buffer, size_t length);
+  virtual int actual_query(const char *buffer, size_t length, void *info);
   bool test_all_restrict() const;
 public:
   federatedx_io_mysql(FEDERATEDX_SERVER *);
   ~federatedx_io_mysql();
 
   int simple_query(const char *fmt, ...);
-  int query(const char *buffer, size_t length);
+  int query(const char *buffer, size_t length, int scan_mode, void *scan_info);
   virtual FEDERATEDX_IO_RESULT *store_result();
 
   virtual size_t max_query_size() const;
@@ -93,6 +94,7 @@ public:
 
   int savepoint_set(ulong sp);
   ulong savepoint_release(ulong sp);
+  virtual void check_persistence_connect();
   ulong savepoint_rollback(ulong sp);
   void savepoint_restrict(ulong sp);
 
@@ -108,7 +110,7 @@ public:
   virtual void free_result(FEDERATEDX_IO_RESULT *io_result);
   virtual unsigned int get_num_fields(FEDERATEDX_IO_RESULT *io_result);
   virtual my_ulonglong get_num_rows(FEDERATEDX_IO_RESULT *io_result);
-  virtual FEDERATEDX_IO_ROW *fetch_row(FEDERATEDX_IO_RESULT *io_result);
+  virtual FEDERATEDX_IO_ROW *fetch_row(FEDERATEDX_IO_RESULT *io_result, void **current);
   virtual ulong *fetch_lengths(FEDERATEDX_IO_RESULT *io_result);
   virtual const char *get_column_data(FEDERATEDX_IO_ROW *row,
                                       unsigned int column);
@@ -117,10 +119,11 @@ public:
 
   virtual size_t get_ref_length() const;
   virtual void mark_position(FEDERATEDX_IO_RESULT *io_result,
-                             void *ref);
+                             void *ref, void *offset);
   virtual int seek_position(FEDERATEDX_IO_RESULT **io_result,
                             const void *ref);
   virtual void set_thd(void *thd);
+  virtual int mysql_connect();
 };
 
 
@@ -129,7 +132,6 @@ federatedx_io *instantiate_io_mysql(MEM_ROOT *server_root,
 {
   return new (server_root) federatedx_io_mysql(server);
 }
-
 
 federatedx_io_mysql::federatedx_io_mysql(FEDERATEDX_SERVER *aserver)
   : federatedx_io(aserver),
@@ -141,7 +143,7 @@ federatedx_io_mysql::federatedx_io_mysql(FEDERATEDX_SERVER *aserver)
   bzero(&savepoints, sizeof(DYNAMIC_ARRAY));
 
   my_init_dynamic_array(&savepoints, sizeof(SAVEPT), 16, 16, MYF(0));
-  
+
   DBUG_VOID_RETURN;
 }
 
@@ -171,8 +173,8 @@ int federatedx_io_mysql::commit()
 {
   int error= 0;
   DBUG_ENTER("federatedx_io_mysql::commit");
-  
-  if (!actual_autocommit && (error= actual_query("COMMIT", 6)))
+
+  if (!actual_autocommit && (error= actual_query("COMMIT", 6, NULL)))
     rollback();
   
   reset();
@@ -186,7 +188,7 @@ int federatedx_io_mysql::rollback()
   DBUG_ENTER("federatedx_io_mysql::rollback");
   
   if (!actual_autocommit)
-    error= actual_query("ROLLBACK", 8);
+    error= actual_query("ROLLBACK", 8, NULL);
   else
     error= ER_WARNING_NOT_COMPLETE_ROLLBACK;
 
@@ -207,6 +209,11 @@ ulong federatedx_io_mysql::last_savepoint() const
   DBUG_RETURN(savept ? savept->level : 0);
 }
 
+void federatedx_io_mysql::check_persistence_connect() {
+  if (!mysql.net.vio) {
+    actual_autocommit = true;
+  }
+}
 
 ulong federatedx_io_mysql::actual_savepoint() const
 {
@@ -275,7 +282,7 @@ ulong federatedx_io_mysql::savepoint_release(ulong sp)
     char buffer[STRING_BUFFER_USUAL_SIZE];
     size_t length= my_snprintf(buffer, sizeof(buffer),
               "RELEASE SAVEPOINT save%lu", last->level);
-    actual_query(buffer, length);
+    actual_query(buffer, length, NULL);
   }
 
   DBUG_RETURN(last_savepoint()); 
@@ -310,7 +317,7 @@ ulong federatedx_io_mysql::savepoint_rollback(ulong sp)
     char buffer[STRING_BUFFER_USUAL_SIZE];
     size_t length= my_snprintf(buffer, sizeof(buffer),
               "ROLLBACK TO SAVEPOINT save%lu", savept->level);
-    actual_query(buffer, length);
+    actual_query(buffer, length, NULL);
   }
 
   DBUG_RETURN(last_savepoint());
@@ -350,7 +357,7 @@ int federatedx_io_mysql::simple_query(const char *fmt, ...)
   length= my_vsnprintf(buffer, sizeof(buffer), fmt, arg);
   va_end(arg);
   
-  error= query(buffer, length);
+  error= query(buffer, length, SCAN_MODE_DEFAULT, NULL);
   
   DBUG_RETURN(error);
 }
@@ -378,19 +385,24 @@ bool federatedx_io_mysql::test_all_restrict() const
 }
 
 
-int federatedx_io_mysql::query(const char *buffer, size_t length)
+int federatedx_io_mysql::query(const char *buffer, size_t length, int scan_mode, void *scan_info)
 {
   int error;
+  check_persistence_connect();
   bool wants_autocommit= requested_autocommit | is_readonly();
   DBUG_ENTER("federatedx_io_mysql::query");
 
   if (!wants_autocommit && test_all_restrict())
     wants_autocommit= TRUE;
+  if (is_active()) {
+    // if we are inside a transaction, we should never want autocommit, even if the query is read only
+    wants_autocommit = false;
+  }
 
   if (wants_autocommit != actual_autocommit)
   {
     if ((error= actual_query(wants_autocommit ? "SET AUTOCOMMIT=1"
-                                            : "SET AUTOCOMMIT=0", 16)))
+                                            : "SET AUTOCOMMIT=0", 16, NULL)))
     DBUG_RETURN(error);                         
     mysql.reconnect= wants_autocommit ? 1 : 0;
     actual_autocommit= wants_autocommit;
@@ -405,7 +417,7 @@ int federatedx_io_mysql::query(const char *buffer, size_t length)
       char buf[STRING_BUFFER_USUAL_SIZE];
       size_t len= my_snprintf(buf, sizeof(buf),
                   "SAVEPOINT save%lu", savept->level);
-      if ((error= actual_query(buf, len)))
+      if ((error= actual_query(buf, len, NULL)))
     DBUG_RETURN(error);                         
     set_active(TRUE);
     savept->flags|= SAVEPOINT_EMITTED;
@@ -413,44 +425,24 @@ int federatedx_io_mysql::query(const char *buffer, size_t length)
     savept->flags|= SAVEPOINT_REALIZED;
   }
 
-  if (!(error= actual_query(buffer, length)))
+  if (!(error= actual_query(buffer, length, NULL)))
     set_active(is_active() || !actual_autocommit);
 
   DBUG_RETURN(error);
 }
 
 
-int federatedx_io_mysql::actual_query(const char *buffer, size_t length)
+int federatedx_io_mysql::actual_query(const char *buffer, size_t length, void *info)
 {
   int error;
   DBUG_ENTER("federatedx_io_mysql::actual_query");
 
   if (!mysql.net.vio)
   {
-    my_bool my_true= 1;
-
-    if (!(mysql_init(&mysql)))
-      DBUG_RETURN(-1);
-  
-    /*
-	BUG# 17044 Federated Storage Engine is not UTF8 clean
-	Add set names to whatever charset the table is at open
-	of table
-    */
-    /* this sets the csname like 'set names utf8' */
-    mysql_options(&mysql, MYSQL_SET_CHARSET_NAME, get_charsetname());
-    mysql_options(&mysql, MYSQL_OPT_USE_THREAD_SPECIFIC_MEMORY,
-                  (char*) &my_true);
-
-    if (!mysql_real_connect(&mysql,
-                            get_hostname(),
-                            get_username(),
-                            get_password(),
-                            get_database(),
-                            get_port(),
-                            get_socket(), 0))
-      DBUG_RETURN(ER_CONNECT_TO_FOREIGN_DATA_SOURCE);
-    mysql.reconnect= 1;
+    error = mysql_connect();
+    if (error) {
+      DBUG_RETURN(error);
+    }
   }
 
   if (!(error= mysql_real_query(&mysql, STRING_WITH_LEN("set time_zone='+00:00'"))))
@@ -517,10 +509,12 @@ my_ulonglong federatedx_io_mysql::get_num_rows(FEDERATEDX_IO_RESULT *io_result)
 }
 
 
-FEDERATEDX_IO_ROW *federatedx_io_mysql::fetch_row(FEDERATEDX_IO_RESULT *io_result)
+FEDERATEDX_IO_ROW *federatedx_io_mysql::fetch_row(FEDERATEDX_IO_RESULT *io_result, void **current)
 {
   MYSQL_RES *result= (MYSQL_RES*)io_result;
-  current= result->data_cursor;
+  if (current) {
+    *current = result->data_cursor;
+  }
   return (FEDERATEDX_IO_ROW *) mysql_fetch_row(result);
 }
 
@@ -559,7 +553,7 @@ bool federatedx_io_mysql::table_metadata(ha_statistics *stats,
   append_ident(&status_query_string, table_name,
                table_name_length, value_quote_char);
 
-  if (query(status_query_string.ptr(), status_query_string.length()))
+  if (query(status_query_string.ptr(), status_query_string.length(), SCAN_MODE_EITHER, NULL))
     goto error;
 
   status_query_string.length(0);
@@ -576,7 +570,7 @@ bool federatedx_io_mysql::table_metadata(ha_statistics *stats,
   if (!get_num_rows(result))
     goto error;
 
-  if (!(row= fetch_row(result)))
+  if (!(row= fetch_row(result, NULL)))
     goto error;
 
   /*
@@ -593,6 +587,10 @@ bool federatedx_io_mysql::table_metadata(ha_statistics *stats,
   if (!is_column_null(row, 4))
     stats->records= (ha_rows) my_strtoll10(get_column_data(row, 4),
 	                                   (char**) 0, &error);
+  if (stats->records == 0) {
+    stats->records = FEDERATEDX_RECORDS_IN_RANGE;
+  }
+
   if (!is_column_null(row, 5))
     stats->mean_rec_length= (ulong) my_strtoll10(get_column_data(row, 5),
 	                                         (char**) 0, &error);
@@ -628,11 +626,11 @@ size_t federatedx_io_mysql::get_ref_length() const
 
 
 void federatedx_io_mysql::mark_position(FEDERATEDX_IO_RESULT *io_result,
-                                        void *ref)
+                                        void *ref, void *offset)
 {
   mysql_position& pos= *reinterpret_cast<mysql_position*>(ref);
   pos.result= (MYSQL_RES *) io_result;
-  pos.offset= current;
+  pos.offset= reinterpret_cast<MYSQL_ROW_OFFSET>(offset);
 }
 
 int federatedx_io_mysql::seek_position(FEDERATEDX_IO_RESULT **io_result,
@@ -653,4 +651,311 @@ int federatedx_io_mysql::seek_position(FEDERATEDX_IO_RESULT **io_result,
 void federatedx_io_mysql::set_thd(void *thd)
 {
   mysql.net.thd= thd;
+}
+
+int federatedx_io_mysql::mysql_connect()
+{
+  DBUG_ENTER("federatedx_io_vitess::mysql_connect");
+
+  //todo should throw error if current io is in transaction
+  my_bool my_true= 1;
+
+  if (!(mysql_init(&mysql)))
+    DBUG_RETURN(-1);
+
+  /*
+  BUG# 17044 Federated Storage Engine is not UTF8 clean
+  Add set names to whatever charset the table is at open
+  of table
+  */
+  /* this sets the csname like 'set names utf8' */
+  mysql_options(&mysql, MYSQL_SET_CHARSET_NAME, get_charsetname());
+  mysql_options(&mysql, MYSQL_OPT_USE_THREAD_SPECIFIC_MEMORY,
+                (char*) &my_true);
+
+  if (!mysql_real_connect(&mysql,
+                          get_hostname(),
+                          get_username(),
+                          get_password(),
+                          get_database(),
+                          get_port(),
+                          get_socket(), 0))
+    DBUG_RETURN(ER_CONNECT_TO_FOREIGN_DATA_SOURCE);
+  mysql.reconnect= 1;
+  actual_autocommit = true;
+
+  DBUG_RETURN(0);
+}
+
+class federatedx_io_vitess :public federatedx_io_mysql {
+    int current_scan_mode;
+    bool in_shard_db;
+public:
+    federatedx_io_vitess(FEDERATEDX_SERVER *);
+    ~federatedx_io_vitess();
+
+    int query(const char *buffer, size_t length, int scan_mode, void *scan_info);
+    virtual void check_persistence_connect();
+    int mysql_connect();
+    int actual_query(const char *buffer, size_t length, void *info);
+};
+
+federatedx_io *instantiate_io_vitess(MEM_ROOT *server_root, FEDERATEDX_SERVER *server) {
+  return new (server_root) federatedx_io_vitess(server);
+}
+
+federatedx_io_vitess::federatedx_io_vitess(FEDERATEDX_SERVER *aserver) : federatedx_io_mysql(aserver)
+{
+  DBUG_ENTER("federatedx_io_vitess::federatedx_io_vitess");
+  current_scan_mode = SCAN_MODE_UNKNOWN;
+  in_shard_db = false;
+  DBUG_VOID_RETURN;
+}
+
+federatedx_io_vitess::~federatedx_io_vitess() {
+  DBUG_ENTER("federatedx_io_vitess::~federatedx_io_vitess");
+  DBUG_VOID_RETURN;
+}
+
+void federatedx_io_vitess::check_persistence_connect() {
+  if (!mysql.net.vio) {
+    actual_autocommit = true;
+    current_scan_mode = SCAN_MODE_OLTP;
+  }
+}
+
+int federatedx_io_vitess::query(const char *buffer, uint length, int scan_mode, void *scan_info) {
+  int error;
+  check_persistence_connect();
+  bool wants_autocommit= requested_autocommit | is_readonly();
+  DBUG_ENTER("federatedx_io_vitess::query");
+
+  partial_read_info* pr_info = NULL;
+  if (scan_info) {
+    pr_info = (partial_read_info *) scan_info;
+  }
+
+  if (!wants_autocommit && test_all_restrict())
+    wants_autocommit= TRUE;
+  if (is_active()) {
+    // if we are inside a transaction, we should never want autocommit, even if the query is read only
+    wants_autocommit = false;
+  }
+
+  if (wants_autocommit != actual_autocommit)
+  {
+    if ((error= actual_query(wants_autocommit ? "SET AUTOCOMMIT=1"
+                                            : "SET AUTOCOMMIT=0", 16, NULL)))
+    DBUG_RETURN(error);
+    mysql.reconnect= wants_autocommit ? 1 : 0;
+    actual_autocommit= wants_autocommit;
+  }
+
+  if (!actual_autocommit && last_savepoint() != actual_savepoint())
+  {
+    SAVEPT *savept= dynamic_element(&savepoints, savepoints.elements - 1,
+                                SAVEPT *);
+    if (!(savept->flags & SAVEPOINT_RESTRICT))
+  {
+      char buf[STRING_BUFFER_USUAL_SIZE];
+    int len= my_snprintf(buf, sizeof(buf),
+                  "SAVEPOINT save%lu", savept->level);
+      if ((error= actual_query(buf, len, NULL)))
+    DBUG_RETURN(error);
+    set_active(TRUE);
+    savept->flags|= SAVEPOINT_EMITTED;
+    }
+    savept->flags|= SAVEPOINT_REALIZED;
+  }
+
+  if (scan_mode == SCAN_MODE_OLAP && current_scan_mode != SCAN_MODE_OLAP) {
+    if ((error = actual_query("SET WORKLOAD='OLAP'", 19, NULL))) {
+      DBUG_RETURN(error);
+    }
+    current_scan_mode = SCAN_MODE_OLAP;
+  }
+  if (scan_mode == SCAN_MODE_OLTP && current_scan_mode != SCAN_MODE_OLTP) {
+    if ((error = actual_query("SET WORKLOAD='OLTP'", 19, NULL))) {
+      DBUG_RETURN(error);
+    }
+    current_scan_mode = SCAN_MODE_OLTP;
+  }
+
+  if (!(error = actual_query(buffer, length, pr_info)))
+    set_active(is_active() || !actual_autocommit);
+
+  DBUG_RETURN(error);
+}
+
+int federatedx_io_vitess::mysql_connect()
+{
+  DBUG_ENTER("federatedx_io_vitess::mysql_connect");
+
+  int error = federatedx_io_mysql::mysql_connect();
+  if (error) {
+    DBUG_RETURN(error);
+  }
+
+  // once reconnect, reset the current workload flag
+  current_scan_mode = SCAN_MODE_UNKNOWN;
+
+  DBUG_RETURN(0);
+}
+
+const char* construct_partial_read_query(String *query, partial_read_info *pr_info) {
+  const char* ret = NULL;
+  if (pr_info->partial_read_mode == PARTIAL_READ_SHARD_READ) {
+    ret = pr_info->shard_names[pr_info->sharded_offset];
+    pr_info->sharded_offset = pr_info->sharded_offset + 1;
+    query->append(pr_info->partial_read_query.str, pr_info->partial_read_query.length);
+    if (pr_info->partial_read_filter.length > 0) {
+      query->append(STRING_WITH_LEN(" WHERE "));
+      query->append(pr_info->partial_read_filter.str, pr_info->partial_read_filter.length);
+    }
+    if (pr_info->need_for_update) {
+      query->append(STRING_WITH_LEN(" FOR UPDATE"));
+    }
+    return ret;
+  }
+
+  if (pr_info->partial_read_mode == PARTIAL_READ_SHARD_RANGE_READ) {
+    //update shard offset if necessary
+    if (pr_info->range_offset > pr_info->range_num) {
+      pr_info->range_offset = 0;
+      pr_info->sharded_offset = pr_info->sharded_offset + 1;
+      ret = pr_info->shard_names[pr_info->sharded_offset];
+    } else {
+      ret = pr_info->shard_names[pr_info->sharded_offset];
+    }
+  }
+
+  query->append(pr_info->partial_read_query.str, pr_info->partial_read_query.length);
+  query->append(STRING_WITH_LEN(" WHERE ("));
+
+  if (pr_info->range_offset == 0) {
+    append_ident(query, pr_info->part_col->field_name.str,
+                 pr_info->part_col->field_name.length, ident_quote_char);
+    // the first range
+    query->append(STRING_WITH_LEN(" <= "));
+    if (pr_info->part_col->str_needs_quotes()) {
+      query->append(STRING_WITH_LEN("'"));
+    }
+    query->append(pr_info->range_values[pr_info->range_offset]);
+    if (pr_info->part_col->str_needs_quotes()) {
+      query->append(STRING_WITH_LEN("'"));
+    }
+  } else if (pr_info->range_offset == pr_info->range_num){
+    append_ident(query, pr_info->part_col->field_name.str,
+                 pr_info->part_col->field_name.length, ident_quote_char);
+    // the last range
+    query->append(STRING_WITH_LEN(" > "));
+    if (pr_info->part_col->str_needs_quotes()) {
+      query->append(STRING_WITH_LEN("'"));
+    }
+    query->append(pr_info->range_values[pr_info->range_offset -1]);
+    if (pr_info->part_col->str_needs_quotes()) {
+      query->append(STRING_WITH_LEN("'"));
+    }
+  } else {
+    append_ident(query, pr_info->part_col->field_name.str,
+                 pr_info->part_col->field_name.length, ident_quote_char);
+    query->append(STRING_WITH_LEN(" > "));
+    if (pr_info->part_col->str_needs_quotes()) {
+      query->append(STRING_WITH_LEN("'"));
+    }
+    query->append(pr_info->range_values[pr_info->range_offset-1]);
+    if (pr_info->part_col->str_needs_quotes()) {
+      query->append(STRING_WITH_LEN("'"));
+    }
+
+    query->append(STRING_WITH_LEN(" AND "));
+    append_ident(query, pr_info->part_col->field_name.str,
+                 pr_info->part_col->field_name.length, ident_quote_char);
+    query->append(STRING_WITH_LEN(" <= "));
+    if (pr_info->part_col->str_needs_quotes()) {
+      query->append(STRING_WITH_LEN("'"));
+    }
+    query->append(pr_info->range_values[pr_info->range_offset]);
+    if (pr_info->part_col->str_needs_quotes()) {
+      query->append(STRING_WITH_LEN("'"));
+    }
+  }
+
+  query->append(STRING_WITH_LEN(")"));
+  if (pr_info->partial_read_filter.length > 0) {
+    query->append(STRING_WITH_LEN(" AND ("));
+    query->append(pr_info->partial_read_filter.str, pr_info->partial_read_filter.length);
+    query->append(STRING_WITH_LEN(")"));
+  }
+  pr_info->range_offset = pr_info->range_offset + 1;
+  if (pr_info->need_for_update) {
+    query->append(STRING_WITH_LEN(" FOR UPDATE"));
+  }
+
+  return ret;
+
+}
+
+int federatedx_io_vitess::actual_query(const char *buffer, uint length, void *info) {
+  int error;
+  DBUG_ENTER("federatedx_io_vitess::actual_query");
+
+  if (!mysql.net.vio)
+  {
+    error = mysql_connect();
+    if (error) {
+      DBUG_RETURN(error);
+    }
+  }
+
+  partial_read_info *pr_info = NULL;
+  if (info != NULL) {
+    pr_info = (partial_read_info *)info;
+  }
+
+  if (pr_info != NULL) {
+    char sql_query_buffer[FEDERATEDX_QUERY_BUFFER_SIZE];
+    String sql_query(sql_query_buffer,
+                     sizeof(sql_query_buffer),
+                     &my_charset_bin);
+    sql_query.length(0);
+
+    if (pr_info->partial_read_mode == PARTIAL_READ_SHARD_READ || pr_info->partial_read_mode == PARTIAL_READ_SHARD_RANGE_READ) {
+      bool old_reconnect = mysql.reconnect;
+      const char *current_db = construct_partial_read_query(&sql_query, pr_info);
+      error = mysql_select_db(&mysql, current_db);
+      if (error) {
+        goto err;
+      }
+      mysql.reconnect = false;
+      in_shard_db = true;
+
+      error = mysql_real_query(&mysql, sql_query.ptr(), sql_query.length());
+      mysql.reconnect = old_reconnect;
+    } else if (pr_info->partial_read_mode == PARTIAL_READ_RANGE_READ) {
+
+      construct_partial_read_query(&sql_query, pr_info);
+      if (in_shard_db) {
+        error = mysql_select_db(&mysql, server->database);
+        if (error) {
+          goto err;
+        }
+        in_shard_db = false;
+      }
+      error = mysql_real_query(&mysql, sql_query.ptr(), sql_query.length());
+
+    }
+  } else {
+    if (in_shard_db) {
+      error = mysql_select_db(&mysql, server->database);
+      if (error) {
+        goto err;
+      }
+      in_shard_db = false;
+    }
+    error = mysql_real_query(&mysql, buffer, length);
+  }
+
+err:
+  DBUG_RETURN(error);
 }

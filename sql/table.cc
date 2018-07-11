@@ -6387,6 +6387,7 @@ void TABLE::mark_columns_needed_for_delete()
 {
   bool need_signal= false;
   mark_columns_per_binlog_row_image();
+  file->mark_read_columns_needed_for_update_delete(read_set, write_set);
 
   if (triggers)
     triggers->mark_fields_used(TRG_EVENT_DELETE);
@@ -6456,6 +6457,8 @@ void TABLE::mark_columns_needed_for_update()
   bool need_signal= false;
 
   mark_columns_per_binlog_row_image();
+
+  file->mark_read_columns_needed_for_update_delete(read_set, write_set);
 
   if (triggers)
     triggers->mark_fields_used(TRG_EVENT_UPDATE);
@@ -8220,7 +8223,7 @@ int TABLE_LIST::fetch_number_of_rows()
     table->used_stat_records= table->file->stats.records;
   }
   else
-    error= table->file->info(HA_STATUS_VARIABLE | HA_STATUS_NO_LOCK);
+    error= table->file->info(HA_STATUS_VARIABLE | HA_STATUS_NO_LOCK | HA_STATUS_INIT_FEDX_INFO);
   return error;
 }
 

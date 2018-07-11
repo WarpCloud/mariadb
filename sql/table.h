@@ -2330,6 +2330,10 @@ struct TABLE_LIST
   LEX_CSTRING view_client_cs_name;
   LEX_CSTRING view_connection_cl_name;
 
+
+  // this is used in federatedx table based on vitess
+  LEX_CSTRING scan_mode;
+
   /*
     View definition (SELECT-statement) in the UTF-form.
   */

@@ -2707,6 +2707,8 @@ void get_sweep_read_cost(TABLE *table, ha_rows nrows, bool interrupted,
 #define HA_MRR_IMPLEMENTATION_FLAGS \
   (512U | 1024U | 2048U | 4096U | 8192U | 16384U)
 
+#define HA_MRR_FEDX_MRR   32768U
+
 /*
   This is a buffer area that the handler can use to store rows.
   'end_of_used_area' should be kept updated after calls to
@@ -3083,6 +3085,14 @@ public:
     The cached_table_flags is set at ha_open and ha_external_lock
   */
   Table_flags ha_table_flags() const { return cached_table_flags; }
+
+  virtual void mark_read_columns_needed_for_update_delete(MY_BITMAP *read_map, MY_BITMAP *write_map) { return; }
+
+    /**
+     * the ha_pushed_condition return a string representing the pushed condtions
+     * @return
+     */
+  virtual const DYNAMIC_STRING *ha_pushed_condition() const { return 0; }
   /**
     These functions represent the public interface to *users* of the
     handler class, hence they are *not* virtual. For the inheritance
@@ -3934,6 +3944,10 @@ public:
    condition stack.
  */ 
  virtual const COND *cond_push(const COND *cond) { return cond; };
+
+ virtual void set_delete_update_target() {};
+
+ virtual void set_scan_mode(LEX_CSTRING scan_mode) { return; };
  /**
    Pop the top condition from the condition stack of the handler instance.
 

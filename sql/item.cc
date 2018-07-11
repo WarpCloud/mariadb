@@ -127,6 +127,20 @@ longlong Item::val_datetime_packed_result()
   return pack_time(&tmp);
 }
 
+bool is_component_item(const Item *item) {
+  switch (item->type()) {
+    case Item::FIELD_ITEM:
+    case Item::STRING_ITEM:
+    case Item::INT_ITEM:
+    case Item::REAL_ITEM:
+    case Item::NULL_ITEM:
+    case Item::VARBIN_ITEM:
+    case Item::DECIMAL_ITEM:
+      return TRUE;
+    default:
+      return FALSE;
+  }
+}
 
 /**
   Get date/time/datetime.
@@ -2288,7 +2302,7 @@ public:
     else
       Item_ident::print(str, query_type);
   }
-  virtual Ref_Type ref_type() { return AGGREGATE_REF; }
+  virtual Ref_Type ref_type() const { return AGGREGATE_REF; }
 };
 
 
@@ -7784,6 +7798,37 @@ void Item_field::print(String *str, enum_query_type query_type)
   Item_ident::print(str, query_type);
 }
 
+String *Item_field::to_str(String *str, THD *thd) const {
+  if (field && field->table->const_table)
+  {
+    char buff[MAX_FIELD_WIDTH];
+    String *ptr, tmp(buff,sizeof(buff),str->charset());
+    ptr= ((Item *)this)->val_str(&tmp);
+    if (!ptr)
+      str->append("NULL");
+    else
+    {
+      switch (cmp_type()) {
+        case STRING_RESULT:
+        case TIME_RESULT:
+          append_unescaped(str, ptr->ptr(), ptr->length());
+              break;
+        case DECIMAL_RESULT:
+        case REAL_RESULT:
+        case INT_RESULT:
+          str->append(*ptr);
+              break;
+        case ROW_RESULT:
+          return 0;
+      }
+    }
+  } else {
+    str->append(STRING_WITH_LEN("`"));
+    str->append(field_name.str, field_name.length);
+    str->append(STRING_WITH_LEN("`"));
+  }
+  return str;
+}
 
 void Item_temptable_field::print(String *str, enum_query_type query_type)
 {
@@ -8152,6 +8197,22 @@ error:
   return TRUE;
 }
 
+String* Item_ref::to_str(String *str, THD *thd) const
+{
+  if (ref)
+  {
+    if ((*ref)->type() != Item::CACHE_ITEM && ref_type() != VIEW_REF &&
+        !table_name && name.str && alias_name_used) {
+      str->append((*ref)->real_item()->name.str, (*ref)->real_item()->name.length);
+      return str;
+    }
+    else {
+      return (*ref)->to_str(str, thd);
+    }
+  }
+  else
+    return 0;
+}
 
 void Item_ref::set_properties()
 {
@@ -9889,6 +9950,14 @@ void Item_cache::print(String *str, enum_query_type query_type)
   str->append(')');
 }
 
+String *Item_cache::to_str(String *str, THD *thd) const {
+  if (example) {
+    return example->to_str(str, thd);
+  } else {
+    return 0;
+  }
+}
+
 /**
   Assign to this cache NULL value if it is possible
 */
@@ -9912,6 +9981,23 @@ bool  Item_cache_int::cache_value()
   null_value= example->null_value;
   unsigned_flag= example->unsigned_flag;
   return TRUE;
+}
+
+String* Item_cache_int::to_str(String* str, THD *thd) const
+{
+  String *ret = Item_cache::to_str(str, thd);
+  if (ret) {
+    return ret;
+  }
+  if (example && fixed && thd &&
+          optimizer_flag(thd, OPTIMIZER_SWITCH_FEDX_PPD_ON_ITEM_CACHE)) {
+    longlong v = example->val_int_result();
+    if (!example->null_value) {
+      str->append_longlong(v);
+      return str;
+    }
+  }
+  return 0;
 }
 
 
@@ -10341,6 +10427,26 @@ String* Item_cache_str::val_str(String *str)
   if (!has_value())
     return 0;
   return value;
+}
+
+String* Item_cache_str::to_str(String *str, THD *thd) const
+{
+  String *ret = Item_cache::to_str(str, thd);
+  if (ret) {
+    return ret;
+  }
+  if (example && fixed && thd
+      && optimizer_flag(thd, OPTIMIZER_SWITCH_FEDX_PPD_ON_ITEM_CACHE)) {
+    char buffer_local[STRING_BUFFER_USUAL_SIZE];
+    String *value_local, value_buff_local;
+    value_buff_local.set(buffer_local, sizeof(buffer_local), example->collation.collation);
+    value_local = example->str_result(&value_buff_local);
+    if (!example->null_value) {
+      append_unescaped(str, value_local->ptr(), value_local->length());
+      return str;
+    }
+  }
+  return 0;
 }
 
 
