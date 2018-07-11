@@ -724,7 +724,7 @@ void federatedx_io_vitess::check_persistence_connect() {
   }
 }
 
-int federatedx_io_vitess::query(const char *buffer, uint length, int scan_mode, void *scan_info) {
+int federatedx_io_vitess::query(const char *buffer, size_t length, int scan_mode, void *scan_info) {
   int error;
   check_persistence_connect();
   bool wants_autocommit= requested_autocommit | is_readonly();
@@ -896,7 +896,7 @@ const char* construct_partial_read_query(String *query, partial_read_info *pr_in
 
 }
 
-int federatedx_io_vitess::actual_query(const char *buffer, uint length, void *info) {
+int federatedx_io_vitess::actual_query(const char *buffer, size_t length, void *info) {
   int error;
   DBUG_ENTER("federatedx_io_vitess::actual_query");
 
