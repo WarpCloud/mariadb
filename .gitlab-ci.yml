@@ -1,0 +1,42 @@
+image: 172.16.1.99/transwarp/base/builder:centos7-kundb
+
+before_script:
+  - time=`date "+%Y-%m-%d-%H-%M-%S"`
+  - export MARIA_SRC=`pwd`
+  - if [ "${CI_COMMIT_REF_NAME}" = "10.3.7_mfed" ]; then
+  -   export BRANCH_NAME="maria_for_kundb_1.0"
+  - else
+  -   export BRANCH_NAME="${CI_COMMIT_REF_NAME}"
+  - fi
+  - imageTag="${BRANCH_NAME}-${time}-${CI_COMMIT_SHA}"
+  - export IMAGE_TAG=${imageTag}
+  - export COMPONENT_BASE="${CI_PROJECT_NAME}"
+  - export DOCKER_REPO_URL="172.16.1.99"
+  - export OSINFO="ubuntu-14.04"
+
+stages:
+  - postcommit_build
+
+postcommit_build:
+  stage: postcommit_build
+  script:
+    - echo "postcommit build"
+    - startdocker.sh &
+    - trap "kill -9 $(ps aux | grep dockerd | grep -v grep |  awk '{print $2}')"  ERR
+    - sleep 20s
+    - export BUILD_IMAGE="Y"
+    - export BUILDER="postcommit"
+    - export ENABLE_OVERLAY=true
+    - cd $MARIA_SRC
+    - git clone http://gitlab-ci-token:${CI_JOB_TOKEN}@172.16.1.41:10080/InfraTools/packageRelease.git script
+    - cp build_script/image/build_${CI_PROJECT_NAME}.sh script/build_utils/image/build_${CI_PROJECT_NAME}.sh
+    - mkdir -p ~/.docker && cp /root/.docker/config.json ~/.docker/ || true
+    - set -e && bash -x script/jenkins_job_build.sh
+    - docker tag ${DOCKER_REPO_URL}/${BUILDER}/${COMPONENT_BASE}:${IMAGE_TAG} ${DOCKER_REPO_URL}/${BUILDER}/${COMPONENT_BASE}:${BRANCH_NAME}
+    - docker push ${DOCKER_REPO_URL}/${BUILDER}/${COMPONENT_BASE}:${BRANCH_NAME}
+    - kill -9 $(ps aux | grep dockerd | grep -v grep |  awk '{print $2}')
+  only:
+    - 10.3_mfed@OLTP/mariadb
+    - 10.3.7_mfed@OLTP/mariadb
+  tags:
+    - k8s
