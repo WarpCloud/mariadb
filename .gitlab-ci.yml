@@ -27,7 +27,7 @@ postcommit_build:
     - export BUILD_IMAGE="Y"
     - export BUILDER="postcommit"
     - export ENABLE_OVERLAY=true
-    - cd $MARIA_SRC
+    - cd $MARIA_SRC && pwd
     - git clone http://gitlab-ci-token:${CI_JOB_TOKEN}@172.16.1.41:10080/InfraTools/packageRelease.git script
     - cp build_script/image/build_${CI_PROJECT_NAME}.sh script/build_utils/image/build_${CI_PROJECT_NAME}.sh
     - mkdir -p ~/.docker && cp /root/.docker/config.json ~/.docker/ || true
