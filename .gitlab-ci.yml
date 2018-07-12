@@ -3,6 +3,8 @@ image: 172.16.1.99/transwarp/base/builder:centos7-kundb
 before_script:
   - time=`date "+%Y-%m-%d-%H-%M-%S"`
   - export MARIA_SRC=`pwd`
+  - export BUILD_IMAGE="N"
+  - export DEPLOY_JAR="N"
   - if [ "${CI_COMMIT_REF_NAME}" = "10.3.7_mfed" ]; then
   -   export BRANCH_NAME="maria_for_kundb_1.0"
   - else
@@ -29,6 +31,7 @@ postcommit_build:
     - export ENABLE_OVERLAY=true
     - cd $MARIA_SRC && pwd
     - git clone http://gitlab-ci-token:${CI_JOB_TOKEN}@172.16.1.41:10080/InfraTools/packageRelease.git script
+    - echo ${CI_PROJECT_NAME}
     - cp build_script/image/build_${CI_PROJECT_NAME}.sh script/build_utils/image/build_${CI_PROJECT_NAME}.sh
     - mkdir -p ~/.docker && cp /root/.docker/config.json ~/.docker/ || true
     - set -e && bash -x script/jenkins_job_build.sh
