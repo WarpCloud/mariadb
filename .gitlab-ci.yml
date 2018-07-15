@@ -15,6 +15,7 @@ before_script:
   - export COMPONENT_BASE="${CI_PROJECT_NAME}"
   - export DOCKER_REPO_URL="172.16.1.99"
   - export OSINFO="ubuntu-14.04"
+  - export DEV_ROOT="/OLTP/mariadb"
 
 stages:
   - postcommit_build
