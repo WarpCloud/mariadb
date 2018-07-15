@@ -29,11 +29,10 @@ postcommit_build:
     - export BUILD_IMAGE="Y"
     - export BUILDER="postcommit"
     - export ENABLE_OVERLAY=true
-    - cd $MARIA_SRC && ls build_script/image
+    - cd $MARIA_SRC
     - git clone http://gitlab-ci-token:${CI_JOB_TOKEN}@172.16.1.41:10080/InfraTools/packageRelease.git script
-    - echo ${CI_PROJECT_NAME}
+    - mkdir -p script/build_utils/image
     - cp build_script/image/build_${CI_PROJECT_NAME}.sh script/build_utils/image/build_${CI_PROJECT_NAME}.sh
-    - pwd && ls script/build_uitls/image
     - mkdir -p ~/.docker && cp /root/.docker/config.json ~/.docker/ || true
     - set -e && bash -x script/jenkins_job_build.sh
     - docker tag ${DOCKER_REPO_URL}/${BUILDER}/${COMPONENT_BASE}:${IMAGE_TAG} ${DOCKER_REPO_URL}/${BUILDER}/${COMPONENT_BASE}:${BRANCH_NAME}
