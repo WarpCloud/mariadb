@@ -111,6 +111,10 @@ typedef struct st_fedrated_server {
 #define PARTIAL_READ_SHARD_RANGE_READ 3
 #define PARTIAL_READ_DEFAULT 4
 
+#define FIELD_TYPE_UNKNOWN 0
+#define FIELD_HAS_BLOB 1
+#define FIELD_HAS_NO_BLOB 2
+
 /*
   FEDERATEDX_SHARE is a structure that will be shared amoung all open handlers
   The example implements the minimum of what you will probably need.
@@ -352,6 +356,7 @@ class ha_federatedx: public handler
   ha_rows index_cardinality[MAX_KEY+1];
   ha_rows records_per_shard;
   bool index_cardinality_init;
+  uint field_type;
 
 private:
   /*
