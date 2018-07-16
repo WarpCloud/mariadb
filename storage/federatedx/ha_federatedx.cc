@@ -4562,8 +4562,15 @@ void ha_federatedx::init_rec_per_key() {
     key_info = &table->key_info[key_index];
     if (key_info->user_defined_key_parts == 1) {
       // only init rec_per_key for key contains 1 columns
-      if (is_valid_index(key_index) && index_cardinality[key_index] > 0) {
-        key_info->rec_per_key[0] = records_per_shard / index_cardinality[key_index];
+      if (is_valid_index(key_index) && key_info->rec_per_key != NULL) {
+        ha_rows rec_num = records_per_shard / index_cardinality[key_index];
+        if (key_index != table->s->primary_key && !(key_info->flags & HA_NOSAME)) {
+          // if the key is not primary key, then
+          // set rec_num to 2 if rec_num <= 1
+          // todo for unique index, the rec_num should be 1
+          rec_num = rec_num <= 1 ? 2 : rec_num;
+        }
+        key_info->rec_per_key[0] = rec_num;
       }
     }
   }

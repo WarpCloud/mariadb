@@ -267,7 +267,6 @@
                                     OPTIMIZER_SWITCH_EXISTS_TO_IN | \
                                     OPTIMIZER_SWITCH_ORDERBY_EQ_PROP | \
                                     OPTIMIZER_SWITCH_COND_PUSHDOWN_FOR_DERIVED | \
-                                    OPTIMIZER_SWITCH_SPLIT_MATERIALIZED | \
                                     OPTIMIZER_SWITCH_ENGINE_CONDITION_PUSHDOWN_DML | \
                                     OPTIMIZER_SWITCH_FEDX_CP_DML | \
                                     OPTIMIZER_SWITCH_FEDX_CP_QUERY | \

@@ -9897,6 +9897,7 @@ String* Item_cache_int::to_str(String* str, THD *thd) const
   if (ret) {
     return ret;
   }
+  str->length(0);
   if (example && fixed && thd &&
           optimizer_flag(thd, OPTIMIZER_SWITCH_FEDX_PPD_ON_ITEM_CACHE)) {
     longlong v = example->val_int_result();
@@ -10327,6 +10328,7 @@ String* Item_cache_str::to_str(String *str, THD *thd) const
   if (ret) {
     return ret;
   }
+  str->length(0);
   if (example && fixed && thd
       && optimizer_flag(thd, OPTIMIZER_SWITCH_FEDX_PPD_ON_ITEM_CACHE)) {
     char buffer_local[STRING_BUFFER_USUAL_SIZE];
