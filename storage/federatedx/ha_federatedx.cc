@@ -850,6 +850,7 @@ ha_federatedx::ha_federatedx(handlerton *hton,
   bzero(&vindex_set, sizeof(vindex_set));
   pk_num = -1;
   bzero(&pk_set, sizeof(pk_set));
+  field_type = FIELD_TYPE_UNKNOWN;
 }
 
 
@@ -4267,7 +4268,13 @@ double ha_federatedx::scan_time()
 {
   DBUG_PRINT("info", ("records %lu", (ulong) stats.records));
   if (ha_thd() && optimizer_flag(ha_thd(), OPTIMIZER_SWITCH_FEDX_CBO_WITH_ACTUAL_RECORDS)) {
-    return (double)(stats.records * ha_thd()->variables.fedx_scan_expand_factor);
+    ha_rows scan_expand_factor = ha_thd()->variables.fedx_scan_expand_factor;
+    ha_rows blob_scan_penalty_factor = 1;
+    if (field_type == FIELD_HAS_BLOB &&
+            stats.records > ha_thd()->variables.fedx_blob_scan_equal_ref_threshold) {
+      blob_scan_penalty_factor = ha_thd()->variables.fedx_blob_scan_penalty_factor;
+    }
+    return (double)(stats.records * scan_expand_factor * blob_scan_penalty_factor);
   }
   return (double)(stats.records*1000);
 }
@@ -4280,7 +4287,12 @@ double ha_federatedx::read_time(uint index, uint ranges, ha_rows rows)
   */
   if (ha_thd() && optimizer_flag(ha_thd(), OPTIMIZER_SWITCH_FEDX_CBO_WITH_ACTUAL_RECORDS)) {
     if (is_valid_index(index)) {
-      return (double) rows + 1;
+      ha_rows blob_scan_penalty_factor = 1;
+      if (field_type == FIELD_HAS_BLOB &&
+              rows > ha_thd()->variables.fedx_blob_scan_equal_ref_threshold) {
+        blob_scan_penalty_factor = ha_thd()->variables.fedx_blob_scan_penalty_factor;
+      }
+      return (double) rows*blob_scan_penalty_factor + 1;
     } else {
       ha_rows invalid_index_expand_factor = ha_thd()->variables.fedx_invalid_index_expand_factor;
       double ret = stats.records * invalid_index_expand_factor > rows ? stats.records * invalid_index_expand_factor : rows;
@@ -4737,6 +4749,26 @@ int ha_federatedx::info(uint flag)
       init_pk_info();
     }
 
+    if (field_type == FIELD_TYPE_UNKNOWN) {
+      Field **field;
+      for (field= table->field; *field; field++) {
+        enum_field_types type = (*field)->type();
+        if (type == MYSQL_TYPE_TINY_BLOB ||
+                type == MYSQL_TYPE_MEDIUM_BLOB ||
+                type == MYSQL_TYPE_LONG_BLOB ||
+                type == MYSQL_TYPE_BLOB) {
+          if ((*field)->field_length > 65535 &&
+                  ((*field)->charset() == NULL || (*field)->charset()->number == 63)) {
+            field_type = FIELD_HAS_BLOB;
+            break;
+          }
+        }
+      }
+
+      if (field_type == FIELD_TYPE_UNKNOWN) {
+        field_type = FIELD_HAS_NO_BLOB;
+      }
+    }
   }
 
   if (flag & HA_STATUS_AUTO)
