@@ -1,4 +1,4 @@
-FROM 172.16.1.99/transwarp/kundb/compile-mariadb:v1.0 
+FROM 172.16.1.99/transwarp/kundb/compile-mariadb:v1.0 AS compile
 
 COPY . /root/mariadb_src
 RUN mkdir /root/mariadb_bld && \
@@ -7,3 +7,9 @@ RUN mkdir /root/mariadb_bld && \
     make -j 4 && \
     make install && \
     cd /root && rm -fr mariadb_bld mariadb_srcs
+
+FROM 172.16.1.99/transwarp/kundb/compile-mariadb:v1.0 AS release
+
+COPY --from=compile /usr/local/mariadb /usr/local/mariadb
+
+WORKDIR /usr/local/mariadb
