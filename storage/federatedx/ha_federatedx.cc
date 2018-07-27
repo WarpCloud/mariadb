@@ -4738,7 +4738,8 @@ int ha_federatedx::info(uint flag)
         if ((error_code = init_index_cardinality(*iop))) {
           goto error;
         }
-        if (index_cardinality_init && optimizer_flag(thd, OPTIMIZER_SWITCH_FEDX_INIT_REC_PER_KEY)) {
+        if (index_cardinality_init && optimizer_flag(thd, OPTIMIZER_SWITCH_FEDX_INIT_REC_PER_KEY)
+                && optimizer_flag(thd, OPTIMIZER_SWITCH_FEDX_CBO_WITH_ACTUAL_RECORDS)) {
           //set up cardinality info in st_key
           init_rec_per_key();
         }
