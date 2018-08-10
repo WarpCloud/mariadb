@@ -396,6 +396,10 @@ bool JOIN::check_for_splittable_materialized()
     if (!(table->map & usable_tables))
       continue;
 
+    if (!strcmp(table->file->engine_name()->str, "FEDERATED")) {
+      continue;
+    }
+
     table->keys_usable_for_splitting.clear_all();
     uint i;
     for (i= 0; i < table->s->keys; i++)

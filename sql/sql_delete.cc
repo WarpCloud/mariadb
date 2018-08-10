@@ -431,7 +431,7 @@ bool mysql_delete(THD *thd, TABLE_LIST *table_list, COND *conds,
       && !table->versioned(VERS_TIMESTAMP))
   {
     /* Update the table->file->stats.records number */
-    table->file->info(HA_STATUS_VARIABLE | HA_STATUS_NO_LOCK);
+    table->file->info(HA_STATUS_VARIABLE | HA_STATUS_NO_LOCK | HA_STATUS_INIT_FEDX_INFO);
     ha_rows const maybe_deleted= table->file->stats.records;
     DBUG_PRINT("debug", ("Trying to use delete_all_rows()"));
 
@@ -488,7 +488,7 @@ bool mysql_delete(THD *thd, TABLE_LIST *table_list, COND *conds,
   }
 #endif
   /* Update the table->file->stats.records number */
-  table->file->info(HA_STATUS_VARIABLE | HA_STATUS_NO_LOCK);
+  table->file->info(HA_STATUS_VARIABLE | HA_STATUS_NO_LOCK | HA_STATUS_INIT_FEDX_INFO);
   set_statistics_for_table(thd, table);
 
   table->covering_keys.clear_all();

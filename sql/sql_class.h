@@ -588,6 +588,8 @@ typedef struct system_variables
   ha_rows fedx_vitess_limit_expand_factor;
   ha_rows fedx_vitess_min_str_len_for_cbo;
   ha_rows fedx_small_table_threshold;
+  ha_rows fedx_blob_scan_penalty_factor;
+  ha_rows fedx_blob_scan_equal_ref_threshold;
   ha_rows fedx_valid_index_cardinality_percent;
   ha_rows fedx_valid_index_cardinality_minvalue;
   ha_rows fedx_valid_index_max_result_rowcount;

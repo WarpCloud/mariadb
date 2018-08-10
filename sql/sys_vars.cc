@@ -2236,6 +2236,20 @@ static Sys_var_harows Sys_fedx_vitess_table_records_factor(
         VALID_RANGE(0, HA_POS_ERROR), DEFAULT(1), BLOCK_SIZE(1),
         NO_MUTEX_GUARD, NOT_IN_BINLOG);
 
+static Sys_var_harows Sys_fedx_blob_scan_penalty_factor(
+        "fedx_blob_scan_penalty_factor",
+        "only valid when fedx_vitess_table_records_mode = 2",
+        SESSION_VAR(fedx_blob_scan_penalty_factor), CMD_LINE(REQUIRED_ARG),
+        VALID_RANGE(0, HA_POS_ERROR), DEFAULT(3), BLOCK_SIZE(1),
+        NO_MUTEX_GUARD, NOT_IN_BINLOG);
+
+static Sys_var_harows Sys_fedx_blob_scan_equal_ref_threshold(
+        "fedx_blob_scan_equal_ref_threshold",
+        "only valid when fedx_vitess_table_records_mode = 2",
+        SESSION_VAR(fedx_blob_scan_equal_ref_threshold), CMD_LINE(REQUIRED_ARG),
+        VALID_RANGE(0, 10000), DEFAULT(50), BLOCK_SIZE(1),
+        NO_MUTEX_GUARD, NOT_IN_BINLOG);
+
 static Sys_var_harows Sys_fedx_small_table_threshold(
         "fedx_small_table_threshold",
         "the max size of a small fedx table",

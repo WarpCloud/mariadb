@@ -469,7 +469,7 @@ int mysql_update(THD *thd,
   }
 #endif
   /* Update the table->file->stats.records number */
-  table->file->info(HA_STATUS_VARIABLE | HA_STATUS_NO_LOCK);
+  table->file->info(HA_STATUS_VARIABLE | HA_STATUS_NO_LOCK | HA_STATUS_INIT_FEDX_INFO);
   set_statistics_for_table(thd, table);
 
   select= make_select(table, 0, 0, conds, (SORT_INFO*) 0, 0, &error);
