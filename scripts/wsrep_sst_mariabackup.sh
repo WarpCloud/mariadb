@@ -77,7 +77,7 @@ sdecomp=""
 # 5.6.21 PXC and later can't donate to an older joiner
 sst_ver=1
 
-if which pv &>/dev/null && pv --help | grep -q FORMAT;then 
+if pv --help 2>/dev/null | grep -q FORMAT;then
     pvopts+=$pvformat
 fi
 pcmd="pv $pvopts"
@@ -172,27 +172,35 @@ get_transfer()
     fi
 
     if [[ $tfmt == 'nc' ]];then
-        if [[ ! -x `which nc` ]];then 
-            wsrep_log_error "nc(netcat) not found in path: $PATH"
-            exit 2
-        fi
+        wsrep_check_programs nc
         wsrep_log_info "Using netcat as streamer"
         if [[ "$WSREP_SST_OPT_ROLE"  == "joiner" ]];then
             if nc -h 2>&1 | grep -q ncat;then 
+                # Ncat
                 tcmd="nc -l ${TSST_PORT}"
-            else 
+            elif nc -h 2>&1 | grep -q -- '-d\>';then
+                # Debian netcat
                 tcmd="nc -dl ${TSST_PORT}"
+            else
+                # traditional netcat
+                tcmd="nc -l -p ${TSST_PORT}"
             fi
         else
-            tcmd="nc ${REMOTEIP} ${TSST_PORT}"
+            if nc -h 2>&1 | grep -q ncat;then
+                # Ncat
+                tcmd="nc ${REMOTEIP} ${TSST_PORT}"
+            elif nc -h 2>&1 | grep -q -- '-d\>';then
+                # Debian netcat
+                tcmd="nc ${REMOTEIP} ${TSST_PORT}"
+            else
+                # traditional netcat
+                tcmd="nc -q0 ${REMOTEIP} ${TSST_PORT}"
+            fi
         fi
     else
         tfmt='socat'
+        wsrep_check_programs socat
         wsrep_log_info "Using socat as streamer"
-        if [[ ! -x `which socat` ]];then 
-            wsrep_log_error "socat not found in path: $PATH"
-            exit 2
-        fi
 
         if [[ $encrypt -eq 2 || $encrypt -eq 3 ]] && ! socat -V | grep -q "WITH_OPENSSL 1";then
             wsrep_log_error "Encryption requested, but socat is not OpenSSL enabled (encrypt=$encrypt)"
@@ -281,7 +289,7 @@ get_footprint()
 adjust_progress()
 {
 
-    if [[ ! -x `which pv` ]];then 
+    if ! command -v pv >/dev/null;then
         wsrep_log_error "pv not found in path: $PATH"
         wsrep_log_error "Disabling all progress/rate-limiting"
         pcmd=""
@@ -571,7 +579,7 @@ recv_joiner()
     pushd ${dir} 1>/dev/null
     set +e
 
-    if [[ $tmt -gt 0 && -x `which timeout` ]];then 
+    if [[ $tmt -gt 0 ]] && command -v timeout >/dev/null;then
         if timeout --help | grep -q -- '-k';then 
             ltcmd="timeout -k $(( tmt+10 )) $tmt $tcmd"
         else 
@@ -630,10 +638,7 @@ send_donor()
 
 }
 
-if [[ ! -x `which $INNOBACKUPEX_BIN` ]];then 
-    wsrep_log_error "${INNOBACKUPEX_BIN} not in path: $PATH"
-    exit 2
-fi
+wsrep_check_programs "$INNOBACKUPEX_BIN"
 
 rm -f "${MAGIC_FILE}"
 
@@ -659,7 +664,7 @@ INNOEXTRA=""
 
 if [[ $ssyslog -eq 1 ]];then 
 
-    if [[ ! -x `which logger` ]];then 
+    if ! command -v logger >/dev/null;then
         wsrep_log_error "logger not in path: $PATH. Ignoring"
     else
 
@@ -943,7 +948,7 @@ then
 
             wsrep_log_info "Compressed qpress files found"
 
-            if [[ ! -x `which qpress` ]];then 
+            if ! command -v qpress >/dev/null;then
                 wsrep_log_error "qpress not found in path: $PATH"
                 exit 22
             fi

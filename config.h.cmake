@@ -131,6 +131,7 @@
 #cmakedefine HAVE_CLOCK_GETTIME 1
 #cmakedefine HAVE_CRYPT 1
 #cmakedefine HAVE_CUSERID 1
+#cmakedefine HAVE_DLADDR 1
 #cmakedefine HAVE_DLERROR 1
 #cmakedefine HAVE_DLOPEN 1
 #cmakedefine HAVE_FCHMOD 1
@@ -180,6 +181,7 @@
 #cmakedefine HAVE_MEMCPY 1
 #cmakedefine HAVE_MEMMOVE 1
 #cmakedefine HAVE_MKSTEMP 1
+#cmakedefine HAVE_MKOSTEMP 1
 #cmakedefine HAVE_MLOCKALL 1
 #cmakedefine HAVE_MMAP 1
 #cmakedefine HAVE_MMAP64 1
@@ -234,7 +236,6 @@
 #cmakedefine HAVE_STRTOUL 1
 #cmakedefine HAVE_STRTOULL 1
 #cmakedefine HAVE_TELL 1
-#cmakedefine HAVE_TEMPNAM 1
 #cmakedefine HAVE_THR_SETCONCURRENCY 1
 #cmakedefine HAVE_THR_YIELD 1
 #cmakedefine HAVE_TIME 1
@@ -391,7 +392,7 @@
 #cmakedefine HAVE_GCC_C11_ATOMICS 1
 #cmakedefine HAVE_SOLARIS_ATOMIC 1
 #cmakedefine HAVE_DECL_SHM_HUGETLB 1
-#cmakedefine HAVE_LARGE_PAGES 1
+#cmakedefine HAVE_LINUX_LARGE_PAGES 1
 #cmakedefine HUGETLB_USE_PROC_MEMINFO 1
 #cmakedefine NO_FCNTL_NONBLOCK 1
 #cmakedefine NO_ALARM 1
@@ -432,11 +433,11 @@
 #cmakedefine strtoll @strtoll@
 #cmakedefine strtoull @strtoull@
 #cmakedefine vsnprintf @vsnprintf@
-#if (_MSC_VER > 1800)
+#if defined(_MSC_VER) && (_MSC_VER > 1800)
 #define tzname _tzname
 #define P_tmpdir "C:\\TEMP"
 #endif
-#if (_MSC_VER > 1310)
+#if defined(_MSC_VER) && (_MSC_VER > 1310)
 # define HAVE_SETENV
 #define setenv(a,b,c) _putenv_s(a,b)
 #endif

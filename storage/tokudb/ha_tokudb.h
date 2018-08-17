@@ -318,18 +318,18 @@ inline int TOKUDB_SHARE::use_count() const {
 }
 inline void TOKUDB_SHARE::lock() const {
     TOKUDB_SHARE_DBUG_ENTER("file[%s]:state[%s]:use_count[%d]",
-        _full_table_name.ptr(),
-        get_state_string(_state),
-        _use_count);
-    _mutex.lock();
+                            _full_table_name.ptr(),
+                            get_state_string(_state),
+                            _use_count);
+    mutex_t_lock(_mutex);
     TOKUDB_SHARE_DBUG_VOID_RETURN();
 }
 inline void TOKUDB_SHARE::unlock() const {
     TOKUDB_SHARE_DBUG_ENTER("file[%s]:state[%s]:use_count[%d]",
-        _full_table_name.ptr(),
-        get_state_string(_state),
-        _use_count);
-    _mutex.unlock();
+                            _full_table_name.ptr(),
+                            get_state_string(_state),
+                            _use_count);
+    mutex_t_unlock(_mutex);
     TOKUDB_SHARE_DBUG_VOID_RETURN();
 }
 inline TOKUDB_SHARE::share_state_t TOKUDB_SHARE::state() const {
@@ -941,7 +941,7 @@ public:
 
  public:
 #endif
-#if TOKU_INCLUDE_ALTER_55
+#if defined(TOKU_INCLUDE_ALTER_55)
 public:
     // Returns true of the 5.6 inplace alter table interface is used.
     bool try_hot_alter_table();
@@ -1037,7 +1037,7 @@ private:
 #if TOKU_INCLUDE_WRITE_FRM_DATA
     int write_frm_data(const uchar *frm_data, size_t frm_len);
 #endif
-#if TOKU_INCLUDE_UPSERT
+#if defined(TOKU_INCLUDE_UPSERT)
 private:
     int fast_update(THD *thd, List<Item> &update_fields, List<Item> &update_values, Item *conds);
     bool check_fast_update(THD *thd, List<Item> &update_fields, List<Item> &update_values, Item *conds);

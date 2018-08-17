@@ -28,8 +28,8 @@
 #include "slave.h"
 #include "log_event.h"
 
-const LEX_STRING rpl_gtid_slave_state_table_name=
-  { C_STRING_WITH_LEN("gtid_slave_pos") };
+const LEX_CSTRING rpl_gtid_slave_state_table_name=
+  { STRING_WITH_LEN("gtid_slave_pos") };
 
 
 void
@@ -167,7 +167,7 @@ rpl_slave_state::check_duplicate_gtid(rpl_gtid *gtid, rpl_group_info *rgi)
       break;
     }
     thd= rgi->thd;
-    if (thd->check_killed())
+    if (unlikely(thd->check_killed()))
     {
       thd->send_kill_message();
       res= -1;
@@ -401,10 +401,7 @@ rpl_slave_state::truncate_state_table(THD *thd)
   int err= 0;
 
   tmp_disable_binlog(thd);
-  tlist.init_one_table(STRING_WITH_LEN("mysql"),
-                       rpl_gtid_slave_state_table_name.str,
-                       rpl_gtid_slave_state_table_name.length,
-                       NULL, TL_WRITE);
+  tlist.init_one_table(&MYSQL_SCHEMA_NAME, &rpl_gtid_slave_state_table_name, NULL, TL_WRITE);
   if (!(err= open_and_lock_tables(thd, &tlist, FALSE, 0)))
   {
     err= tlist.table->file->ha_truncate();
@@ -430,17 +427,17 @@ rpl_slave_state::truncate_state_table(THD *thd)
 
 
 static const TABLE_FIELD_TYPE mysql_rpl_slave_state_coltypes[4]= {
-  { { C_STRING_WITH_LEN("domain_id") },
-    { C_STRING_WITH_LEN("int(10) unsigned") },
+  { { STRING_WITH_LEN("domain_id") },
+    { STRING_WITH_LEN("int(10) unsigned") },
     {NULL, 0} },
-  { { C_STRING_WITH_LEN("sub_id") },
-    { C_STRING_WITH_LEN("bigint(20) unsigned") },
+  { { STRING_WITH_LEN("sub_id") },
+    { STRING_WITH_LEN("bigint(20) unsigned") },
     {NULL, 0} },
-  { { C_STRING_WITH_LEN("server_id") },
-    { C_STRING_WITH_LEN("int(10) unsigned") },
+  { { STRING_WITH_LEN("server_id") },
+    { STRING_WITH_LEN("int(10) unsigned") },
     {NULL, 0} },
-  { { C_STRING_WITH_LEN("seq_no") },
-    { C_STRING_WITH_LEN("bigint(20) unsigned") },
+  { { STRING_WITH_LEN("seq_no") },
+    { STRING_WITH_LEN("bigint(20) unsigned") },
     {NULL, 0} },
 };
 
@@ -582,7 +579,7 @@ rpl_slave_state::record_gtid(THD *thd, const rpl_gtid *gtid, uint64 sub_id,
   bool table_opened= false;
   TABLE *table;
   list_element *delete_list= 0, *next, *cur, **next_ptr_ptr, **best_ptr_ptr;
-  uint64_t best_sub_id;
+  uint64 best_sub_id;
   element *elem;
   ulonglong thd_saved_option= thd->variables.option_bits;
   Query_tables_list lex_backup;
@@ -655,8 +652,7 @@ rpl_slave_state::record_gtid(THD *thd, const rpl_gtid *gtid, uint64 sub_id,
   */
   suspended_wfc= thd->suspend_subsequent_commits();
   thd->lex->reset_n_backup_query_tables_list(&lex_backup);
-  tlist.init_one_table(STRING_WITH_LEN("mysql"), gtid_pos_table_name.str,
-                       gtid_pos_table_name.length, NULL, TL_WRITE);
+  tlist.init_one_table(&MYSQL_SCHEMA_NAME, &gtid_pos_table_name, NULL, TL_WRITE);
   if ((err= open_and_lock_tables(thd, &tlist, FALSE, 0)))
     goto end;
   table_opened= true;
@@ -2139,10 +2135,7 @@ slave_connection_state::load(const char *slave_request, size_t len)
   for (;;)
   {
     if (!(rec= (uchar *)my_malloc(sizeof(entry), MYF(MY_WME))))
-    {
-      my_error(ER_OUTOFMEMORY, MYF(0), (int) sizeof(*gtid));
       return 1;
-    }
     gtid= &((entry *)rec)->gtid;
     if (gtid_parser_helper(&p, end, gtid))
     {
@@ -2609,7 +2602,7 @@ gtid_waiting::wait_for_gtid(THD *thd, rpl_gtid *wait_gtid,
                         &stage_master_gtid_wait_primary, &old_stage);
         do
         {
-          if (thd->check_killed())
+          if (unlikely(thd->check_killed()))
             break;
           else if (wait_until)
           {
@@ -2661,7 +2654,7 @@ gtid_waiting::wait_for_gtid(THD *thd, rpl_gtid *wait_gtid,
                         &stage_master_gtid_wait, &old_stage);
         did_enter_cond= true;
       }
-      while (!elem.done && !thd->check_killed())
+      while (!elem.done && likely(!thd->check_killed()))
       {
         thd_wait_begin(thd, THD_WAIT_BINLOG);
         if (wait_until)
@@ -2758,10 +2751,7 @@ gtid_waiting::get_entry(uint32 domain_id)
     return e;
 
   if (!(e= (hash_element *)my_malloc(sizeof(*e), MYF(MY_WME))))
-  {
-    my_error(ER_OUTOFMEMORY, MYF(0), (int) sizeof(*e));
     return NULL;
-  }
 
   if (init_queue(&e->queue, 8, offsetof(queue_element, wait_seq_no), 0,
                  cmp_queue_elem, NULL, 1+offsetof(queue_element, queue_idx), 1))

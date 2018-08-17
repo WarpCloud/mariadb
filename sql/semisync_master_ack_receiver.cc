@@ -17,9 +17,13 @@
 #include "semisync_master.h"
 #include "semisync_master_ack_receiver.h"
 
+#ifdef HAVE_PSI_MUTEX_INTERFACE
 extern PSI_mutex_key key_LOCK_ack_receiver;
 extern PSI_cond_key key_COND_ack_receiver;
+#endif
+#ifdef HAVE_PSI_THREAD_INTERFACE
 extern PSI_thread_key key_thread_ack_receiver;
+#endif
 extern Repl_semi_sync_master repl_semisync;
 
 /* Callback function of ack receive thread */
@@ -248,13 +252,13 @@ void Ack_receiver::run()
 
       max_fd= get_slave_sockets(&read_fds, &slave_count);
       m_slaves_changed= false;
-      DBUG_PRINT("info", ("fd count %u, max_fd %d", slave_count, max_fd));
+      DBUG_PRINT("info", ("fd count %u, max_fd %d", slave_count,(int) max_fd));
     }
 
     struct timeval tv= {1, 0};
     fds= read_fds;
     /* select requires max fd + 1 for the first argument */
-    ret= select(max_fd+1, &fds, NULL, NULL, &tv);
+    ret= select((int)(max_fd+1), &fds, NULL, NULL, &tv);
     if (ret <= 0)
     {
       mysql_mutex_unlock(&m_mutex);

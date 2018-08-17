@@ -313,6 +313,8 @@ bool Item_sum::check_sum_func(THD *thd, Item **ref)
     }
   }
   aggr_sel->set_agg_func_used(true);
+  if (sum_func() == SP_AGGREGATE_FUNC)
+    aggr_sel->set_custom_agg_func_used(true);
   update_used_tables();
   thd->lex->in_sum_func= in_sum_func;
   return FALSE;
@@ -794,7 +796,7 @@ bool Aggregator_distinct::setup(THD *thd)
     if (!(table= create_tmp_table(thd, tmp_table_param, list, (ORDER*) 0, 1,
                                   0,
                                   (select_lex->options | thd->variables.option_bits),
-                                  HA_POS_ERROR, const_cast<char*>(""))))
+                                  HA_POS_ERROR, &empty_clex_str)))
       return TRUE;
     table->file->extra(HA_EXTRA_NO_ROWS);		// Don't update rows
     table->no_rows=1;
@@ -997,7 +999,7 @@ bool Aggregator_distinct::add()
       */
       return tree->unique_add(table->record[0] + table->s->null_bytes);
     }
-    if ((error= table->file->ha_write_tmp_row(table->record[0])) &&
+    if (unlikely((error= table->file->ha_write_tmp_row(table->record[0]))) &&
         table->file->is_fatal_error(error, HA_CHECK_DUP))
       return TRUE;
     return FALSE;
@@ -1131,6 +1133,7 @@ Item_sum_num::fix_fields(THD *thd, Item **ref)
       return TRUE;
     set_if_bigger(decimals, args[i]->decimals);
     m_with_subquery|= args[i]->with_subquery();
+    with_param|= args[i]->with_param;
     with_window_func|= args[i]->with_window_func;
   }
   result_field=0;
@@ -1164,6 +1167,7 @@ Item_sum_hybrid::fix_fields(THD *thd, Item **ref)
     DBUG_RETURN(TRUE);
 
   m_with_subquery= args[0]->with_subquery();
+  with_param= args[0]->with_param;
   with_window_func|= args[0]->with_window_func;
 
   fix_length_and_dec();
@@ -1265,6 +1269,12 @@ Item_sum_sp::Item_sum_sp(THD *thd, Name_resolution_context *context_arg,
   m_sp= sp;
 }
 
+Item_sum_sp::Item_sum_sp(THD *thd, Item_sum_sp *item):
+             Item_sum(thd, item), Item_sp(thd, item)
+{
+  maybe_null= item->maybe_null;
+  quick_group= item->quick_group;
+}
 
 bool
 Item_sum_sp::fix_fields(THD *thd, Item **ref)
@@ -1384,7 +1394,7 @@ Item_sum_sp::fix_length_and_dec()
 {
   DBUG_ENTER("Item_sum_sp::fix_length_and_dec");
   DBUG_ASSERT(sp_result_field);
-  Type_std_attributes::set(sp_result_field);
+  Type_std_attributes::set(sp_result_field->type_std_attributes());
   Item_sum::fix_length_and_dec();
   DBUG_VOID_RETURN;
 }
@@ -1394,6 +1404,14 @@ Item_sum_sp::func_name() const
 {
   THD *thd= current_thd;
   return Item_sp::func_name(thd);
+}
+
+Item* Item_sum_sp::copy_or_same(THD *thd)
+{
+  Item_sum_sp *copy_item= new (thd->mem_root) Item_sum_sp(thd, this);
+  copy_item->init_result_field(thd, max_length, maybe_null, 
+                               &copy_item->null_value, &copy_item->name);
+  return copy_item;
 }
 
 /***********************************************************************
@@ -2414,7 +2432,7 @@ Item *Item_sum_min::copy_or_same(THD* thd)
 
 bool Item_sum_min::add()
 {
-  Item *tmp_item;
+  Item *UNINIT_VAR(tmp_item);
   DBUG_ENTER("Item_sum_min::add");
   DBUG_PRINT("enter", ("this: %p", this));
 
@@ -2454,7 +2472,7 @@ Item *Item_sum_max::copy_or_same(THD* thd)
 
 bool Item_sum_max::add()
 {
-  Item *tmp_item;
+  Item * UNINIT_VAR(tmp_item);
   DBUG_ENTER("Item_sum_max::add");
   DBUG_PRINT("enter", ("this: %p", this));
 
@@ -2531,7 +2549,7 @@ bool Item_sum_bit::remove_as_window(ulonglong value)
   }
 
   // Prevent overflow;
-  num_values_added = std::min(num_values_added, num_values_added - 1);
+  num_values_added = MY_MIN(num_values_added, num_values_added - 1);
   set_bits_from_counters();
   return 0;
 }
@@ -2544,7 +2562,7 @@ bool Item_sum_bit::add_as_window(ulonglong value)
     bit_counters[i]+= (value & (1ULL << i)) ? 1 : 0;
   }
   // Prevent overflow;
-  num_values_added = std::max(num_values_added, num_values_added + 1);
+  num_values_added = MY_MAX(num_values_added, num_values_added + 1);
   set_bits_from_counters();
   return 0;
 }
@@ -2659,7 +2677,7 @@ void Item_sum_num::reset_field()
 
 void Item_sum_hybrid::reset_field()
 {
-  Item *tmp_item, *arg0;
+  Item *UNINIT_VAR(tmp_item), *arg0;
   DBUG_ENTER("Item_sum_hybrid::reset_field");
 
   arg0= args[0];
@@ -3016,7 +3034,7 @@ Item *Item_sum_avg::result_item(THD *thd, Field *field)
 void Item_sum_hybrid::update_field()
 {
   DBUG_ENTER("Item_sum_hybrid::update_field");
-  Item *tmp_item;
+  Item *UNINIT_VAR(tmp_item);
   if (unlikely(direct_added))
   {
     tmp_item= args[0];
@@ -3597,7 +3615,7 @@ int dump_leaf_key(void* key_arg, element_count count __attribute__((unused)),
       as this is never used to limit the length of the data.
       Cut is done with the third argument.
     */
-    uint add_length= Well_formed_prefix(cs,
+    size_t add_length= Well_formed_prefix(cs,
                                         ptr + old_length,
                                         ptr + max_length,
                                         result->length()).length();
@@ -3896,6 +3914,7 @@ Item_func_group_concat::fix_fields(THD *thd, Item **ref)
         args[i]->check_cols(1))
       return TRUE;
     m_with_subquery|= args[i]->with_subquery();
+    with_param|= args[i]->with_param;
     with_window_func|= args[i]->with_window_func;
   }
 
@@ -4026,7 +4045,7 @@ bool Item_func_group_concat::setup(THD *thd)
                                 (ORDER*) 0, 0, TRUE,
                                 (select_lex->options |
                                  thd->variables.option_bits),
-                                HA_POS_ERROR, (char*) "")))
+                                HA_POS_ERROR, &empty_clex_str)))
     DBUG_RETURN(TRUE);
   table->file->extra(HA_EXTRA_NO_ROWS);
   table->no_rows= 1;

@@ -1,7 +1,7 @@
 /*****************************************************************************
 
 Copyright (c) 1997, 2016, Oracle and/or its affiliates. All Rights Reserved.
-Copyright (c) 2017, MariaDB Corporation.
+Copyright (c) 2017, 2018, MariaDB Corporation.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -41,32 +41,18 @@ class ReadView;
 
 /** Determine if an active transaction has inserted or modified a secondary
 index record.
+@param[in,out]	caller_trx	trx of current thread
 @param[in]	rec	secondary index record
 @param[in]	index	secondary index
 @param[in]	offsets	rec_get_offsets(rec, index)
-@return	the active transaction; trx_release_reference() must be invoked
+@return	the active transaction; trx->release_reference() must be invoked
 @retval	NULL if the record was committed */
 trx_t*
 row_vers_impl_x_locked(
+	trx_t*		caller_trx,
 	const rec_t*	rec,
 	dict_index_t*	index,
 	const ulint*	offsets);
-
-/*****************************************************************//**
-Finds out if we must preserve a delete marked earlier version of a clustered
-index record, because it is >= the purge view.
-@param[in]	trx_id		transaction id in the version
-@param[in]	name		table name
-@param[in,out]	mtr		mini transaction  holding the latch on the
-				clustered index record; it will also hold
-				 the latch on purge_view
-@return TRUE if earlier version should be preserved */
-ibool
-row_vers_must_preserve_del_marked(
-/*==============================*/
-	trx_id_t		trx_id,
-	const table_name_t&	name,
-	mtr_t*			mtr);
 
 /*****************************************************************//**
 Finds out if a version of the record, where the version >= the current
@@ -126,6 +112,7 @@ which should be seen by a semi-consistent read. */
 void
 row_vers_build_for_semi_consistent_read(
 /*====================================*/
+	trx_t*		caller_trx,/*!<in/out: trx of current thread */
 	const rec_t*	rec,	/*!< in: record in a clustered index; the
 				caller must have a latch on the page; this
 				latch locks the top of the stack of versions

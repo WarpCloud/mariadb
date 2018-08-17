@@ -48,7 +48,7 @@ extern "C" {
 /*
   On i386 we store Unicode->CS conversion tables for
   some character sets using Big-endian order,
-  to copy two bytes at onces.
+  to copy two bytes at once.
   This gives some performance improvement.
 */
 #ifdef __i386__
@@ -376,7 +376,7 @@ typedef size_t (*my_charset_conv_case)(CHARSET_INFO *,
   A structure to return the statistics of a native string copying,
   when no Unicode conversion is involved.
 
-  The stucture is OK to be unitialized before calling a copying routine.
+  The structure is OK to be uninitialized before calling a copying routine.
   A copying routine must populate the structure as follows:
     - m_source_end_pos must be set by to a non-NULL value
       in the range of the input string.
@@ -425,7 +425,7 @@ struct my_charset_handler_st
   my_charset_conv_case caseup;
   my_charset_conv_case casedn;
 
-  /* Charset dependant snprintf() */
+  /* Charset dependent snprintf() */
   size_t (*snprintf)(CHARSET_INFO *, char *to, size_t n,
                      const char *fmt,
                      ...) ATTRIBUTE_FORMAT_FPTR(printf, 4, 5);
@@ -517,7 +517,7 @@ struct my_charset_handler_st
   /**
     Write a character to the target string, using its native code.
     For Unicode character sets (utf8, ucs2, utf16, utf16le, utf32, filename)
-    native codes are equvalent to Unicode code points.
+    native codes are equivalent to Unicode code points.
     For 8bit character sets the native code is just the byte value.
     For Asian characters sets:
     - MB1 native code is just the byte value (e.g. on the ASCII range)
@@ -917,7 +917,7 @@ typedef struct
 
 void my_string_metadata_get(MY_STRING_METADATA *metadata,
                             CHARSET_INFO *cs, const char *str, size_t len);
-uint my_string_repertoire(CHARSET_INFO *cs, const char *str, ulong len);
+uint my_string_repertoire(CHARSET_INFO *cs, const char *str, size_t len);
 my_bool my_charset_is_ascii_based(CHARSET_INFO *cs);
 uint my_charset_repertoire(CHARSET_INFO *cs);
 
@@ -953,9 +953,9 @@ uint32 my_convert(char *to, uint32 to_length, CHARSET_INFO *to_cs,
   Protocol::store_warning() uses this to escape control
   and non-convertable characters.
 */
-uint32 my_convert_using_func(char *to, uint32 to_length, CHARSET_INFO *to_cs,
+uint32 my_convert_using_func(char *to, size_t to_length, CHARSET_INFO *to_cs,
                              my_charset_conv_wc_mb mb_wc,
-                             const char *from, uint32 from_length,
+                             const char *from, size_t from_length,
                              CHARSET_INFO *from_cs,
                              my_charset_conv_mb_wc wc_mb,
                              uint *errors);
@@ -964,7 +964,7 @@ uint32 my_convert_using_func(char *to, uint32 to_length, CHARSET_INFO *to_cs,
   Bad byte sequences as well as characters that cannot be
   encoded in the destination character set are replaced to '?'.
   Not more than "nchars" characters are copied.
-  Conversion statistics is returnd in "status" and is set as follows:
+  Conversion statistics is returned in "status" and is set as follows:
   - status->m_native_copy_status.m_source_end_pos - to the position
     between (src) and (src+src_length), where the function stopped reading
     the source string.
@@ -1093,7 +1093,7 @@ my_well_formed_length(CHARSET_INFO *cs, const char *b, const char *e,
   MY_STRCOPY_STATUS status;
   (void) cs->cset->well_formed_char_length(cs, b, e, nchars, &status);
   *error= status.m_well_formed_error_pos == NULL ? 0 : 1;
-  return status.m_source_end_pos - b;
+  return (size_t) (status.m_source_end_pos - b);
 }
 
 

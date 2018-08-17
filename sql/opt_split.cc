@@ -352,8 +352,9 @@ bool JOIN::check_for_splittable_materialized()
 
     Field *ord_field= ((Item_field *) (ord_item->real_item()))->field;
 
-    JOIN_TAB *tab= ord_field->table->reginfo.join_tab;
-    if (tab->is_inner_table_of_outer_join())
+    /* Ignore fields from  of inner tables of outer joins */
+    TABLE_LIST *tbl= ord_field->table->pos_in_table_list;
+    if (tbl->is_inner_table_of_outer_join())
       continue;
 
     List_iterator<Item> li(fields_list);
@@ -431,7 +432,7 @@ bool JOIN::check_for_splittable_materialized()
   }
 
   /* Count the candidate fields that can be accessed by ref */
-  uint spl_field_cnt= candidates.elements();
+  uint spl_field_cnt= (uint)candidates.elements();
   for (cand= cand_start; cand < cand_end; cand++)
   {
     if (!cand->is_usable_for_ref_access)
@@ -547,7 +548,14 @@ void TABLE::add_splitting_info_for_key_field(KEY_FIELD *key_field)
   added_key_field->level= 0;
   added_key_field->optimize= KEY_OPTIMIZE_EQ;
   added_key_field->eq_func= true;
-  added_key_field->null_rejecting= true;
+
+  Item *real= key_field->val->real_item();
+  if ((real->type() == Item::FIELD_ITEM) &&
+        ((Item_field*)real)->field->maybe_null())
+    added_key_field->null_rejecting= true;
+  else
+    added_key_field->null_rejecting= false;
+
   added_key_field->cond_guard= NULL;
   added_key_field->sj_pred_no= UINT_MAX;
   return;
@@ -649,7 +657,8 @@ double spl_postjoin_oper_cost(THD *thd, double join_record_count, uint rec_len)
   cost+= get_tmp_table_lookup_cost(thd, join_record_count,rec_len) *
          join_record_count;   // cost to perform post join operation used here
   cost+= get_tmp_table_lookup_cost(thd, join_record_count, rec_len) +
-         join_record_count * log2 (join_record_count) *
+         (join_record_count == 0 ? 0 :
+          join_record_count * log2 (join_record_count)) *
          SORT_INDEX_CMP_COST;             // cost to perform  sorting
   return cost;
 }
@@ -697,7 +706,7 @@ void JOIN::add_keyuses_for_splitting()
     (void) add_ext_keyuses_for_splitting_field(ext_keyuses_for_splitting,
                                                added_key_field);
   }
-  added_keyuse_count= ext_keyuses_for_splitting->elements();
+  added_keyuse_count= (uint)ext_keyuses_for_splitting->elements();
   if (!added_keyuse_count)
     goto err;
   sort_ext_keyuses(ext_keyuses_for_splitting);
@@ -865,12 +874,12 @@ SplM_plan_info * JOIN_TAB::choose_best_splitting(double record_count,
   table_map tables_usable_for_splitting=
               spl_opt_info->tables_usable_for_splitting;
   KEYUSE_EXT *keyuse_ext= &join->ext_keyuses_for_splitting->at(0);
-  KEYUSE_EXT *best_key_keyuse_ext_start;
+  KEYUSE_EXT *UNINIT_VAR(best_key_keyuse_ext_start);
   TABLE *best_table= 0;
   double best_rec_per_key= DBL_MAX;
   SplM_plan_info *spl_plan= 0;
-  uint best_key;
-  uint best_key_parts;
+  uint best_key= 0;
+  uint best_key_parts= 0;
 
   /*
     Check whether there are keys that can be used to join T employing splitting
@@ -878,7 +887,7 @@ SplM_plan_info * JOIN_TAB::choose_best_splitting(double record_count,
   */
   for (uint tablenr= 0; tablenr < join->table_count; tablenr++)
   {
-    if (!((1 << tablenr) & tables_usable_for_splitting))
+    if (!((1ULL << tablenr) & tables_usable_for_splitting))
       continue;
     JOIN_TAB *tab= join->map2table[tablenr];
     TABLE *table= tab->table;
@@ -926,6 +935,7 @@ SplM_plan_info * JOIN_TAB::choose_best_splitting(double record_count,
     }
     while (keyuse_ext->table == table);
   }
+  spl_opt_info->last_plan= 0;
   if (best_table)
   {
     /*
@@ -951,7 +961,9 @@ SplM_plan_info * JOIN_TAB::choose_best_splitting(double record_count,
       spl_plan->table= best_table;
       spl_plan->key= best_key;
       spl_plan->parts= best_key_parts;
-      spl_plan->split_sel= best_rec_per_key / spl_opt_info->unsplit_card;
+      spl_plan->split_sel= best_rec_per_key /
+                           (spl_opt_info->unsplit_card ?
+                            spl_opt_info->unsplit_card : 1); 
 
       uint rec_len= table->s->rec_buff_length;
 
@@ -967,7 +979,6 @@ SplM_plan_info * JOIN_TAB::choose_best_splitting(double record_count,
       reset_validity_vars_for_keyuses(best_key_keyuse_ext_start, best_table,
                                       best_key, remaining_tables, false);
     }
-    spl_opt_info->last_plan= 0;
     if (spl_plan)
     {
       if(record_count * spl_plan->cost < spl_opt_info->unsplit_cost)
@@ -982,7 +993,7 @@ SplM_plan_info * JOIN_TAB::choose_best_splitting(double record_count,
   }
 
   /* Set the cost of the preferred materialization for this partial join */
-  records= spl_opt_info->unsplit_card;
+  records= (ha_rows)spl_opt_info->unsplit_card;
   spl_plan= spl_opt_info->last_plan;
   if (spl_plan)
   {
@@ -1122,11 +1133,11 @@ bool JOIN::fix_all_splittings_in_plan()
 {
   table_map prev_tables= 0;
   table_map all_tables= (1 << table_count) - 1;
-  for (uint tablenr=0 ; tablenr < table_count ; tablenr++)
+  for (uint tablenr= 0; tablenr < table_count; tablenr++)
   {
     POSITION *cur_pos= &best_positions[tablenr];
     JOIN_TAB *tab= cur_pos->table;
-    if (tab->table->is_splittable())
+    if (tablenr >= const_tables && tab->table->is_splittable())
     {
       SplM_plan_info *spl_plan= cur_pos->spl_plan;
       if (tab->fix_splitting(spl_plan, all_tables & ~prev_tables))

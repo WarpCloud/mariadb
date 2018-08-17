@@ -71,14 +71,14 @@ protected:
   bool requested_autocommit;
   bool actual_autocommit;
 
+  virtual int actual_query(const char *buffer, size_t length, void *info);
   bool test_all_restrict() const;
 public:
   federatedx_io_mysql(FEDERATEDX_SERVER *);
   ~federatedx_io_mysql();
 
   int simple_query(const char *fmt, ...);
-  int query(const char *buffer, uint length, int scan_mode, void *scan_info);
-  virtual int actual_query(const char *buffer, uint length, void *info);
+  int query(const char *buffer, size_t length, int scan_mode, void *scan_info);
   virtual FEDERATEDX_IO_RESULT *store_result();
 
   virtual size_t max_query_size() const;
@@ -281,7 +281,7 @@ ulong federatedx_io_mysql::savepoint_release(ulong sp)
   if (last)
   {
     char buffer[STRING_BUFFER_USUAL_SIZE];
-  int length= my_snprintf(buffer, sizeof(buffer),
+    size_t length= my_snprintf(buffer, sizeof(buffer),
               "RELEASE SAVEPOINT save%lu", last->level);
     actual_query(buffer, length, NULL);
   }
@@ -316,7 +316,7 @@ ulong federatedx_io_mysql::savepoint_rollback(ulong sp)
   if (savept && !(savept->flags & SAVEPOINT_RESTRICT))
   {
     char buffer[STRING_BUFFER_USUAL_SIZE];
-  int length= my_snprintf(buffer, sizeof(buffer),
+    size_t length= my_snprintf(buffer, sizeof(buffer),
               "ROLLBACK TO SAVEPOINT save%lu", savept->level);
     actual_query(buffer, length, NULL);
   }
@@ -349,7 +349,8 @@ void federatedx_io_mysql::savepoint_restrict(ulong sp)
 int federatedx_io_mysql::simple_query(const char *fmt, ...)
 {
   char buffer[STRING_BUFFER_USUAL_SIZE];
-  int length, error;
+  size_t length;
+  int error;
   va_list arg;
   DBUG_ENTER("federatedx_io_mysql::simple_query");
 
@@ -385,7 +386,7 @@ bool federatedx_io_mysql::test_all_restrict() const
 }
 
 
-int federatedx_io_mysql::query(const char *buffer, uint length, int scan_mode, void *scan_info)
+int federatedx_io_mysql::query(const char *buffer, size_t length, int scan_mode, void *scan_info)
 {
   int error;
   check_persistence_connect();
@@ -415,7 +416,7 @@ int federatedx_io_mysql::query(const char *buffer, uint length, int scan_mode, v
     if (!(savept->flags & SAVEPOINT_RESTRICT))
   {
       char buf[STRING_BUFFER_USUAL_SIZE];
-    int len= my_snprintf(buf, sizeof(buf),
+      size_t len= my_snprintf(buf, sizeof(buf),
                   "SAVEPOINT save%lu", savept->level);
       if ((error= actual_query(buf, len, NULL)))
     DBUG_RETURN(error);                         
@@ -432,7 +433,7 @@ int federatedx_io_mysql::query(const char *buffer, uint length, int scan_mode, v
 }
 
 
-int federatedx_io_mysql::actual_query(const char *buffer, uint length, void *info)
+int federatedx_io_mysql::actual_query(const char *buffer, size_t length, void *info)
 {
   int error;
   DBUG_ENTER("federatedx_io_mysql::actual_query");
@@ -445,7 +446,8 @@ int federatedx_io_mysql::actual_query(const char *buffer, uint length, void *inf
     }
   }
 
-  error= mysql_real_query(&mysql, buffer, length);
+  if (!(error= mysql_real_query(&mysql, STRING_WITH_LEN("set time_zone='+00:00'"))))
+    error= mysql_real_query(&mysql, buffer, (ulong)length);
   
   DBUG_RETURN(error);
 }
@@ -694,12 +696,13 @@ public:
     federatedx_io_vitess(FEDERATEDX_SERVER *);
     ~federatedx_io_vitess();
 
-    int query(const char *buffer, uint length, int scan_mode, void *scan_info);
+    int query(const char *buffer, size_t length, int scan_mode, void *scan_info);
     virtual void check_persistence_connect();
     int mysql_connect();
-    int actual_query(const char *buffer, uint length, void *info);
-    int actual_query(const char *buffer, uint length, void *info, bool init_session_status);
+    int actual_query(const char *buffer, size_t length, void *info);
+    int actual_query(const char *buffer, size_t length, void *info, bool init_session_status);
     int init_session();
+
 };
 
 federatedx_io *instantiate_io_vitess(MEM_ROOT *server_root, FEDERATEDX_SERVER *server) {
@@ -730,7 +733,7 @@ void federatedx_io_vitess::check_persistence_connect() {
   }
 }
 
-int federatedx_io_vitess::query(const char *buffer, uint length, int scan_mode, void *scan_info) {
+int federatedx_io_vitess::query(const char *buffer, size_t length, int scan_mode, void *scan_info) {
   int error;
   check_persistence_connect();
   bool wants_autocommit= requested_autocommit | is_readonly();
@@ -905,12 +908,11 @@ const char* construct_partial_read_query(String *query, partial_read_info *pr_in
 
 }
 
-int federatedx_io_vitess::actual_query(const char *buffer, uint length, void *info) {
+int federatedx_io_vitess::actual_query(const char *buffer, size_t length, void *info) {
   return actual_query(buffer, length, info, true);
 }
 
-int federatedx_io_vitess::actual_query(const char *buffer, uint length, void *info, bool init_session_status) {
-
+int federatedx_io_vitess::actual_query(const char *buffer, size_t length, void *info, bool init_session_status) {
   int error;
   DBUG_ENTER("federatedx_io_vitess::actual_query");
 

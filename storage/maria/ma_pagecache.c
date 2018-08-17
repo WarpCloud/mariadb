@@ -667,7 +667,7 @@ static my_bool pagecache_fwrite(PAGECACHE *pagecache,
     DBUG_PRINT("error", ("write callback problem"));
     DBUG_RETURN(1);
   }
-  res= my_pwrite(filedesc->file, args.page, pagecache->block_size,
+  res= (int)my_pwrite(filedesc->file, args.page, pagecache->block_size,
                  ((my_off_t) pageno << pagecache->shift), flags);
   (*filedesc->post_write_hook)(res, &args);
   DBUG_RETURN(res);
@@ -810,7 +810,7 @@ size_t init_pagecache(PAGECACHE *pagecache, size_t use_mem,
       goto err;
     }
     /* Set my_hash_entries to the next bigger 2 power */
-    if ((pagecache->hash_entries= next_power(blocks)) <
+    if ((pagecache->hash_entries= next_power((uint)blocks)) <
         (blocks) * 5/4)
       pagecache->hash_entries<<= 1;
     hash_links= 2 * blocks;
@@ -890,9 +890,9 @@ size_t init_pagecache(PAGECACHE *pagecache, size_t use_mem,
   DBUG_PRINT("exit",
              ("disk_blocks: %zu  block_root: %p  hash_entries: %zu\
  hash_root: %p  hash_links: %zu  hash_link_root: %p",
-              pagecache->disk_blocks, pagecache->block_root,
+              (size_t)pagecache->disk_blocks, pagecache->block_root,
               pagecache->hash_entries, pagecache->hash_root,
-              pagecache->hash_links, pagecache->hash_link_root));
+              (size_t)pagecache->hash_links, pagecache->hash_link_root));
 
   pagecache->blocks= pagecache->disk_blocks > 0 ? pagecache->disk_blocks : 0;
   DBUG_RETURN((size_t)pagecache->disk_blocks);
@@ -985,7 +985,7 @@ static int flush_all_key_blocks(PAGECACHE *pagecache)
      resizing, due to the page locking specific to this page cache.
      So we disable it for now.
 */
-#if NOT_USED /* keep disabled until code is fixed see above !! */
+#ifdef NOT_USED /* keep disabled until code is fixed see above !! */
 size_t resize_pagecache(PAGECACHE *pagecache,
                        size_t use_mem, uint division_limit,
                        uint age_threshold, uint changed_blocks_hash_size)

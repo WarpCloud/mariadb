@@ -2630,14 +2630,17 @@ my_xpath_parse_VariableReference(MY_XPATH *xpath)
   else
   {
     sp_variable *spv;
-    sp_pcontext *spc;
+    const Sp_rcontext_handler *rh;
     LEX *lex;
+    /*
+      We call lex->find_variable() rather than thd->lex->spcont->find_variable()
+      to make sure package body variables are properly supported.
+    */
     if ((lex= thd->lex) &&
-        (spc= lex->spcont) &&
-        (spv= spc->find_variable(&name, false)))
+        (spv= lex->find_variable(&name, &rh)))
     {
       Item_splocal *splocal= new (thd->mem_root)
-        Item_splocal(thd, &name, spv->offset, spv->type_handler(), 0);
+        Item_splocal(thd, rh, &name, spv->offset, spv->type_handler(), 0);
 #ifdef DBUG_ASSERT_EXISTS
       if (splocal)
         splocal->m_sp= lex->sphead;
@@ -2734,7 +2737,7 @@ void Item_xml_str_func::fix_length_and_dec()
 
 bool Item_xml_str_func::fix_fields(THD *thd, Item **ref)
 {
-  String *xp, tmp;
+  String *xp;
   MY_XPATH xpath;
   int rc;
 
@@ -2762,7 +2765,13 @@ bool Item_xml_str_func::fix_fields(THD *thd, Item **ref)
     return true;
   }
 
-  if (!(xp= args[1]->val_str(&tmp)))
+  /*
+    Get the XPath query text from args[1] and cache it in m_xpath_query.
+    Its fragments will be referenced by items created during my_xpath_parse(),
+    e.g. by Item_nodeset_func_axisbyname::node_name.
+  */
+  if (!(xp= args[1]->val_str(&m_xpath_query)) ||
+      (xp != &m_xpath_query && m_xpath_query.copy(*xp)))
     return false; // Will return NULL
   my_xpath_init(&xpath);
   xpath.thd= thd;

@@ -97,6 +97,7 @@ void Expression_cache_tmptable::init()
   List_iterator<Item> li(items);
   Item_iterator_list it(li);
   uint field_counter;
+  LEX_CSTRING cache_table_name= { STRING_WITH_LEN("subquery-cache-table") };
   DBUG_ENTER("Expression_cache_tmptable::init");
   DBUG_ASSERT(!inited);
   inited= TRUE;
@@ -124,7 +125,7 @@ void Expression_cache_tmptable::init()
                                         TMP_TABLE_ALL_COLUMNS) &
                                         ~TMP_TABLE_FORCE_MYISAM),
                                       HA_POS_ERROR,
-                                      (char *)"subquery-cache-table",
+                                      &cache_table_name,
                                       TRUE)))
   {
     DBUG_PRINT("error", ("create_tmp_table failed, caching switched off"));
@@ -269,10 +270,11 @@ my_bool Expression_cache_tmptable::put_value(Item *value)
 
   *(items.head_ref())= value;
   fill_record(table_thd, cache_table, cache_table->field, items, TRUE, TRUE);
-  if (table_thd->is_error())
+  if (unlikely(table_thd->is_error()))
     goto err;;
 
-  if ((error= cache_table->file->ha_write_tmp_row(cache_table->record[0])))
+  if (unlikely((error=
+                cache_table->file->ha_write_tmp_row(cache_table->record[0]))))
   {
     /* create_myisam_from_heap will generate error if needed */
     if (cache_table->file->is_fatal_error(error, HA_CHECK_DUP))

@@ -734,6 +734,10 @@ public:
   longlong val_int() { return val_int_from_real();  /* Real as default */ }
   String *val_str(String*str);
   my_decimal *val_decimal(my_decimal *);
+  bool get_date(MYSQL_TIME *ltime, ulonglong fuzzydate)
+  {
+    return type_handler()->Item_get_date(this, ltime, fuzzydate);
+  }
   void reset_field();
 };
 
@@ -1288,10 +1292,15 @@ public:
 
   Item_sum_sp(THD *thd, Name_resolution_context *context_arg, sp_name *name,
               sp_head *sp, List<Item> &list);
+  Item_sum_sp(THD *thd, Item_sum_sp *item);
 
   enum Sumfunctype sum_func () const
   {
     return SP_AGGREGATE_FUNC;
+  }
+  Field *create_field_for_create_select(TABLE *table)
+  {
+    return create_table_field_from_handler(table);
   }
   void fix_length_and_dec();
   bool fix_fields(THD *thd, Item **ref);
@@ -1346,12 +1355,17 @@ public:
   void update_field(){DBUG_ASSERT(0);}
   void clear();
   void cleanup();
+  bool get_date(MYSQL_TIME *ltime, ulonglong fuzzydate)
+  {
+    return execute() || sp_result_field->get_date(ltime, fuzzydate);
+  }
   inline Field *get_sp_result_field()
   {
     return sp_result_field;
   }
   Item *get_copy(THD *thd)
   { return get_item_copy<Item_sum_sp>(thd, this); }
+  Item *copy_or_same(THD *thd);
 };
 
 /* Items to get the value of a stored sum function */
@@ -1376,6 +1390,10 @@ public:
   bool check_vcol_func_processor(void *arg)
   {
     return mark_unsupported_function(name.str, arg, VCOL_IMPOSSIBLE);
+  }
+  bool get_date(MYSQL_TIME *ltime, ulonglong fuzzydate)
+  {
+    return type_handler()->Item_get_date(this, ltime, fuzzydate);
   }
 };
 
@@ -1526,6 +1544,10 @@ public:
   void update_field() {};
   void cleanup();
   virtual void print(String *str, enum_query_type query_type);
+  bool get_date(MYSQL_TIME *ltime, ulonglong fuzzydate)
+  {
+    return type_handler()->Item_get_date(this, ltime, fuzzydate);
+  }
 };
 
 
@@ -1821,6 +1843,10 @@ public:
   my_decimal *val_decimal(my_decimal *decimal_value)
   {
     return val_decimal_from_string(decimal_value);
+  }
+  bool get_date(MYSQL_TIME *ltime, ulonglong fuzzydate)
+  {
+    return get_date_from_string(ltime, fuzzydate);
   }
   String* val_str(String* str);
   Item *copy_or_same(THD* thd);

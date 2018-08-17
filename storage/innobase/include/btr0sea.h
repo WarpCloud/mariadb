@@ -1,7 +1,7 @@
 /*****************************************************************************
 
 Copyright (c) 1996, 2016, Oracle and/or its affiliates. All Rights Reserved.
-Copyright (c) 2017, MariaDB Corporation.
+Copyright (c) 2017, 2018, MariaDB Corporation.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -38,26 +38,20 @@ Created 2/17/1996 Heikki Tuuri
 
 /** Creates and initializes the adaptive search system at a database start.
 @param[in]	hash_size	hash table size. */
-void
-btr_search_sys_create(ulint hash_size);
+void btr_search_sys_create(ulint hash_size);
 
 /** Resize hash index hash table.
 @param[in]	hash_size	hash index hash table size */
-void
-btr_search_sys_resize(ulint hash_size);
+void btr_search_sys_resize(ulint hash_size);
 
 /** Frees the adaptive search system at a database shutdown. */
-void
-btr_search_sys_free();
+void btr_search_sys_free();
 
 /** Disable the adaptive hash search system and empty the index.
 @param  need_mutex      need to acquire dict_sys->mutex */
-void
-btr_search_disable(
-	bool	need_mutex);
+void btr_search_disable(bool need_mutex);
 /** Enable the adaptive hash search system. */
-void
-btr_search_enable();
+void btr_search_enable();
 
 /** Returns the value of ref_count. The value is protected by latch.
 @param[in]	info		search info
@@ -91,12 +85,11 @@ both have sensible values.
 				we assume the caller uses his search latch
 				to protect the record!
 @param[out]	cursor		tree cursor
-@param[in]	has_search_latch
-				latch mode the caller currently has on
-				search system: RW_S/X_LATCH or 0
+@param[in]	ahi_latch	the adaptive hash index latch being held,
+				or NULL
 @param[in]	mtr		mini transaction
-@return TRUE if succeeded */
-ibool
+@return whether the search succeeded */
+bool
 btr_search_guess_on_hash(
 	dict_index_t*	index,
 	btr_search_t*	info,
@@ -104,7 +97,7 @@ btr_search_guess_on_hash(
 	ulint		mode,
 	ulint		latch_mode,
 	btr_cur_t*	cursor,
-	ulint		has_search_latch,
+	rw_lock_t*	ahi_latch,
 	mtr_t*		mtr);
 
 /** Move or delete hash entries for moved records, usually in a page split.
@@ -124,134 +117,87 @@ btr_search_move_or_delete_hash_entries(
 			block->buf_fix_count == 0 or it is an index page which
 			has already been removed from the buf_pool->page_hash
 			i.e.: it is in state BUF_BLOCK_REMOVE_HASH */
-void
-btr_search_drop_page_hash_index(buf_block_t* block);
+void btr_search_drop_page_hash_index(buf_block_t* block);
 
 /** Drop any adaptive hash index entries that may point to an index
 page that may be in the buffer pool, when a page is evicted from the
 buffer pool or freed in a file segment.
 @param[in]	page_id		page id
 @param[in]	page_size	page size */
-void
-btr_search_drop_page_hash_when_freed(
-	const page_id_t&	page_id,
-	const page_size_t&	page_size);
+void btr_search_drop_page_hash_when_freed(const page_id_t& page_id);
 
 /** Updates the page hash index when a single record is inserted on a page.
 @param[in]	cursor	cursor which was positioned to the place to insert
 			using btr_cur_search_, and the new record has been
-			inserted next to the cursor. */
+			inserted next to the cursor.
+@param[in]	ahi_latch	the adaptive hash index latch */
 void
-btr_search_update_hash_node_on_insert(btr_cur_t* cursor);
+btr_search_update_hash_node_on_insert(btr_cur_t* cursor, rw_lock_t* ahi_latch);
 
 /** Updates the page hash index when a single record is inserted on a page.
-@param[in]	cursor		cursor which was positioned to the
+@param[in,out]	cursor		cursor which was positioned to the
 				place to insert using btr_cur_search_...,
 				and the new record has been inserted next
-				to the cursor */
+				to the cursor
+@param[in]	ahi_latch	the adaptive hash index latch */
 void
-btr_search_update_hash_on_insert(btr_cur_t* cursor);
+btr_search_update_hash_on_insert(btr_cur_t* cursor, rw_lock_t* ahi_latch);
 
 /** Updates the page hash index when a single record is deleted from a page.
 @param[in]	cursor	cursor which was positioned on the record to delete
 			using btr_cur_search_, the record is not yet deleted.*/
-void
-btr_search_update_hash_on_delete(btr_cur_t* cursor);
+void btr_search_update_hash_on_delete(btr_cur_t* cursor);
 
 /** Validates the search system.
 @return true if ok */
-bool
-btr_search_validate();
-
-/** X-Lock the search latch (corresponding to given index)
-@param[in]	index	index handler */
-UNIV_INLINE
-void
-btr_search_x_lock(const dict_index_t* index);
-
-/** X-Unlock the search latch (corresponding to given index)
-@param[in]	index	index handler */
-UNIV_INLINE
-void
-btr_search_x_unlock(const dict_index_t* index);
+bool btr_search_validate();
 
 /** Lock all search latches in exclusive mode. */
-UNIV_INLINE
-void
-btr_search_x_lock_all();
+static inline void btr_search_x_lock_all();
 
 /** Unlock all search latches from exclusive mode. */
-UNIV_INLINE
-void
-btr_search_x_unlock_all();
-
-/** S-Lock the search latch (corresponding to given index)
-@param[in]	index	index handler */
-UNIV_INLINE
-void
-btr_search_s_lock(const dict_index_t* index);
-
-/** S-Unlock the search latch (corresponding to given index)
-@param[in]	index	index handler */
-UNIV_INLINE
-void
-btr_search_s_unlock(const dict_index_t* index);
+static inline void btr_search_x_unlock_all();
 
 /** Lock all search latches in shared mode. */
-UNIV_INLINE
-void
-btr_search_s_lock_all();
+static inline void btr_search_s_lock_all();
 
 #ifdef UNIV_DEBUG
 /** Check if thread owns all the search latches.
 @param[in]	mode	lock mode check
 @retval true if owns all of them
 @retval false if does not own some of them */
-UNIV_INLINE
-bool
-btr_search_own_all(ulint mode);
+static inline bool btr_search_own_all(ulint mode);
 
 /** Check if thread owns any of the search latches.
 @param[in]	mode	lock mode check
 @retval true if owns any of them
 @retval false if owns no search latch */
-UNIV_INLINE
-bool
-btr_search_own_any(ulint mode);
+static inline bool btr_search_own_any(ulint mode);
 #endif /* UNIV_DEBUG */
 
 /** Unlock all search latches from shared mode. */
-UNIV_INLINE
-void
-btr_search_s_unlock_all();
+static inline void btr_search_s_unlock_all();
 
 /** Get the latch based on index attributes.
 A latch is selected from an array of latches using pair of index-id, space-id.
 @param[in]	index	index handler
 @return latch */
-UNIV_INLINE
-rw_lock_t*
-btr_get_search_latch(const dict_index_t* index);
+static inline rw_lock_t* btr_get_search_latch(const dict_index_t* index);
 
 /** Get the hash-table based on index attributes.
 A table is selected from an array of tables using pair of index-id, space-id.
 @param[in]	index	index handler
 @return hash table */
-UNIV_INLINE
-hash_table_t*
-btr_get_search_table(const dict_index_t* index);
+static inline hash_table_t* btr_get_search_table(const dict_index_t* index);
 #else /* BTR_CUR_HASH_ADAPT */
 # define btr_search_sys_create(size)
+# define btr_search_sys_free()
 # define btr_search_drop_page_hash_index(block)
-# define btr_search_s_lock(index)
-# define btr_search_s_unlock(index)
 # define btr_search_s_lock_all(index)
 # define btr_search_s_unlock_all(index)
-# define btr_search_x_lock(index)
-# define btr_search_x_unlock(index)
 # define btr_search_info_update(index, cursor)
 # define btr_search_move_or_delete_hash_entries(new_block, block)
-# define btr_search_update_hash_on_insert(cursor)
+# define btr_search_update_hash_on_insert(cursor, ahi_latch)
 # define btr_search_update_hash_on_delete(cursor)
 # define btr_search_sys_resize(hash_size)
 #endif /* BTR_CUR_HASH_ADAPT */
@@ -260,15 +206,11 @@ btr_get_search_table(const dict_index_t* index);
 /** Create and initialize search info.
 @param[in,out]	heap		heap where created
 @return own: search info struct */
-UNIV_INLINE
-btr_search_t*
-btr_search_info_create(mem_heap_t* heap)
+static inline btr_search_t* btr_search_info_create(mem_heap_t* heap)
 	MY_ATTRIBUTE((nonnull, warn_unused_result));
 
 /** @return the search info of an index */
-UNIV_INLINE
-btr_search_t*
-btr_search_get_info(dict_index_t* index)
+static inline btr_search_t* btr_search_get_info(dict_index_t* index)
 {
 	return(index->search_info);
 }
@@ -312,7 +254,7 @@ struct btr_search_t{
 	ulint	n_bytes;	/*!< recommended prefix: number of bytes in
 				an incomplete field
 				@see BTR_PAGE_MAX_REC_SIZE */
-	ibool	left_side;	/*!< TRUE or FALSE, depending on whether
+	bool	left_side;	/*!< true or false, depending on whether
 				the leftmost record of several records with
 				the same prefix should be indexed in the
 				hash index */

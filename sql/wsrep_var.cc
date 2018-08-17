@@ -26,6 +26,7 @@
 #include <cstdio>
 #include <cstdlib>
 
+ulong   wsrep_reject_queries;
 
 static long wsrep_prev_slave_threads = wsrep_slave_threads;
 
@@ -42,7 +43,10 @@ int wsrep_init_vars()
   return 0;
 }
 
-extern ulong innodb_lock_schedule_algorithm;
+/* This is intentionally declared as a weak global symbol, so that
+linking will succeed even if the server is built with a dynamically
+linked InnoDB. */
+ulong innodb_lock_schedule_algorithm __attribute__((weak));
 
 bool wsrep_on_update (sys_var *self, THD* thd, enum_var_type var_type)
 {
@@ -410,6 +414,27 @@ void wsrep_provider_options_init(const char* value)
   wsrep_provider_options = (value) ? my_strdup(value, MYF(0)) : NULL;
 }
 
+bool wsrep_reject_queries_update(sys_var *self, THD* thd, enum_var_type type)
+{
+    switch (wsrep_reject_queries) {
+        case WSREP_REJECT_NONE:
+            WSREP_INFO("Allowing client queries due to manual setting");
+            break;
+        case WSREP_REJECT_ALL:
+            WSREP_INFO("Rejecting client queries due to manual setting");
+            break;
+        case WSREP_REJECT_ALL_KILL:
+            wsrep_close_client_connections(FALSE);
+            WSREP_INFO("Rejecting client queries and killing connections due to manual setting");
+            break;
+        default:
+          WSREP_INFO("Unknown value for wsrep_reject_queries: %lu",
+                     wsrep_reject_queries);
+            return true;
+    }
+    return false;
+}
+
 static int wsrep_cluster_address_verify (const char* cluster_address_str)
 {
   /* There is no predefined address format, it depends on provider. */
@@ -605,9 +630,8 @@ bool wsrep_desync_check (sys_var *self, THD* thd, set_var* var)
   if (new_wsrep_desync) {
     ret = wsrep->desync (wsrep);
     if (ret != WSREP_OK) {
-      WSREP_WARN ("SET desync failed %d for schema: %s, query: %s", ret,
-                  (thd->db ? thd->db : "(null)"),
-                  thd->query());
+      WSREP_WARN ("SET desync failed %d for schema: %s, query: %s",
+                  ret, thd->get_db(), thd->query());
       my_error (ER_CANNOT_USER, MYF(0), "'desync'", thd->query());
       return true;
     }
@@ -615,8 +639,7 @@ bool wsrep_desync_check (sys_var *self, THD* thd, set_var* var)
     ret = wsrep->resync (wsrep);
     if (ret != WSREP_OK) {
       WSREP_WARN ("SET resync failed %d for schema: %s, query: %s", ret,
-                  (thd->db ? thd->db : "(null)"),
-                  thd->query());
+                  thd->get_db(), thd->query());
       my_error (ER_CANNOT_USER, MYF(0), "'resync'", thd->query());
       return true;
     }

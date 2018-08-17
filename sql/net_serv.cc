@@ -1,5 +1,5 @@
 /* Copyright (c) 2000, 2016, Oracle and/or its affiliates.
-   Copyright (c) 2012, 2017, MariaDB Corporation
+   Copyright (c) 2012, 2018, MariaDB Corporation.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -53,6 +53,7 @@
 #ifdef EXTRA_DEBUG
 #define EXTRA_DEBUG_fprintf fprintf
 #define EXTRA_DEBUG_fflush fflush
+#define EXTRA_DEBUG_ASSERT DBUG_ASSERT
 #else
 static void inline EXTRA_DEBUG_fprintf(...) {}
 #ifndef MYSQL_SERVER
@@ -68,6 +69,9 @@ static int inline EXTRA_DEBUG_fflush(...) { return 0; }
 static void inline MYSQL_SERVER_my_error(...) {}
 #endif
 
+#ifndef EXTRA_DEBUG_ASSERT
+# define EXTRA_DEBUG_ASSERT(X) do {} while(0)
+#endif
 
 /*
   The following handles the differences when this is linked between the
@@ -104,20 +108,20 @@ extern uint test_flags;
 extern ulong bytes_sent, bytes_received, net_big_packet_count;
 #ifdef HAVE_QUERY_CACHE
 #define USE_QUERY_CACHE
-extern void query_cache_insert(void *thd, const char *packet, ulong length,
+extern void query_cache_insert(void *thd, const char *packet, size_t length,
                                unsigned pkt_nr);
 #endif // HAVE_QUERY_CACHE
 #define update_statistics(A) A
-extern my_bool thd_net_is_killed();
+extern my_bool thd_net_is_killed(THD *thd);
 /* Additional instrumentation hooks for the server */
 #include "mysql_com_server.h"
 #else
 #define update_statistics(A)
-#define thd_net_is_killed() 0
+#define thd_net_is_killed(A) 0
 #endif
 
 
-static my_bool net_write_buff(NET *, const uchar *, ulong);
+static my_bool net_write_buff(NET *, const uchar *, size_t len);
 
 my_bool net_allocate_new_packet(NET *net, void *thd, uint my_flags);
 
@@ -542,13 +546,13 @@ net_write_command(NET *net,uchar command,
 */
 
 static my_bool
-net_write_buff(NET *net, const uchar *packet, ulong len)
+net_write_buff(NET *net, const uchar *packet, size_t len)
 {
-  ulong left_length;
+  size_t left_length;
   if (net->compress && net->max_packet > MAX_PACKET_LENGTH)
-    left_length= (ulong) (MAX_PACKET_LENGTH - (net->write_pos - net->buff));
+    left_length= (MAX_PACKET_LENGTH - (net->write_pos - net->buff));
   else
-    left_length= (ulong) (net->buff_end - net->write_pos);
+    left_length= (net->buff_end - net->write_pos);
 
 #ifdef DEBUG_DATA_PACKETS
   DBUG_DUMP("data_written", packet, len);
@@ -616,7 +620,7 @@ net_real_write(NET *net,const uchar *packet, size_t len)
   query_cache_insert(net->thd, (char*) packet, len, net->pkt_nr);
 #endif
 
-  if (net->error == 2)
+  if (unlikely(net->error == 2))
     DBUG_RETURN(-1);				/* socket can't be used */
 
   net->reading_or_writing=2;
@@ -956,7 +960,7 @@ retry:
 	  DBUG_PRINT("info",("vio_read returned %ld  errno: %d",
 			     (long) length, vio_errno(net->vio)));
 
-          if (i== 0 && thd_net_is_killed())
+          if (i== 0 && unlikely(thd_net_is_killed((THD*) net->thd)))
           {
             DBUG_PRINT("info", ("thd is killed"));
             len= packet_error;
@@ -1034,7 +1038,7 @@ retry:
 #endif
       if (i == 0)
       {					/* First parts is packet length */
-	ulong helping;
+        size_t helping;
 #ifndef DEBUG_DATA_PACKETS
         DBUG_DUMP("packet_header", net->buff+net->where_b,
                   NET_HEADER_SIZE);
@@ -1160,7 +1164,7 @@ packets_out_of_order:
                ("Packets out of order (Found: %d, expected %u)",
                 (int) net->buff[net->where_b + 3],
                 net->pkt_nr));
-    DBUG_ASSERT(0);
+    EXTRA_DEBUG_ASSERT(0);
     /*
        We don't make noise server side, since the client is expected
        to break the protocol for e.g. --send LOAD DATA .. LOCAL where
@@ -1238,23 +1242,23 @@ my_net_read_packet_reallen(NET *net, my_bool read_from_server, ulong* reallen)
       size_t total_length= 0;
       do
       {
-	net->where_b += len;
+	net->where_b += (ulong)len;
 	total_length += len;
 	len = my_real_read(net,&complen, 0);
       } while (len == MAX_PACKET_LENGTH);
-      if (len != packet_error)
+      if (likely(len != packet_error))
 	len+= total_length;
       net->where_b = save_pos;
     }
 
     net->read_pos = net->buff + net->where_b;
-    if (len != packet_error)
+    if (likely(len != packet_error))
     {
       net->read_pos[len]=0;		/* Safeguard for mysql_use_result */
-      *reallen = len;
+      *reallen = (ulong)len;
     }
     MYSQL_NET_READ_DONE(0, len);
-    return len;
+    return (ulong)len;
 #ifdef HAVE_COMPRESS
   }
   else
@@ -1352,7 +1356,7 @@ my_net_read_packet_reallen(NET *net, my_bool read_from_server, ulong* reallen)
         MYSQL_NET_READ_DONE(1, 0);
 	return packet_error;
       }
-      buf_length+= complen;
+      buf_length+= (ulong)complen;
       *reallen += packet_len;
     }
 
@@ -1366,7 +1370,7 @@ my_net_read_packet_reallen(NET *net, my_bool read_from_server, ulong* reallen)
   }
 #endif /* HAVE_COMPRESS */
   MYSQL_NET_READ_DONE(0, len);
-  return len;
+  return (ulong)len;
 }
 
 

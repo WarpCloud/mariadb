@@ -9,12 +9,23 @@ project(TokuDB)
 set(CMAKE_SHARED_LIBRARY_LINK_C_FLAGS "")
 set(CMAKE_SHARED_LIBRARY_LINK_CXX_FLAGS "")
 
+# See: https://jira.percona.com/browse/TDB-93
+IF(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-address-of-packed-member")
+  SET(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-address-of-packed-member")
+ENDIF()
+
 # detect when we are being built as a subproject
 if (DEFINED MYSQL_PROJECT_NAME_DOCSTRING)
   add_definitions( -DMYSQL_TOKUDB_ENGINE=1)
+  # Extended PFS instrumentation:
+  # -DTOKU_PFS_MUTEX_EXTENDED_CACHETABLEMMUTEX=1
+  if (WITH_PERFSCHEMA_STORAGE_ENGINE)
+    add_definitions(-DTOKU_MYSQL_WITH_PFS)
+  endif ()
+  include_directories(${CMAKE_SOURCE_DIR}/include)
   if ((CMAKE_BUILD_TYPE MATCHES "Debug") AND
       (CMAKE_CXX_FLAGS_DEBUG MATCHES " -DENABLED_DEBUG_SYNC"))
-    include_directories(${CMAKE_SOURCE_DIR}/include)
     include_directories(${CMAKE_SOURCE_DIR}/sql)
   endif ()
 endif ()

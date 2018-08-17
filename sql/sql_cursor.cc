@@ -132,7 +132,7 @@ int mysql_open_cursor(THD *thd, select_result *result,
 
   MYSQL_QUERY_EXEC_START(thd->query(),
                          thd->thread_id,
-                         (char *) (thd->db ? thd->db : ""),
+                         thd->get_db(),
                          &thd->security_ctx->priv_user[0],
                          (char *) thd->security_ctx->host_or_ip,
                          2);
@@ -215,7 +215,7 @@ void Server_side_cursor::operator delete(void *ptr, size_t size)
   MEM_ROOT own_root= *cursor->mem_root;
 
   DBUG_ENTER("Server_side_cursor::operator delete");
-  TRASH(ptr, size);
+  TRASH_FREE(ptr, size);
   /*
     If this cursor has never been opened mem_root is empty. Otherwise
     mem_root points to the memory the cursor object was allocated in.
@@ -281,7 +281,7 @@ int Materialized_cursor::send_result_set_metadata(
   {
     Send_field send_field;
     Item_ident *ident= static_cast<Item_ident *>(item_dst);
-    item_org->make_field(thd, &send_field);
+    item_org->make_send_field(thd, &send_field);
 
     ident->db_name=    thd->strdup(send_field.db_name);
     ident->table_name= thd->strdup(send_field.table_name);
@@ -440,7 +440,7 @@ bool Select_materialize::send_result_set_metadata(List<Item> &list, uint flags)
   if (create_result_table(unit->thd, unit->get_column_types(true),
                           FALSE,
                           thd->variables.option_bits | TMP_TABLE_ALL_COLUMNS,
-                          "", FALSE, TRUE, TRUE, 0))
+                          &empty_clex_str, FALSE, TRUE, TRUE, 0))
     return TRUE;
 
   materialized_cursor= new (&table->mem_root)

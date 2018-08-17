@@ -1335,6 +1335,7 @@ int ha_maria::check(THD * thd, HA_CHECK_OPT * check_opt)
   old_proc_info= thd_proc_info(thd, "Checking status");
   thd_progress_init(thd, 3);
   error= maria_chk_status(param, file);                // Not fatal
+  /* maria_chk_size() will flush the page cache for this file */
   if (maria_chk_size(param, file))
     error= 1;
   if (!error)
@@ -2149,11 +2150,16 @@ void ha_maria::start_bulk_insert(ha_rows rows, uint flags)
        safety net for now, we don't remove the test of
        file->state->records, because there is uncertainty on what will
        happen during repair if the two states disagree.
+
+       We also have to check in case of transactional tables that the
+       user has not used LOCK TABLE on the table twice.
     */
     if ((file->state->records == 0) &&
         (share->state.state.records == 0) && can_enable_indexes &&
         (!rows || rows >= MARIA_MIN_ROWS_TO_DISABLE_INDEXES) &&
-        (file->lock.type == TL_WRITE || file->lock.type == TL_UNLOCK))
+        (file->lock.type == TL_WRITE || file->lock.type == TL_UNLOCK) &&
+        (!share->have_versioning || !share->now_transactional ||
+         file->used_tables->use_count == 1))
     {
       /**
          @todo for a single-row INSERT SELECT, we will go into repair, which
@@ -2241,6 +2247,7 @@ int ha_maria::end_bulk_insert()
                                                bulk_insert_single_undo ==
                                                BULK_INSERT_SINGLE_UNDO_AND_NO_REPAIR)))
       first_error= first_error ? first_error : error;
+    bulk_insert_single_undo= BULK_INSERT_NONE;  // Safety
   }
   DBUG_RETURN(first_error);
 }
@@ -3082,11 +3089,11 @@ static enum data_file_type maria_row_type(HA_CREATE_INFO *info)
 }
 
 
-int ha_maria::create(const char *name, register TABLE *table_arg,
+int ha_maria::create(const char *name, TABLE *table_arg,
                      HA_CREATE_INFO *ha_create_info)
 {
   int error;
-  uint create_flags= 0, record_count, i;
+  uint create_flags= 0, record_count= 0, i;
   char buff[FN_REFLEN];
   MARIA_KEYDEF *keydef;
   MARIA_COLUMNDEF *recinfo;
@@ -3959,18 +3966,39 @@ Item *ha_maria::idx_cond_push(uint keyno_arg, Item* idx_cond_arg)
 
 int ha_maria::find_unique_row(uchar *record, uint constrain_no)
 {
-  MARIA_UNIQUEDEF *def= file->s->uniqueinfo + constrain_no;
-  ha_checksum unique_hash= _ma_unique_hash(def, record);
-  int rc= _ma_check_unique(file, def, record, unique_hash, HA_OFFSET_ERROR);
-  if (rc)
+  int rc;
+  if (file->s->state.header.uniques)
   {
-    file->cur_row.lastpos= file->dup_key_pos;
-    if ((*file->read_record)(file, record, file->cur_row.lastpos))
-      return -1;
-    file->update|= HA_STATE_AKTIV;                     /* Record is read */
+    DBUG_ASSERT(file->s->state.header.uniques > constrain_no);
+    MARIA_UNIQUEDEF *def= file->s->uniqueinfo + constrain_no;
+    ha_checksum unique_hash= _ma_unique_hash(def, record);
+    rc= _ma_check_unique(file, def, record, unique_hash, HA_OFFSET_ERROR);
+    if (rc)
+    {
+      file->cur_row.lastpos= file->dup_key_pos;
+      if ((*file->read_record)(file, record, file->cur_row.lastpos))
+        return -1;
+      file->update|= HA_STATE_AKTIV;                     /* Record is read */
+    }
+    // invert logic
+    rc= !MY_TEST(rc);
   }
-  // invert logic
-  return (rc ? 0 : 1);
+  else
+  {
+    /*
+     It is case when just unique index used instead unicue constrain
+     (conversion from heap table).
+     */
+    DBUG_ASSERT(file->s->state.header.keys > constrain_no);
+    MARIA_KEY key;
+    file->once_flags|= USE_PACKED_KEYS;
+    (*file->s->keyinfo[constrain_no].make_key)
+      (file, &key, constrain_no, file->lastkey_buff2, record, 0, 0);
+    rc= maria_rkey(file, record, constrain_no, key.data, key.data_length,
+                   HA_READ_KEY_EXACT);
+    rc= MY_TEST(rc);
+  }
+  return rc;
 }
 
 struct st_mysql_storage_engine maria_storage_engine=

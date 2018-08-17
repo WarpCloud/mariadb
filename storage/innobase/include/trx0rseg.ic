@@ -1,7 +1,7 @@
 /*****************************************************************************
 
 Copyright (c) 1996, 2013, Oracle and/or its affiliates. All Rights Reserved.
-Copyright (c) 2017, MariaDB Corporation.
+Copyright (c) 2017, 2018, MariaDB Corporation.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -34,26 +34,18 @@ Created 3/26/1996 Heikki Tuuri
 @return rollback segment header, page x-latched */
 UNIV_INLINE
 trx_rsegf_t*
-trx_rsegf_get(
-	ulint			space,
-	ulint			page_no,
-	mtr_t*			mtr)
+trx_rsegf_get(fil_space_t* space, ulint page_no, mtr_t* mtr)
 {
-	buf_block_t*	block;
-	trx_rsegf_t*	header;
-
-	ut_ad(space <= srv_undo_tablespaces_active || space == SRV_TMP_SPACE_ID
+	ut_ad(space == fil_system.sys_space || space == fil_system.temp_space
+	      || srv_is_undo_tablespace(space->id)
 	      || !srv_was_started);
-	ut_ad(space <= TRX_SYS_MAX_UNDO_SPACES || space == SRV_TMP_SPACE_ID);
 
-	block = buf_page_get(
-		page_id_t(space, page_no), univ_page_size, RW_X_LATCH, mtr);
+	buf_block_t* block = buf_page_get(page_id_t(space->id, page_no),
+					  univ_page_size, RW_X_LATCH, mtr);
 
 	buf_block_dbg_add_level(block, SYNC_RSEG_HEADER);
 
-	header = TRX_RSEG + buf_block_get_frame(block);
-
-	return(header);
+	return TRX_RSEG + block->frame;
 }
 
 /** Gets a newly created rollback segment header.
@@ -86,23 +78,6 @@ trx_rsegf_get_new(
 }
 
 /***************************************************************//**
-Gets the file page number of the nth undo log slot.
-@return page number of the undo log segment */
-UNIV_INLINE
-ulint
-trx_rsegf_get_nth_undo(
-/*===================*/
-	trx_rsegf_t*	rsegf,	/*!< in: rollback segment header */
-	ulint		n,	/*!< in: index of slot */
-	mtr_t*		mtr)	/*!< in: mtr */
-{
-	ut_a(n < TRX_RSEG_N_SLOTS);
-
-	return(mtr_read_ulint(rsegf + TRX_RSEG_UNDO_SLOTS
-			      + n * TRX_RSEG_SLOT_SIZE, MLOG_4BYTES, mtr));
-}
-
-/***************************************************************//**
 Sets the file page number of the nth undo log slot. */
 UNIV_INLINE
 void
@@ -124,10 +99,7 @@ Looks for a free slot for an undo log segment.
 @return slot index or ULINT_UNDEFINED if not found */
 UNIV_INLINE
 ulint
-trx_rsegf_undo_find_free(
-/*=====================*/
-	trx_rsegf_t*	rsegf,	/*!< in: rollback segment header */
-	mtr_t*		mtr)	/*!< in: mtr */
+trx_rsegf_undo_find_free(const trx_rsegf_t* rsegf)
 {
 	ulint		i;
 	ulint		page_no;
@@ -141,7 +113,7 @@ trx_rsegf_undo_find_free(
 #endif
 
 	for (i = 0; i < max_slots; i++) {
-		page_no = trx_rsegf_get_nth_undo(rsegf, i, mtr);
+		page_no = trx_rsegf_get_nth_undo(rsegf, i);
 
 		if (page_no == FIL_NULL) {
 			return(i);

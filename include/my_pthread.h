@@ -80,7 +80,7 @@ int pthread_cond_signal(pthread_cond_t *cond);
 int pthread_cond_broadcast(pthread_cond_t *cond);
 int pthread_cond_destroy(pthread_cond_t *cond);
 int pthread_attr_init(pthread_attr_t *connect_att);
-int pthread_attr_setstacksize(pthread_attr_t *connect_att,DWORD stack);
+int pthread_attr_setstacksize(pthread_attr_t *connect_att,size_t stack);
 int pthread_attr_destroy(pthread_attr_t *connect_att);
 int my_pthread_once(my_pthread_once_t *once_control,void (*init_routine)(void));
 
@@ -196,7 +196,7 @@ int sigwait(sigset_t *set, int *sig);
 #endif
 
 #if !defined(HAVE_SIGWAIT) && !defined(HAVE_rts_threads) && !defined(sigwait) && !defined(alpha_linux_port) && !defined(_AIX)
-int sigwait(sigset_t *setp, int *sigp);		/* Use our implemention */
+int sigwait(sigset_t *setp, int *sigp);		/* Use our implementation */
 #endif
 
 
@@ -307,7 +307,7 @@ int my_pthread_mutex_trylock(pthread_mutex_t *mutex);
 
 #ifndef set_timespec_nsec
 #define set_timespec_nsec(ABSTIME,NSEC)                                 \
-  set_timespec_time_nsec((ABSTIME), my_hrtime().val*1000 + (NSEC))
+  set_timespec_time_nsec((ABSTIME), my_hrtime_coarse().val*1000 + (NSEC))
 #endif /* !set_timespec_nsec */
 
 /* adapt for two different flavors of struct timespec */
@@ -393,7 +393,7 @@ typedef struct st_safe_mutex_deadlock_t
 
 #ifdef SAFE_MUTEX_DETECT_DESTROY
 /*
-  Used to track the destroying of mutexes. This needs to be a seperate
+  Used to track the destroying of mutexes. This needs to be a separate
   structure because the safe_mutex_t structure could be freed before
   the mutexes are destroyed.
 */
@@ -501,9 +501,9 @@ void safe_mutex_free_deadlock_data(safe_mutex_t *mp);
      MDL subsystem deadlock detector relies on this property for
      its correctness.
   2) They are optimized for uncontended wr-lock/unlock case.
-     This is scenario in which they are most oftenly used
+     This is a scenario in which they are most often used
      within MDL subsystem. Optimizing for it gives significant
-     performance improvements in some of tests involving many
+     performance improvements in some of the tests involving many
      connections.
 
   Another important requirement imposed on this type of rwlock

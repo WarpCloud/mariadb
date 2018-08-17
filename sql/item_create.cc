@@ -43,38 +43,6 @@
 */
 
 /**
-  Adapter for native functions with a variable number of arguments.
-  The main use of this class is to discard the following calls:
-  <code>foo(expr1 AS name1, expr2 AS name2, ...)</code>
-  which are syntactically correct (the syntax can refer to a UDF),
-  but semantically invalid for native functions.
-*/
-
-class Create_native_func : public Create_func
-{
-public:
-  virtual Item *create_func(THD *thd, LEX_CSTRING *name,
-                            List<Item> *item_list);
-
-  /**
-    Builder method, with no arguments.
-    @param thd The current thread
-    @param name The native function name
-    @param item_list The function parameters, none of which are named
-    @return An item representing the function call
-  */
-  virtual Item *create_native(THD *thd, LEX_CSTRING *name,
-                              List<Item> *item_list) = 0;
-
-protected:
-  /** Constructor. */
-  Create_native_func() {}
-  /** Destructor. */
-  virtual ~Create_native_func() {}
-};
-
-
-/**
   Adapter for functions that takes exactly zero arguments.
 */
 
@@ -2227,13 +2195,30 @@ class Create_func_lpad : public Create_native_func
 {
 public:
   virtual Item *create_native(THD *thd, LEX_CSTRING *name,
-                              List<Item> *item_list);
-
+                              List<Item> *item_list)
+  {
+    return thd->variables.sql_mode & MODE_ORACLE ?
+           create_native_oracle(thd, name, item_list) :
+           create_native_std(thd, name, item_list);
+  }
   static Create_func_lpad s_singleton;
 
 protected:
   Create_func_lpad() {}
   virtual ~Create_func_lpad() {}
+  Item *create_native_std(THD *thd, LEX_CSTRING *name, List<Item> *items);
+  Item *create_native_oracle(THD *thd, LEX_CSTRING *name, List<Item> *items);
+};
+
+
+class Create_func_lpad_oracle : public Create_func_lpad
+{
+public:
+  Item *create_native(THD *thd, LEX_CSTRING *name, List<Item> *item_list)
+  {
+    return create_native_oracle(thd, name, item_list);
+  }
+  static Create_func_lpad_oracle s_singleton;
 };
 
 
@@ -2247,6 +2232,19 @@ public:
 protected:
   Create_func_ltrim() {}
   virtual ~Create_func_ltrim() {}
+};
+
+
+class Create_func_ltrim_oracle : public Create_func_arg1
+{
+public:
+  virtual Item *create_1_arg(THD *thd, Item *arg1);
+
+  static Create_func_ltrim_oracle s_singleton;
+
+protected:
+  Create_func_ltrim_oracle() {}
+  virtual ~Create_func_ltrim_oracle() {}
 };
 
 
@@ -2667,13 +2665,30 @@ class Create_func_rpad : public Create_native_func
 {
 public:
   virtual Item *create_native(THD *thd, LEX_CSTRING *name,
-                              List<Item> *item_list);
-
+                              List<Item> *item_list)
+  {
+    return thd->variables.sql_mode & MODE_ORACLE ?
+           create_native_oracle(thd, name, item_list) :
+           create_native_std(thd, name, item_list);
+  }
   static Create_func_rpad s_singleton;
 
 protected:
   Create_func_rpad() {}
   virtual ~Create_func_rpad() {}
+  Item *create_native_std(THD *thd, LEX_CSTRING *name, List<Item> *items);
+  Item *create_native_oracle(THD *thd, LEX_CSTRING *name, List<Item> *items);
+};
+
+
+class Create_func_rpad_oracle : public Create_func_rpad
+{
+public:
+  Item *create_native(THD *thd, LEX_CSTRING *name, List<Item> *item_list)
+  {
+    return create_native_oracle(thd, name, item_list);
+  }
+  static Create_func_rpad_oracle s_singleton;
 };
 
 
@@ -2687,6 +2702,19 @@ public:
 protected:
   Create_func_rtrim() {}
   virtual ~Create_func_rtrim() {}
+};
+
+
+class Create_func_rtrim_oracle : public Create_func_arg1
+{
+public:
+  virtual Item *create_1_arg(THD *thd, Item *arg1);
+
+  static Create_func_rtrim_oracle s_singleton;
+
+protected:
+  Create_func_rtrim_oracle() {}
+  virtual ~Create_func_rtrim_oracle() {}
 };
 
 
@@ -3285,7 +3313,7 @@ Create_qfunc::create_func(THD *thd, LEX_CSTRING *name, List<Item> *item_list)
 {
   LEX_CSTRING db;
 
-  if (! thd->db && ! thd->lex->sphead)
+  if (unlikely(! thd->db.str && ! thd->lex->sphead))
   {
     /*
       The proper error message should be in the lines of:
@@ -3303,7 +3331,7 @@ Create_qfunc::create_func(THD *thd, LEX_CSTRING *name, List<Item> *item_list)
     return NULL;
   }
 
-  if (thd->lex->copy_db_to(&db.str, &db.length))
+  if (thd->lex->copy_db_to(&db))
     return NULL;
 
   return create_with_db(thd, &db, name, false, item_list);
@@ -3316,7 +3344,7 @@ Create_udf_func Create_udf_func::s_singleton;
 Item*
 Create_udf_func::create_func(THD *thd, LEX_CSTRING *name, List<Item> *item_list)
 {
-  udf_func *udf= find_udf(name->str, (uint) name->length);
+  udf_func *udf= find_udf(name->str,  name->length);
   DBUG_ASSERT(udf);
   return create(thd, udf, item_list);
 }
@@ -3431,8 +3459,10 @@ Create_sp_func::create_with_db(THD *thd, LEX_CSTRING *db, LEX_CSTRING *name,
   Item *func= NULL;
   LEX *lex= thd->lex;
   sp_name *qname;
+  const Sp_handler *sph= &sp_handler_function;
+  Database_qualified_name pkgname(&null_clex_str, &null_clex_str);
 
-  if (has_named_parameters(item_list))
+  if (unlikely(has_named_parameters(item_list)))
   {
     /*
       The syntax "db.foo(expr AS p1, expr AS p2, ...) is invalid,
@@ -3451,13 +3481,18 @@ Create_sp_func::create_with_db(THD *thd, LEX_CSTRING *db, LEX_CSTRING *name,
     arg_count= item_list->elements;
 
   qname= new (thd->mem_root) sp_name(db, name, use_explicit_name);
-  sp_handler_function.add_used_routine(lex, thd, qname);
-
+  if (unlikely(sph->sp_resolve_package_routine(thd, thd->lex->sphead,
+                                               qname, &sph, &pkgname)))
+    return NULL;
+  sph->add_used_routine(lex, thd, qname);
+  if (pkgname.m_name.length)
+    sp_handler_package_body.add_used_routine(lex, thd, &pkgname);
   if (arg_count > 0)
-    func= new (thd->mem_root) Item_func_sp(thd, lex->current_context(), qname,
-                                           *item_list);
+    func= new (thd->mem_root) Item_func_sp(thd, lex->current_context(),
+                                           qname, sph, *item_list);
   else
-    func= new (thd->mem_root) Item_func_sp(thd, lex->current_context(), qname);
+    func= new (thd->mem_root) Item_func_sp(thd, lex->current_context(),
+                                           qname, sph);
 
   lex->safe_to_cache_query= 0;
   return func;
@@ -3467,7 +3502,7 @@ Create_sp_func::create_with_db(THD *thd, LEX_CSTRING *db, LEX_CSTRING *name,
 Item*
 Create_native_func::create_func(THD *thd, LEX_CSTRING *name, List<Item> *item_list)
 {
-  if (has_named_parameters(item_list))
+  if (unlikely(has_named_parameters(item_list)))
   {
     my_error(ER_WRONG_PARAMETERS_TO_NATIVE_FCT, MYF(0), name->str);
     return NULL;
@@ -3485,7 +3520,7 @@ Create_func_arg0::create_func(THD *thd, LEX_CSTRING *name, List<Item> *item_list
   if (item_list != NULL)
     arg_count= item_list->elements;
 
-  if (arg_count != 0)
+  if (unlikely(arg_count != 0))
   {
     my_error(ER_WRONG_PARAMCOUNT_TO_NATIVE_FCT, MYF(0), name->str);
     return NULL;
@@ -3503,7 +3538,7 @@ Create_func_arg1::create_func(THD *thd, LEX_CSTRING *name, List<Item> *item_list
   if (item_list)
     arg_count= item_list->elements;
 
-  if (arg_count != 1)
+  if (unlikely(arg_count != 1))
   {
     my_error(ER_WRONG_PARAMCOUNT_TO_NATIVE_FCT, MYF(0), name->str);
     return NULL;
@@ -3511,7 +3546,7 @@ Create_func_arg1::create_func(THD *thd, LEX_CSTRING *name, List<Item> *item_list
 
   Item *param_1= item_list->pop();
 
-  if (! param_1->is_autogenerated_name)
+  if (unlikely(! param_1->is_autogenerated_name))
   {
     my_error(ER_WRONG_PARAMETERS_TO_NATIVE_FCT, MYF(0), name->str);
     return NULL;
@@ -3529,7 +3564,7 @@ Create_func_arg2::create_func(THD *thd, LEX_CSTRING *name, List<Item> *item_list
   if (item_list)
     arg_count= item_list->elements;
 
-  if (arg_count != 2)
+  if (unlikely(arg_count != 2))
   {
     my_error(ER_WRONG_PARAMCOUNT_TO_NATIVE_FCT, MYF(0), name->str);
     return NULL;
@@ -3538,8 +3573,8 @@ Create_func_arg2::create_func(THD *thd, LEX_CSTRING *name, List<Item> *item_list
   Item *param_1= item_list->pop();
   Item *param_2= item_list->pop();
 
-  if (   (! param_1->is_autogenerated_name)
-      || (! param_2->is_autogenerated_name))
+  if (unlikely(!param_1->is_autogenerated_name ||
+               !param_2->is_autogenerated_name))
   {
     my_error(ER_WRONG_PARAMETERS_TO_NATIVE_FCT, MYF(0), name->str);
     return NULL;
@@ -3557,7 +3592,7 @@ Create_func_arg3::create_func(THD *thd, LEX_CSTRING *name, List<Item> *item_list
   if (item_list)
     arg_count= item_list->elements;
 
-  if (arg_count != 3)
+  if (unlikely(arg_count != 3))
   {
     my_error(ER_WRONG_PARAMCOUNT_TO_NATIVE_FCT, MYF(0), name->str);
     return NULL;
@@ -3567,9 +3602,9 @@ Create_func_arg3::create_func(THD *thd, LEX_CSTRING *name, List<Item> *item_list
   Item *param_2= item_list->pop();
   Item *param_3= item_list->pop();
 
-  if (   (! param_1->is_autogenerated_name)
-      || (! param_2->is_autogenerated_name)
-      || (! param_3->is_autogenerated_name))
+  if (unlikely(!param_1->is_autogenerated_name ||
+               !param_2->is_autogenerated_name ||
+               !param_3->is_autogenerated_name))
   {
     my_error(ER_WRONG_PARAMETERS_TO_NATIVE_FCT, MYF(0), name->str);
     return NULL;
@@ -3730,7 +3765,7 @@ Item*
 Create_func_binlog_gtid_pos::create_2_arg(THD *thd, Item *arg1, Item *arg2)
 {
 #ifdef HAVE_REPLICATION
-  if (!mysql_bin_log.is_open())
+  if (unlikely(!mysql_bin_log.is_open()))
 #endif
   {
     my_error(ER_NO_BINARY_LOGGING, MYF(0));
@@ -3868,7 +3903,7 @@ Create_func_concat::create_native(THD *thd, LEX_CSTRING *name,
   if (item_list != NULL)
     arg_count= item_list->elements;
 
-  if (arg_count < 1)
+  if (unlikely(arg_count < 1))
   {
     my_error(ER_WRONG_PARAMCOUNT_TO_NATIVE_FCT, MYF(0), name->str);
     return NULL;
@@ -3891,7 +3926,7 @@ Create_func_concat_operator_oracle::create_native(THD *thd, LEX_CSTRING *name,
   if (item_list != NULL)
     arg_count= item_list->elements;
 
-  if (arg_count < 1)
+  if (unlikely(arg_count < 1))
   {
     my_error(ER_WRONG_PARAMCOUNT_TO_NATIVE_FCT, MYF(0), name->str);
     return NULL;
@@ -3915,7 +3950,7 @@ Create_func_decode_oracle::create_native(THD *thd, LEX_CSTRING *name,
                                          List<Item> *item_list)
 {
   uint arg_count= item_list ? item_list->elements : 0;
-  if (arg_count < 3)
+  if (unlikely(arg_count < 3))
   {
     my_error(ER_WRONG_PARAMCOUNT_TO_NATIVE_FCT, MYF(0), name->str);
     return NULL;
@@ -3935,7 +3970,7 @@ Create_func_concat_ws::create_native(THD *thd, LEX_CSTRING *name,
     arg_count= item_list->elements;
 
   /* "WS" stands for "With Separator": this function takes 2+ arguments */
-  if (arg_count < 2)
+  if (unlikely(arg_count < 2))
   {
     my_error(ER_WRONG_PARAMCOUNT_TO_NATIVE_FCT, MYF(0), name->str);
     return NULL;
@@ -4237,7 +4272,7 @@ Create_func_elt::create_native(THD *thd, LEX_CSTRING *name,
   if (item_list != NULL)
     arg_count= item_list->elements;
 
-  if (arg_count < 2)
+  if (unlikely(arg_count < 2))
   {
     my_error(ER_WRONG_PARAMCOUNT_TO_NATIVE_FCT, MYF(0), name->str);
     return NULL;
@@ -4433,7 +4468,7 @@ Create_func_field::create_native(THD *thd, LEX_CSTRING *name,
   if (item_list != NULL)
     arg_count= item_list->elements;
 
-  if (arg_count < 2)
+  if (unlikely(arg_count < 2))
   {
     my_error(ER_WRONG_PARAMCOUNT_TO_NATIVE_FCT, MYF(0), name->str);
     return NULL;
@@ -4806,7 +4841,7 @@ Create_func_greatest::create_native(THD *thd, LEX_CSTRING *name,
   if (item_list != NULL)
     arg_count= item_list->elements;
 
-  if (arg_count < 2)
+  if (unlikely(arg_count < 2))
   {
     my_error(ER_WRONG_PARAMCOUNT_TO_NATIVE_FCT, MYF(0), name->str);
     return NULL;
@@ -5083,6 +5118,7 @@ Create_func_json_exists Create_func_json_exists::s_singleton;
 Item*
 Create_func_json_exists::create_2_arg(THD *thd, Item *arg1, Item *arg2)
 {
+  status_var_increment(current_thd->status_var.feature_json);
   return new (thd->mem_root) Item_func_json_exists(thd, arg1, arg2);
 }
 
@@ -5099,7 +5135,7 @@ Create_func_json_detailed::create_native(THD *thd, LEX_CSTRING *name,
   if (item_list != NULL)
     arg_count= item_list->elements;
 
-  if (arg_count < 1 || arg_count > 2 /* json_doc, [path]...*/)
+  if (unlikely(arg_count < 1 || arg_count > 2 /* json_doc, [path]...*/))
   {
     my_error(ER_WRONG_PARAMCOUNT_TO_NATIVE_FCT, MYF(0), name->str);
   }
@@ -5108,6 +5144,7 @@ Create_func_json_detailed::create_native(THD *thd, LEX_CSTRING *name,
     func= new (thd->mem_root) Item_func_json_format(thd, *item_list);
   }
 
+  status_var_increment(current_thd->status_var.feature_json);
   return func;
 }
 
@@ -5117,6 +5154,7 @@ Create_func_json_loose Create_func_json_loose::s_singleton;
 Item*
 Create_func_json_loose::create_1_arg(THD *thd, Item *arg1)
 {
+  status_var_increment(current_thd->status_var.feature_json);
   return new (thd->mem_root) Item_func_json_format(thd, arg1,
                Item_func_json_format::LOOSE);
 }
@@ -5127,6 +5165,7 @@ Create_func_json_compact Create_func_json_compact::s_singleton;
 Item*
 Create_func_json_compact::create_1_arg(THD *thd, Item *arg1)
 {
+  status_var_increment(current_thd->status_var.feature_json);
   return new (thd->mem_root) Item_func_json_format(thd, arg1,
                Item_func_json_format::COMPACT);
 }
@@ -5137,6 +5176,7 @@ Create_func_json_valid Create_func_json_valid::s_singleton;
 Item*
 Create_func_json_valid::create_1_arg(THD *thd, Item *arg1)
 {
+  status_var_increment(current_thd->status_var.feature_json);
   return new (thd->mem_root) Item_func_json_valid(thd, arg1);
 }
 
@@ -5146,6 +5186,7 @@ Create_func_json_type Create_func_json_type::s_singleton;
 Item*
 Create_func_json_type::create_1_arg(THD *thd, Item *arg1)
 {
+  status_var_increment(current_thd->status_var.feature_json);
   return new (thd->mem_root) Item_func_json_type(thd, arg1);
 }
 
@@ -5155,6 +5196,7 @@ Create_func_json_depth Create_func_json_depth::s_singleton;
 Item*
 Create_func_json_depth::create_1_arg(THD *thd, Item *arg1)
 {
+  status_var_increment(current_thd->status_var.feature_json);
   return new (thd->mem_root) Item_func_json_depth(thd, arg1);
 }
 
@@ -5164,6 +5206,7 @@ Create_func_json_value Create_func_json_value::s_singleton;
 Item*
 Create_func_json_value::create_2_arg(THD *thd, Item *arg1, Item *arg2)
 {
+  status_var_increment(current_thd->status_var.feature_json);
   return new (thd->mem_root) Item_func_json_value(thd, arg1, arg2);
 }
 
@@ -5173,6 +5216,7 @@ Create_func_json_query Create_func_json_query::s_singleton;
 Item*
 Create_func_json_query::create_2_arg(THD *thd, Item *arg1, Item *arg2)
 {
+  status_var_increment(current_thd->status_var.feature_json);
   return new (thd->mem_root) Item_func_json_query(thd, arg1, arg2);
 }
 
@@ -5182,6 +5226,7 @@ Create_func_json_quote Create_func_json_quote::s_singleton;
 Item*
 Create_func_json_quote::create_1_arg(THD *thd, Item *arg1)
 {
+  status_var_increment(current_thd->status_var.feature_json);
   return new (thd->mem_root) Item_func_json_quote(thd, arg1);
 }
 
@@ -5191,6 +5236,7 @@ Create_func_json_unquote Create_func_json_unquote::s_singleton;
 Item*
 Create_func_json_unquote::create_1_arg(THD *thd, Item *arg1)
 {
+  status_var_increment(current_thd->status_var.feature_json);
   return new (thd->mem_root) Item_func_json_unquote(thd, arg1);
 }
 
@@ -5221,6 +5267,7 @@ Create_func_json_array::create_native(THD *thd, LEX_CSTRING *name,
     func= new (thd->mem_root) Item_func_json_array(thd);
   }
 
+  status_var_increment(current_thd->status_var.feature_json);
   return func;
 }
 
@@ -5237,7 +5284,7 @@ Create_func_json_array_append::create_native(THD *thd, LEX_CSTRING *name,
   if (item_list != NULL)
     arg_count= item_list->elements;
 
-  if (arg_count < 3 || (arg_count & 1) == 0 /*is even*/)
+  if (unlikely(arg_count < 3 || (arg_count & 1) == 0 /*is even*/))
   {
     my_error(ER_WRONG_PARAMCOUNT_TO_NATIVE_FCT, MYF(0), name->str);
   }
@@ -5246,6 +5293,7 @@ Create_func_json_array_append::create_native(THD *thd, LEX_CSTRING *name,
     func= new (thd->mem_root) Item_func_json_array_append(thd, *item_list);
   }
 
+  status_var_increment(current_thd->status_var.feature_json);
   return func;
 }
 
@@ -5262,7 +5310,7 @@ Create_func_json_array_insert::create_native(THD *thd, LEX_CSTRING *name,
   if (item_list != NULL)
     arg_count= item_list->elements;
 
-  if (arg_count < 3 || (arg_count & 1) == 0 /*is even*/)
+  if (unlikely(arg_count < 3 || (arg_count & 1) == 0 /*is even*/))
   {
     my_error(ER_WRONG_PARAMCOUNT_TO_NATIVE_FCT, MYF(0), name->str);
   }
@@ -5271,6 +5319,7 @@ Create_func_json_array_insert::create_native(THD *thd, LEX_CSTRING *name,
     func= new (thd->mem_root) Item_func_json_array_insert(thd, *item_list);
   }
 
+  status_var_increment(current_thd->status_var.feature_json);
   return func;
 }
 
@@ -5287,7 +5336,7 @@ Create_func_json_insert::create_native(THD *thd, LEX_CSTRING *name,
   if (item_list != NULL)
     arg_count= item_list->elements;
 
-  if (arg_count < 3 || (arg_count & 1) == 0 /*is even*/)
+  if (unlikely(arg_count < 3 || (arg_count & 1) == 0 /*is even*/))
   {
     my_error(ER_WRONG_PARAMCOUNT_TO_NATIVE_FCT, MYF(0), name->str);
   }
@@ -5297,6 +5346,7 @@ Create_func_json_insert::create_native(THD *thd, LEX_CSTRING *name,
                                                     thd, *item_list);
   }
 
+  status_var_increment(current_thd->status_var.feature_json);
   return func;
 }
 
@@ -5313,7 +5363,7 @@ Create_func_json_set::create_native(THD *thd, LEX_CSTRING *name,
   if (item_list != NULL)
     arg_count= item_list->elements;
 
-  if (arg_count < 3 || (arg_count & 1) == 0 /*is even*/)
+  if (unlikely(arg_count < 3 || (arg_count & 1) == 0 /*is even*/))
   {
     my_error(ER_WRONG_PARAMCOUNT_TO_NATIVE_FCT, MYF(0), name->str);
   }
@@ -5323,6 +5373,7 @@ Create_func_json_set::create_native(THD *thd, LEX_CSTRING *name,
                                                     thd, *item_list);
   }
 
+  status_var_increment(current_thd->status_var.feature_json);
   return func;
 }
 
@@ -5339,7 +5390,7 @@ Create_func_json_replace::create_native(THD *thd, LEX_CSTRING *name,
   if (item_list != NULL)
     arg_count= item_list->elements;
 
-  if (arg_count < 3 || (arg_count & 1) == 0 /*is even*/)
+  if (unlikely(arg_count < 3 || (arg_count & 1) == 0 /*is even*/))
   {
     my_error(ER_WRONG_PARAMCOUNT_TO_NATIVE_FCT, MYF(0), name->str);
   }
@@ -5349,6 +5400,7 @@ Create_func_json_replace::create_native(THD *thd, LEX_CSTRING *name,
                                                     thd, *item_list);
   }
 
+  status_var_increment(current_thd->status_var.feature_json);
   return func;
 }
 
@@ -5365,7 +5417,7 @@ Create_func_json_remove::create_native(THD *thd, LEX_CSTRING *name,
   if (item_list != NULL)
     arg_count= item_list->elements;
 
-  if (arg_count < 2 /*json_doc, path [,path]*/)
+  if (unlikely(arg_count < 2 /*json_doc, path [,path]*/))
   {
     my_error(ER_WRONG_PARAMCOUNT_TO_NATIVE_FCT, MYF(0), name->str);
   }
@@ -5374,6 +5426,7 @@ Create_func_json_remove::create_native(THD *thd, LEX_CSTRING *name,
     func= new (thd->mem_root) Item_func_json_remove(thd, *item_list);
   }
 
+  status_var_increment(current_thd->status_var.feature_json);
   return func;
 }
 
@@ -5390,7 +5443,7 @@ Create_func_json_object::create_native(THD *thd, LEX_CSTRING *name,
   if (item_list != NULL)
   {
     arg_count= item_list->elements;
-    if ((arg_count & 1) != 0 /*is odd*/)
+    if (unlikely((arg_count & 1) != 0 /*is odd*/))
     {
       my_error(ER_WRONG_PARAMCOUNT_TO_NATIVE_FCT, MYF(0), name->str);
       func= NULL;
@@ -5406,6 +5459,7 @@ Create_func_json_object::create_native(THD *thd, LEX_CSTRING *name,
     func= new (thd->mem_root) Item_func_json_object(thd);
   }
 
+  status_var_increment(current_thd->status_var.feature_json);
   return func;
 }
 
@@ -5419,8 +5473,8 @@ Create_func_json_length::create_native(THD *thd, LEX_CSTRING *name,
   Item *func;
   int arg_count;
 
-  if (item_list == NULL ||
-      (arg_count= item_list->elements) == 0)
+  if (unlikely(item_list == NULL ||
+               (arg_count= item_list->elements) == 0))
   {
     my_error(ER_WRONG_PARAMCOUNT_TO_NATIVE_FCT, MYF(0), name->str);
     func= NULL;
@@ -5430,6 +5484,7 @@ Create_func_json_length::create_native(THD *thd, LEX_CSTRING *name,
     func= new (thd->mem_root) Item_func_json_length(thd, *item_list);
   }
 
+  status_var_increment(current_thd->status_var.feature_json);
   return func;
 }
 
@@ -5443,8 +5498,8 @@ Create_func_json_merge::create_native(THD *thd, LEX_CSTRING *name,
   Item *func;
   int arg_count;
 
-  if (item_list == NULL ||
-      (arg_count= item_list->elements) < 2) // json, json
+  if (unlikely(item_list == NULL ||
+               (arg_count= item_list->elements) < 2)) // json, json
   {
     my_error(ER_WRONG_PARAMCOUNT_TO_NATIVE_FCT, MYF(0), name->str);
     func= NULL;
@@ -5454,6 +5509,7 @@ Create_func_json_merge::create_native(THD *thd, LEX_CSTRING *name,
     func= new (thd->mem_root) Item_func_json_merge(thd, *item_list);
   }
 
+  status_var_increment(current_thd->status_var.feature_json);
   return func;
 }
 
@@ -5470,7 +5526,7 @@ Create_func_json_contains::create_native(THD *thd, LEX_CSTRING *name,
   if (item_list != NULL)
     arg_count= item_list->elements;
 
-  if (arg_count == 2 || arg_count == 3/* json_doc, val, [path] */)
+  if (unlikely(arg_count == 2 || arg_count == 3/* json_doc, val, [path] */))
   {
     func= new (thd->mem_root) Item_func_json_contains(thd, *item_list);
   }
@@ -5479,6 +5535,7 @@ Create_func_json_contains::create_native(THD *thd, LEX_CSTRING *name,
     my_error(ER_WRONG_PARAMCOUNT_TO_NATIVE_FCT, MYF(0), name->str);
   }
 
+  status_var_increment(current_thd->status_var.feature_json);
   return func;
 }
 
@@ -5495,7 +5552,7 @@ Create_func_json_keys::create_native(THD *thd, LEX_CSTRING *name,
   if (item_list != NULL)
     arg_count= item_list->elements;
 
-  if (arg_count < 1 || arg_count > 2 /* json_doc, [path]...*/)
+  if (unlikely(arg_count < 1 || arg_count > 2 /* json_doc, [path]...*/))
   {
     my_error(ER_WRONG_PARAMCOUNT_TO_NATIVE_FCT, MYF(0), name->str);
   }
@@ -5504,6 +5561,7 @@ Create_func_json_keys::create_native(THD *thd, LEX_CSTRING *name,
     func= new (thd->mem_root) Item_func_json_keys(thd, *item_list);
   }
 
+  status_var_increment(current_thd->status_var.feature_json);
   return func;
 }
 
@@ -5520,7 +5578,7 @@ Create_func_json_contains_path::create_native(THD *thd, LEX_CSTRING *name,
   if (item_list != NULL)
     arg_count= item_list->elements;
 
-  if (arg_count < 3 /* json_doc, one_or_all, path, [path]...*/)
+  if (unlikely(arg_count < 3 /* json_doc, one_or_all, path, [path]...*/))
   {
     my_error(ER_WRONG_PARAMCOUNT_TO_NATIVE_FCT, MYF(0), name->str);
   }
@@ -5529,6 +5587,7 @@ Create_func_json_contains_path::create_native(THD *thd, LEX_CSTRING *name,
     func= new (thd->mem_root) Item_func_json_contains_path(thd, *item_list);
   }
 
+  status_var_increment(current_thd->status_var.feature_json);
   return func;
 }
 
@@ -5545,7 +5604,7 @@ Create_func_json_extract::create_native(THD *thd, LEX_CSTRING *name,
   if (item_list != NULL)
     arg_count= item_list->elements;
 
-  if (arg_count < 2 /* json_doc, path, [path]...*/)
+  if (unlikely(arg_count < 2 /* json_doc, path, [path]...*/))
   {
     my_error(ER_WRONG_PARAMCOUNT_TO_NATIVE_FCT, MYF(0), name->str);
   }
@@ -5554,6 +5613,7 @@ Create_func_json_extract::create_native(THD *thd, LEX_CSTRING *name,
     func= new (thd->mem_root) Item_func_json_extract(thd, *item_list);
   }
 
+  status_var_increment(current_thd->status_var.feature_json);
   return func;
 }
 
@@ -5570,7 +5630,7 @@ Create_func_json_search::create_native(THD *thd, LEX_CSTRING *name,
   if (item_list != NULL)
     arg_count= item_list->elements;
 
-  if (arg_count < 3 /* json_doc, one_or_all, search_str, [escape_char[, path]...*/)
+  if (unlikely(arg_count < 3 /* json_doc, one_or_all, search_str, [escape_char[, path]...*/))
   {
     my_error(ER_WRONG_PARAMCOUNT_TO_NATIVE_FCT, MYF(0), name->str);
   }
@@ -5579,6 +5639,7 @@ Create_func_json_search::create_native(THD *thd, LEX_CSTRING *name,
     func= new (thd->mem_root) Item_func_json_search(thd, *item_list);
   }
 
+  status_var_increment(current_thd->status_var.feature_json);
   return func;
 }
 
@@ -5640,7 +5701,7 @@ Create_func_least::create_native(THD *thd, LEX_CSTRING *name,
   if (item_list != NULL)
     arg_count= item_list->elements;
 
-  if (arg_count < 2)
+  if (unlikely(arg_count < 2))
   {
     my_error(ER_WRONG_PARAMCOUNT_TO_NATIVE_FCT, MYF(0), name->str);
     return NULL;
@@ -5809,9 +5870,11 @@ Create_func_log2::create_1_arg(THD *thd, Item *arg1)
 
 Create_func_lpad Create_func_lpad::s_singleton;
 
+Create_func_lpad_oracle Create_func_lpad_oracle::s_singleton;
+
 Item*
-Create_func_lpad::create_native(THD *thd, LEX_CSTRING *name,
-                                List<Item> *item_list)
+Create_func_lpad::create_native_std(THD *thd, LEX_CSTRING *name,
+                                    List<Item> *item_list)
 {
   Item *func= NULL;
   int arg_count= item_list ? item_list->elements : 0;
@@ -5841,12 +5904,49 @@ Create_func_lpad::create_native(THD *thd, LEX_CSTRING *name,
 }
 
 
+Item*
+Create_func_lpad::create_native_oracle(THD *thd, LEX_CSTRING *name,
+                                       List<Item> *item_list)
+{
+  int arg_count= item_list ? item_list->elements : 0;
+  switch (arg_count) {
+  case 2:
+  {
+    Item *param_1= item_list->pop();
+    Item *param_2= item_list->pop();
+    return new (thd->mem_root) Item_func_lpad_oracle(thd, param_1, param_2);
+  }
+  case 3:
+  {
+    Item *param_1= item_list->pop();
+    Item *param_2= item_list->pop();
+    Item *param_3= item_list->pop();
+    return new (thd->mem_root) Item_func_lpad_oracle(thd, param_1,
+                                                     param_2, param_3);
+  }
+  default:
+    my_error(ER_WRONG_PARAMCOUNT_TO_NATIVE_FCT, MYF(0), name->str);
+    break;
+  }
+  return NULL;
+}
+
+
 Create_func_ltrim Create_func_ltrim::s_singleton;
 
 Item*
 Create_func_ltrim::create_1_arg(THD *thd, Item *arg1)
 {
-  return new (thd->mem_root) Item_func_ltrim(thd, arg1);
+  return Lex_trim(TRIM_LEADING, arg1).make_item_func_trim(thd);
+}
+
+
+Create_func_ltrim_oracle Create_func_ltrim_oracle::s_singleton;
+
+Item*
+Create_func_ltrim_oracle::create_1_arg(THD *thd, Item *arg1)
+{
+  return new (thd->mem_root) Item_func_ltrim_oracle(thd, arg1);
 }
 
 
@@ -5879,7 +5979,7 @@ Create_func_make_set::create_native(THD *thd, LEX_CSTRING *name,
   if (item_list != NULL)
     arg_count= item_list->elements;
 
-  if (arg_count < 2)
+  if (unlikely(arg_count < 2))
   {
     my_error(ER_WRONG_PARAMCOUNT_TO_NATIVE_FCT, MYF(0), name->str);
     return NULL;
@@ -5904,7 +6004,7 @@ Create_func_master_pos_wait::create_native(THD *thd, LEX_CSTRING *name,
   if (item_list != NULL)
     arg_count= item_list->elements;
 
-  if (arg_count < 2 || arg_count > 4)
+  if (unlikely(arg_count < 2 || arg_count > 4))
   {
     my_error(ER_WRONG_PARAMCOUNT_TO_NATIVE_FCT, MYF(0), name->str);
     return func;
@@ -5954,7 +6054,7 @@ Create_func_master_gtid_wait::create_native(THD *thd, LEX_CSTRING *name,
   if (item_list != NULL)
     arg_count= item_list->elements;
 
-  if (arg_count < 1 || arg_count > 2)
+  if (unlikely(arg_count < 1 || arg_count > 2))
   {
     my_error(ER_WRONG_PARAMCOUNT_TO_NATIVE_FCT, MYF(0), name->str);
     return func;
@@ -6306,9 +6406,11 @@ Create_func_round::create_native(THD *thd, LEX_CSTRING *name,
 
 Create_func_rpad Create_func_rpad::s_singleton;
 
+Create_func_rpad_oracle Create_func_rpad_oracle::s_singleton;
+
 Item*
-Create_func_rpad::create_native(THD *thd, LEX_CSTRING *name,
-                                List<Item> *item_list)
+Create_func_rpad::create_native_std(THD *thd, LEX_CSTRING *name,
+                                    List<Item> *item_list)
 {
   Item *func= NULL;
   int arg_count= item_list ? item_list->elements : 0;
@@ -6338,12 +6440,49 @@ Create_func_rpad::create_native(THD *thd, LEX_CSTRING *name,
 }
 
 
+Item*
+Create_func_rpad::create_native_oracle(THD *thd, LEX_CSTRING *name,
+                                       List<Item> *item_list)
+{
+  int arg_count= item_list ? item_list->elements : 0;
+  switch (arg_count) {
+  case 2:
+  {
+    Item *param_1= item_list->pop();
+    Item *param_2= item_list->pop();
+    return new (thd->mem_root) Item_func_rpad_oracle(thd, param_1, param_2);
+  }
+  case 3:
+  {
+    Item *param_1= item_list->pop();
+    Item *param_2= item_list->pop();
+    Item *param_3= item_list->pop();
+    return new (thd->mem_root) Item_func_rpad_oracle(thd, param_1,
+                                                     param_2, param_3);
+  }
+  default:
+    my_error(ER_WRONG_PARAMCOUNT_TO_NATIVE_FCT, MYF(0), name->str);
+    break;
+  }
+  return NULL;
+}
+
+
 Create_func_rtrim Create_func_rtrim::s_singleton;
 
 Item*
 Create_func_rtrim::create_1_arg(THD *thd, Item *arg1)
 {
-  return new (thd->mem_root) Item_func_rtrim(thd, arg1);
+  return Lex_trim(TRIM_TRAILING, arg1).make_item_func_trim(thd);
+}
+
+
+Create_func_rtrim_oracle Create_func_rtrim_oracle::s_singleton;
+
+Item*
+Create_func_rtrim_oracle::create_1_arg(THD *thd, Item *arg1)
+{
+  return new (thd->mem_root) Item_func_rtrim_oracle(thd, arg1);
 }
 
 
@@ -6827,12 +6966,6 @@ Create_func_year_week::create_native(THD *thd, LEX_CSTRING *name,
 }
 
 
-struct Native_func_registry
-{
-  LEX_CSTRING name;
-  Create_func *builder;
-};
-
 #define BUILDER(F) & F::s_singleton
 
 #ifdef HAVE_SPATIAL
@@ -6854,347 +6987,351 @@ struct Native_func_registry
 
 static Native_func_registry func_array[] =
 {
-  { { C_STRING_WITH_LEN("ABS") }, BUILDER(Create_func_abs)},
-  { { C_STRING_WITH_LEN("ACOS") }, BUILDER(Create_func_acos)},
-  { { C_STRING_WITH_LEN("ADDTIME") }, BUILDER(Create_func_addtime)},
-  { { C_STRING_WITH_LEN("AES_DECRYPT") }, BUILDER(Create_func_aes_decrypt)},
-  { { C_STRING_WITH_LEN("AES_ENCRYPT") }, BUILDER(Create_func_aes_encrypt)},
-  { { C_STRING_WITH_LEN("AREA") }, GEOM_BUILDER(Create_func_area)},
-  { { C_STRING_WITH_LEN("ASBINARY") }, GEOM_BUILDER(Create_func_as_wkb)},
-  { { C_STRING_WITH_LEN("ASIN") }, BUILDER(Create_func_asin)},
-  { { C_STRING_WITH_LEN("ASTEXT") }, GEOM_BUILDER(Create_func_as_wkt)},
-  { { C_STRING_WITH_LEN("ASWKB") }, GEOM_BUILDER(Create_func_as_wkb)},
-  { { C_STRING_WITH_LEN("ASWKT") }, GEOM_BUILDER(Create_func_as_wkt)},
-  { { C_STRING_WITH_LEN("ATAN") }, BUILDER(Create_func_atan)},
-  { { C_STRING_WITH_LEN("ATAN2") }, BUILDER(Create_func_atan)},
-  { { C_STRING_WITH_LEN("BENCHMARK") }, BUILDER(Create_func_benchmark)},
-  { { C_STRING_WITH_LEN("BIN") }, BUILDER(Create_func_bin)},
-  { { C_STRING_WITH_LEN("BINLOG_GTID_POS") }, BUILDER(Create_func_binlog_gtid_pos)},
-  { { C_STRING_WITH_LEN("BIT_COUNT") }, BUILDER(Create_func_bit_count)},
-  { { C_STRING_WITH_LEN("BIT_LENGTH") }, BUILDER(Create_func_bit_length)},
-  { { C_STRING_WITH_LEN("BOUNDARY") }, GEOM_BUILDER(Create_func_boundary)},
-  { { C_STRING_WITH_LEN("BUFFER") }, GEOM_BUILDER(Create_func_buffer)},
-  { { C_STRING_WITH_LEN("CEIL") }, BUILDER(Create_func_ceiling)},
-  { { C_STRING_WITH_LEN("CEILING") }, BUILDER(Create_func_ceiling)},
-  { { C_STRING_WITH_LEN("CENTROID") }, GEOM_BUILDER(Create_func_centroid)},
-  { { C_STRING_WITH_LEN("CHARACTER_LENGTH") }, BUILDER(Create_func_char_length)},
-  { { C_STRING_WITH_LEN("CHAR_LENGTH") }, BUILDER(Create_func_char_length)},
-  { { C_STRING_WITH_LEN("CHR") }, BUILDER(Create_func_chr)},
-  { { C_STRING_WITH_LEN("COERCIBILITY") }, BUILDER(Create_func_coercibility)},
-  { { C_STRING_WITH_LEN("COLUMN_CHECK") }, BUILDER(Create_func_dyncol_check)},
-  { { C_STRING_WITH_LEN("COLUMN_EXISTS") }, BUILDER(Create_func_dyncol_exists)},
-  { { C_STRING_WITH_LEN("COLUMN_LIST") }, BUILDER(Create_func_dyncol_list)},
-  { { C_STRING_WITH_LEN("COLUMN_JSON") }, BUILDER(Create_func_dyncol_json)},
-  { { C_STRING_WITH_LEN("COMPRESS") }, BUILDER(Create_func_compress)},
-  { { C_STRING_WITH_LEN("CONCAT") }, BUILDER(Create_func_concat)},
-  { { C_STRING_WITH_LEN("CONCAT_OPERATOR_ORACLE") }, BUILDER(Create_func_concat_operator_oracle)},
-  { { C_STRING_WITH_LEN("CONCAT_WS") }, BUILDER(Create_func_concat_ws)},
-  { { C_STRING_WITH_LEN("CONNECTION_ID") }, BUILDER(Create_func_connection_id)},
-  { { C_STRING_WITH_LEN("CONV") }, BUILDER(Create_func_conv)},
-  { { C_STRING_WITH_LEN("CONVERT_TZ") }, BUILDER(Create_func_convert_tz)},
-  { { C_STRING_WITH_LEN("CONVEXHULL") }, GEOM_BUILDER(Create_func_convexhull)},
-  { { C_STRING_WITH_LEN("COS") }, BUILDER(Create_func_cos)},
-  { { C_STRING_WITH_LEN("COT") }, BUILDER(Create_func_cot)},
-  { { C_STRING_WITH_LEN("CRC32") }, BUILDER(Create_func_crc32)},
-  { { C_STRING_WITH_LEN("CROSSES") }, GEOM_BUILDER(Create_func_crosses)},
-  { { C_STRING_WITH_LEN("DATEDIFF") }, BUILDER(Create_func_datediff)},
-  { { C_STRING_WITH_LEN("DAYNAME") }, BUILDER(Create_func_dayname)},
-  { { C_STRING_WITH_LEN("DAYOFMONTH") }, BUILDER(Create_func_dayofmonth)},
-  { { C_STRING_WITH_LEN("DAYOFWEEK") }, BUILDER(Create_func_dayofweek)},
-  { { C_STRING_WITH_LEN("DAYOFYEAR") }, BUILDER(Create_func_dayofyear)},
-  { { C_STRING_WITH_LEN("DEGREES") }, BUILDER(Create_func_degrees)},
-  { { C_STRING_WITH_LEN("DECODE_HISTOGRAM") }, BUILDER(Create_func_decode_histogram)},
-  { { C_STRING_WITH_LEN("DECODE_ORACLE") }, BUILDER(Create_func_decode_oracle)},
-  { { C_STRING_WITH_LEN("DES_DECRYPT") }, BUILDER(Create_func_des_decrypt)},
-  { { C_STRING_WITH_LEN("DES_ENCRYPT") }, BUILDER(Create_func_des_encrypt)},
-  { { C_STRING_WITH_LEN("DIMENSION") }, GEOM_BUILDER(Create_func_dimension)},
-  { { C_STRING_WITH_LEN("DISJOINT") }, GEOM_BUILDER(Create_func_mbr_disjoint)},
-  { { C_STRING_WITH_LEN("ELT") }, BUILDER(Create_func_elt)},
-  { { C_STRING_WITH_LEN("ENCODE") }, BUILDER(Create_func_encode)},
-  { { C_STRING_WITH_LEN("ENCRYPT") }, BUILDER(Create_func_encrypt)},
-  { { C_STRING_WITH_LEN("ENDPOINT") }, GEOM_BUILDER(Create_func_endpoint)},
-  { { C_STRING_WITH_LEN("ENVELOPE") }, GEOM_BUILDER(Create_func_envelope)},
-  { { C_STRING_WITH_LEN("EQUALS") }, GEOM_BUILDER(Create_func_equals)},
-  { { C_STRING_WITH_LEN("EXP") }, BUILDER(Create_func_exp)},
-  { { C_STRING_WITH_LEN("EXPORT_SET") }, BUILDER(Create_func_export_set)},
-  { { C_STRING_WITH_LEN("EXTERIORRING") }, GEOM_BUILDER(Create_func_exteriorring)},
-  { { C_STRING_WITH_LEN("EXTRACTVALUE") }, BUILDER(Create_func_xml_extractvalue)},
-  { { C_STRING_WITH_LEN("FIELD") }, BUILDER(Create_func_field)},
-  { { C_STRING_WITH_LEN("FIND_IN_SET") }, BUILDER(Create_func_find_in_set)},
-  { { C_STRING_WITH_LEN("FLOOR") }, BUILDER(Create_func_floor)},
-  { { C_STRING_WITH_LEN("FORMAT") }, BUILDER(Create_func_format)},
-  { { C_STRING_WITH_LEN("FOUND_ROWS") }, BUILDER(Create_func_found_rows)},
-  { { C_STRING_WITH_LEN("FROM_BASE64") }, BUILDER(Create_func_from_base64)},
-  { { C_STRING_WITH_LEN("FROM_DAYS") }, BUILDER(Create_func_from_days)},
-  { { C_STRING_WITH_LEN("FROM_UNIXTIME") }, BUILDER(Create_func_from_unixtime)},
-  { { C_STRING_WITH_LEN("GEOMCOLLFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
-  { { C_STRING_WITH_LEN("GEOMCOLLFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
-  { { C_STRING_WITH_LEN("GEOMETRYCOLLECTIONFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
-  { { C_STRING_WITH_LEN("GEOMETRYCOLLECTIONFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
-  { { C_STRING_WITH_LEN("GEOMETRYFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
-  { { C_STRING_WITH_LEN("GEOMETRYFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
-  { { C_STRING_WITH_LEN("GEOMETRYN") }, GEOM_BUILDER(Create_func_geometryn)},
-  { { C_STRING_WITH_LEN("GEOMETRYTYPE") }, GEOM_BUILDER(Create_func_geometry_type)},
-  { { C_STRING_WITH_LEN("GEOMFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
-  { { C_STRING_WITH_LEN("GEOMFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
-  { { C_STRING_WITH_LEN("GET_LOCK") }, BUILDER(Create_func_get_lock)},
-  { { C_STRING_WITH_LEN("GLENGTH") }, GEOM_BUILDER(Create_func_glength)},
-  { { C_STRING_WITH_LEN("GREATEST") }, BUILDER(Create_func_greatest)},
-  { { C_STRING_WITH_LEN("HEX") }, BUILDER(Create_func_hex)},
-  { { C_STRING_WITH_LEN("IFNULL") }, BUILDER(Create_func_ifnull)},
-  { { C_STRING_WITH_LEN("INET_ATON") }, BUILDER(Create_func_inet_aton)},
-  { { C_STRING_WITH_LEN("INET_NTOA") }, BUILDER(Create_func_inet_ntoa)},
-  { { C_STRING_WITH_LEN("INET6_ATON") }, BUILDER(Create_func_inet6_aton)},
-  { { C_STRING_WITH_LEN("INET6_NTOA") }, BUILDER(Create_func_inet6_ntoa)},
-  { { C_STRING_WITH_LEN("IS_IPV4") }, BUILDER(Create_func_is_ipv4)},
-  { { C_STRING_WITH_LEN("IS_IPV6") }, BUILDER(Create_func_is_ipv6)},
-  { { C_STRING_WITH_LEN("IS_IPV4_COMPAT") }, BUILDER(Create_func_is_ipv4_compat)},
-  { { C_STRING_WITH_LEN("IS_IPV4_MAPPED") }, BUILDER(Create_func_is_ipv4_mapped)},
-  { { C_STRING_WITH_LEN("INSTR") }, BUILDER(Create_func_instr)},
-  { { C_STRING_WITH_LEN("INTERIORRINGN") }, GEOM_BUILDER(Create_func_interiorringn)},
-  { { C_STRING_WITH_LEN("INTERSECTS") }, GEOM_BUILDER(Create_func_mbr_intersects)},
-  { { C_STRING_WITH_LEN("ISCLOSED") }, GEOM_BUILDER(Create_func_isclosed)},
-  { { C_STRING_WITH_LEN("ISEMPTY") }, GEOM_BUILDER(Create_func_isempty)},
-  { { C_STRING_WITH_LEN("ISNULL") }, BUILDER(Create_func_isnull)},
-  { { C_STRING_WITH_LEN("ISRING") }, GEOM_BUILDER(Create_func_isring)},
-  { { C_STRING_WITH_LEN("ISSIMPLE") }, GEOM_BUILDER(Create_func_issimple)},
-  { { C_STRING_WITH_LEN("IS_FREE_LOCK") }, BUILDER(Create_func_is_free_lock)},
-  { { C_STRING_WITH_LEN("IS_USED_LOCK") }, BUILDER(Create_func_is_used_lock)},
-  { { C_STRING_WITH_LEN("JSON_ARRAY") }, BUILDER(Create_func_json_array)},
-  { { C_STRING_WITH_LEN("JSON_ARRAY_APPEND") }, BUILDER(Create_func_json_array_append)},
-  { { C_STRING_WITH_LEN("JSON_ARRAY_INSERT") }, BUILDER(Create_func_json_array_insert)},
-  { { C_STRING_WITH_LEN("JSON_COMPACT") }, BUILDER(Create_func_json_compact)},
-  { { C_STRING_WITH_LEN("JSON_CONTAINS") }, BUILDER(Create_func_json_contains)},
-  { { C_STRING_WITH_LEN("JSON_CONTAINS_PATH") }, BUILDER(Create_func_json_contains_path)},
-  { { C_STRING_WITH_LEN("JSON_DEPTH") }, BUILDER(Create_func_json_depth)},
-  { { C_STRING_WITH_LEN("JSON_DETAILED") }, BUILDER(Create_func_json_detailed)},
-  { { C_STRING_WITH_LEN("JSON_EXISTS") }, BUILDER(Create_func_json_exists)},
-  { { C_STRING_WITH_LEN("JSON_EXTRACT") }, BUILDER(Create_func_json_extract)},
-  { { C_STRING_WITH_LEN("JSON_INSERT") }, BUILDER(Create_func_json_insert)},
-  { { C_STRING_WITH_LEN("JSON_KEYS") }, BUILDER(Create_func_json_keys)},
-  { { C_STRING_WITH_LEN("JSON_LENGTH") }, BUILDER(Create_func_json_length)},
-  { { C_STRING_WITH_LEN("JSON_LOOSE") }, BUILDER(Create_func_json_loose)},
-  { { C_STRING_WITH_LEN("JSON_MERGE") }, BUILDER(Create_func_json_merge)},
-  { { C_STRING_WITH_LEN("JSON_QUERY") }, BUILDER(Create_func_json_query)},
-  { { C_STRING_WITH_LEN("JSON_QUOTE") }, BUILDER(Create_func_json_quote)},
-  { { C_STRING_WITH_LEN("JSON_OBJECT") }, BUILDER(Create_func_json_object)},
-  { { C_STRING_WITH_LEN("JSON_REMOVE") }, BUILDER(Create_func_json_remove)},
-  { { C_STRING_WITH_LEN("JSON_REPLACE") }, BUILDER(Create_func_json_replace)},
-  { { C_STRING_WITH_LEN("JSON_SET") }, BUILDER(Create_func_json_set)},
-  { { C_STRING_WITH_LEN("JSON_SEARCH") }, BUILDER(Create_func_json_search)},
-  { { C_STRING_WITH_LEN("JSON_TYPE") }, BUILDER(Create_func_json_type)},
-  { { C_STRING_WITH_LEN("JSON_UNQUOTE") }, BUILDER(Create_func_json_unquote)},
-  { { C_STRING_WITH_LEN("JSON_VALID") }, BUILDER(Create_func_json_valid)},
-  { { C_STRING_WITH_LEN("JSON_VALUE") }, BUILDER(Create_func_json_value)},
-  { { C_STRING_WITH_LEN("LAST_DAY") }, BUILDER(Create_func_last_day)},
-  { { C_STRING_WITH_LEN("LAST_INSERT_ID") }, BUILDER(Create_func_last_insert_id)},
-  { { C_STRING_WITH_LEN("LCASE") }, BUILDER(Create_func_lcase)},
-  { { C_STRING_WITH_LEN("LEAST") }, BUILDER(Create_func_least)},
-  { { C_STRING_WITH_LEN("LENGTH") }, BUILDER(Create_func_length)},
-  { { C_STRING_WITH_LEN("LENGTHB") }, BUILDER(Create_func_octet_length)},
+  { { STRING_WITH_LEN("ABS") }, BUILDER(Create_func_abs)},
+  { { STRING_WITH_LEN("ACOS") }, BUILDER(Create_func_acos)},
+  { { STRING_WITH_LEN("ADDTIME") }, BUILDER(Create_func_addtime)},
+  { { STRING_WITH_LEN("AES_DECRYPT") }, BUILDER(Create_func_aes_decrypt)},
+  { { STRING_WITH_LEN("AES_ENCRYPT") }, BUILDER(Create_func_aes_encrypt)},
+  { { STRING_WITH_LEN("AREA") }, GEOM_BUILDER(Create_func_area)},
+  { { STRING_WITH_LEN("ASBINARY") }, GEOM_BUILDER(Create_func_as_wkb)},
+  { { STRING_WITH_LEN("ASIN") }, BUILDER(Create_func_asin)},
+  { { STRING_WITH_LEN("ASTEXT") }, GEOM_BUILDER(Create_func_as_wkt)},
+  { { STRING_WITH_LEN("ASWKB") }, GEOM_BUILDER(Create_func_as_wkb)},
+  { { STRING_WITH_LEN("ASWKT") }, GEOM_BUILDER(Create_func_as_wkt)},
+  { { STRING_WITH_LEN("ATAN") }, BUILDER(Create_func_atan)},
+  { { STRING_WITH_LEN("ATAN2") }, BUILDER(Create_func_atan)},
+  { { STRING_WITH_LEN("BENCHMARK") }, BUILDER(Create_func_benchmark)},
+  { { STRING_WITH_LEN("BIN") }, BUILDER(Create_func_bin)},
+  { { STRING_WITH_LEN("BINLOG_GTID_POS") }, BUILDER(Create_func_binlog_gtid_pos)},
+  { { STRING_WITH_LEN("BIT_COUNT") }, BUILDER(Create_func_bit_count)},
+  { { STRING_WITH_LEN("BIT_LENGTH") }, BUILDER(Create_func_bit_length)},
+  { { STRING_WITH_LEN("BOUNDARY") }, GEOM_BUILDER(Create_func_boundary)},
+  { { STRING_WITH_LEN("BUFFER") }, GEOM_BUILDER(Create_func_buffer)},
+  { { STRING_WITH_LEN("CEIL") }, BUILDER(Create_func_ceiling)},
+  { { STRING_WITH_LEN("CEILING") }, BUILDER(Create_func_ceiling)},
+  { { STRING_WITH_LEN("CENTROID") }, GEOM_BUILDER(Create_func_centroid)},
+  { { STRING_WITH_LEN("CHARACTER_LENGTH") }, BUILDER(Create_func_char_length)},
+  { { STRING_WITH_LEN("CHAR_LENGTH") }, BUILDER(Create_func_char_length)},
+  { { STRING_WITH_LEN("CHR") }, BUILDER(Create_func_chr)},
+  { { STRING_WITH_LEN("COERCIBILITY") }, BUILDER(Create_func_coercibility)},
+  { { STRING_WITH_LEN("COLUMN_CHECK") }, BUILDER(Create_func_dyncol_check)},
+  { { STRING_WITH_LEN("COLUMN_EXISTS") }, BUILDER(Create_func_dyncol_exists)},
+  { { STRING_WITH_LEN("COLUMN_LIST") }, BUILDER(Create_func_dyncol_list)},
+  { { STRING_WITH_LEN("COLUMN_JSON") }, BUILDER(Create_func_dyncol_json)},
+  { { STRING_WITH_LEN("COMPRESS") }, BUILDER(Create_func_compress)},
+  { { STRING_WITH_LEN("CONCAT") }, BUILDER(Create_func_concat)},
+  { { STRING_WITH_LEN("CONCAT_OPERATOR_ORACLE") }, BUILDER(Create_func_concat_operator_oracle)},
+  { { STRING_WITH_LEN("CONCAT_WS") }, BUILDER(Create_func_concat_ws)},
+  { { STRING_WITH_LEN("CONNECTION_ID") }, BUILDER(Create_func_connection_id)},
+  { { STRING_WITH_LEN("CONV") }, BUILDER(Create_func_conv)},
+  { { STRING_WITH_LEN("CONVERT_TZ") }, BUILDER(Create_func_convert_tz)},
+  { { STRING_WITH_LEN("CONVEXHULL") }, GEOM_BUILDER(Create_func_convexhull)},
+  { { STRING_WITH_LEN("COS") }, BUILDER(Create_func_cos)},
+  { { STRING_WITH_LEN("COT") }, BUILDER(Create_func_cot)},
+  { { STRING_WITH_LEN("CRC32") }, BUILDER(Create_func_crc32)},
+  { { STRING_WITH_LEN("CROSSES") }, GEOM_BUILDER(Create_func_crosses)},
+  { { STRING_WITH_LEN("DATEDIFF") }, BUILDER(Create_func_datediff)},
+  { { STRING_WITH_LEN("DAYNAME") }, BUILDER(Create_func_dayname)},
+  { { STRING_WITH_LEN("DAYOFMONTH") }, BUILDER(Create_func_dayofmonth)},
+  { { STRING_WITH_LEN("DAYOFWEEK") }, BUILDER(Create_func_dayofweek)},
+  { { STRING_WITH_LEN("DAYOFYEAR") }, BUILDER(Create_func_dayofyear)},
+  { { STRING_WITH_LEN("DEGREES") }, BUILDER(Create_func_degrees)},
+  { { STRING_WITH_LEN("DECODE_HISTOGRAM") }, BUILDER(Create_func_decode_histogram)},
+  { { STRING_WITH_LEN("DECODE_ORACLE") }, BUILDER(Create_func_decode_oracle)},
+  { { STRING_WITH_LEN("DES_DECRYPT") }, BUILDER(Create_func_des_decrypt)},
+  { { STRING_WITH_LEN("DES_ENCRYPT") }, BUILDER(Create_func_des_encrypt)},
+  { { STRING_WITH_LEN("DIMENSION") }, GEOM_BUILDER(Create_func_dimension)},
+  { { STRING_WITH_LEN("DISJOINT") }, GEOM_BUILDER(Create_func_mbr_disjoint)},
+  { { STRING_WITH_LEN("ELT") }, BUILDER(Create_func_elt)},
+  { { STRING_WITH_LEN("ENCODE") }, BUILDER(Create_func_encode)},
+  { { STRING_WITH_LEN("ENCRYPT") }, BUILDER(Create_func_encrypt)},
+  { { STRING_WITH_LEN("ENDPOINT") }, GEOM_BUILDER(Create_func_endpoint)},
+  { { STRING_WITH_LEN("ENVELOPE") }, GEOM_BUILDER(Create_func_envelope)},
+  { { STRING_WITH_LEN("EQUALS") }, GEOM_BUILDER(Create_func_equals)},
+  { { STRING_WITH_LEN("EXP") }, BUILDER(Create_func_exp)},
+  { { STRING_WITH_LEN("EXPORT_SET") }, BUILDER(Create_func_export_set)},
+  { { STRING_WITH_LEN("EXTERIORRING") }, GEOM_BUILDER(Create_func_exteriorring)},
+  { { STRING_WITH_LEN("EXTRACTVALUE") }, BUILDER(Create_func_xml_extractvalue)},
+  { { STRING_WITH_LEN("FIELD") }, BUILDER(Create_func_field)},
+  { { STRING_WITH_LEN("FIND_IN_SET") }, BUILDER(Create_func_find_in_set)},
+  { { STRING_WITH_LEN("FLOOR") }, BUILDER(Create_func_floor)},
+  { { STRING_WITH_LEN("FORMAT") }, BUILDER(Create_func_format)},
+  { { STRING_WITH_LEN("FOUND_ROWS") }, BUILDER(Create_func_found_rows)},
+  { { STRING_WITH_LEN("FROM_BASE64") }, BUILDER(Create_func_from_base64)},
+  { { STRING_WITH_LEN("FROM_DAYS") }, BUILDER(Create_func_from_days)},
+  { { STRING_WITH_LEN("FROM_UNIXTIME") }, BUILDER(Create_func_from_unixtime)},
+  { { STRING_WITH_LEN("GEOMCOLLFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
+  { { STRING_WITH_LEN("GEOMCOLLFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
+  { { STRING_WITH_LEN("GEOMETRYCOLLECTIONFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
+  { { STRING_WITH_LEN("GEOMETRYCOLLECTIONFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
+  { { STRING_WITH_LEN("GEOMETRYFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
+  { { STRING_WITH_LEN("GEOMETRYFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
+  { { STRING_WITH_LEN("GEOMETRYN") }, GEOM_BUILDER(Create_func_geometryn)},
+  { { STRING_WITH_LEN("GEOMETRYTYPE") }, GEOM_BUILDER(Create_func_geometry_type)},
+  { { STRING_WITH_LEN("GEOMFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
+  { { STRING_WITH_LEN("GEOMFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
+  { { STRING_WITH_LEN("GET_LOCK") }, BUILDER(Create_func_get_lock)},
+  { { STRING_WITH_LEN("GLENGTH") }, GEOM_BUILDER(Create_func_glength)},
+  { { STRING_WITH_LEN("GREATEST") }, BUILDER(Create_func_greatest)},
+  { { STRING_WITH_LEN("HEX") }, BUILDER(Create_func_hex)},
+  { { STRING_WITH_LEN("IFNULL") }, BUILDER(Create_func_ifnull)},
+  { { STRING_WITH_LEN("INET_ATON") }, BUILDER(Create_func_inet_aton)},
+  { { STRING_WITH_LEN("INET_NTOA") }, BUILDER(Create_func_inet_ntoa)},
+  { { STRING_WITH_LEN("INET6_ATON") }, BUILDER(Create_func_inet6_aton)},
+  { { STRING_WITH_LEN("INET6_NTOA") }, BUILDER(Create_func_inet6_ntoa)},
+  { { STRING_WITH_LEN("IS_IPV4") }, BUILDER(Create_func_is_ipv4)},
+  { { STRING_WITH_LEN("IS_IPV6") }, BUILDER(Create_func_is_ipv6)},
+  { { STRING_WITH_LEN("IS_IPV4_COMPAT") }, BUILDER(Create_func_is_ipv4_compat)},
+  { { STRING_WITH_LEN("IS_IPV4_MAPPED") }, BUILDER(Create_func_is_ipv4_mapped)},
+  { { STRING_WITH_LEN("INSTR") }, BUILDER(Create_func_instr)},
+  { { STRING_WITH_LEN("INTERIORRINGN") }, GEOM_BUILDER(Create_func_interiorringn)},
+  { { STRING_WITH_LEN("INTERSECTS") }, GEOM_BUILDER(Create_func_mbr_intersects)},
+  { { STRING_WITH_LEN("ISCLOSED") }, GEOM_BUILDER(Create_func_isclosed)},
+  { { STRING_WITH_LEN("ISEMPTY") }, GEOM_BUILDER(Create_func_isempty)},
+  { { STRING_WITH_LEN("ISNULL") }, BUILDER(Create_func_isnull)},
+  { { STRING_WITH_LEN("ISRING") }, GEOM_BUILDER(Create_func_isring)},
+  { { STRING_WITH_LEN("ISSIMPLE") }, GEOM_BUILDER(Create_func_issimple)},
+  { { STRING_WITH_LEN("IS_FREE_LOCK") }, BUILDER(Create_func_is_free_lock)},
+  { { STRING_WITH_LEN("IS_USED_LOCK") }, BUILDER(Create_func_is_used_lock)},
+  { { STRING_WITH_LEN("JSON_ARRAY") }, BUILDER(Create_func_json_array)},
+  { { STRING_WITH_LEN("JSON_ARRAY_APPEND") }, BUILDER(Create_func_json_array_append)},
+  { { STRING_WITH_LEN("JSON_ARRAY_INSERT") }, BUILDER(Create_func_json_array_insert)},
+  { { STRING_WITH_LEN("JSON_COMPACT") }, BUILDER(Create_func_json_compact)},
+  { { STRING_WITH_LEN("JSON_CONTAINS") }, BUILDER(Create_func_json_contains)},
+  { { STRING_WITH_LEN("JSON_CONTAINS_PATH") }, BUILDER(Create_func_json_contains_path)},
+  { { STRING_WITH_LEN("JSON_DEPTH") }, BUILDER(Create_func_json_depth)},
+  { { STRING_WITH_LEN("JSON_DETAILED") }, BUILDER(Create_func_json_detailed)},
+  { { STRING_WITH_LEN("JSON_EXISTS") }, BUILDER(Create_func_json_exists)},
+  { { STRING_WITH_LEN("JSON_EXTRACT") }, BUILDER(Create_func_json_extract)},
+  { { STRING_WITH_LEN("JSON_INSERT") }, BUILDER(Create_func_json_insert)},
+  { { STRING_WITH_LEN("JSON_KEYS") }, BUILDER(Create_func_json_keys)},
+  { { STRING_WITH_LEN("JSON_LENGTH") }, BUILDER(Create_func_json_length)},
+  { { STRING_WITH_LEN("JSON_LOOSE") }, BUILDER(Create_func_json_loose)},
+  { { STRING_WITH_LEN("JSON_MERGE") }, BUILDER(Create_func_json_merge)},
+  { { STRING_WITH_LEN("JSON_QUERY") }, BUILDER(Create_func_json_query)},
+  { { STRING_WITH_LEN("JSON_QUOTE") }, BUILDER(Create_func_json_quote)},
+  { { STRING_WITH_LEN("JSON_OBJECT") }, BUILDER(Create_func_json_object)},
+  { { STRING_WITH_LEN("JSON_REMOVE") }, BUILDER(Create_func_json_remove)},
+  { { STRING_WITH_LEN("JSON_REPLACE") }, BUILDER(Create_func_json_replace)},
+  { { STRING_WITH_LEN("JSON_SET") }, BUILDER(Create_func_json_set)},
+  { { STRING_WITH_LEN("JSON_SEARCH") }, BUILDER(Create_func_json_search)},
+  { { STRING_WITH_LEN("JSON_TYPE") }, BUILDER(Create_func_json_type)},
+  { { STRING_WITH_LEN("JSON_UNQUOTE") }, BUILDER(Create_func_json_unquote)},
+  { { STRING_WITH_LEN("JSON_VALID") }, BUILDER(Create_func_json_valid)},
+  { { STRING_WITH_LEN("JSON_VALUE") }, BUILDER(Create_func_json_value)},
+  { { STRING_WITH_LEN("LAST_DAY") }, BUILDER(Create_func_last_day)},
+  { { STRING_WITH_LEN("LAST_INSERT_ID") }, BUILDER(Create_func_last_insert_id)},
+  { { STRING_WITH_LEN("LCASE") }, BUILDER(Create_func_lcase)},
+  { { STRING_WITH_LEN("LEAST") }, BUILDER(Create_func_least)},
+  { { STRING_WITH_LEN("LENGTH") }, BUILDER(Create_func_length)},
+  { { STRING_WITH_LEN("LENGTHB") }, BUILDER(Create_func_octet_length)},
 #ifndef DBUG_OFF
-  { { C_STRING_WITH_LEN("LIKE_RANGE_MIN") }, BUILDER(Create_func_like_range_min)},
-  { { C_STRING_WITH_LEN("LIKE_RANGE_MAX") }, BUILDER(Create_func_like_range_max)},
+  { { STRING_WITH_LEN("LIKE_RANGE_MIN") }, BUILDER(Create_func_like_range_min)},
+  { { STRING_WITH_LEN("LIKE_RANGE_MAX") }, BUILDER(Create_func_like_range_max)},
 #endif
-  { { C_STRING_WITH_LEN("LINEFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
-  { { C_STRING_WITH_LEN("LINEFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
-  { { C_STRING_WITH_LEN("LINESTRINGFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
-  { { C_STRING_WITH_LEN("LINESTRINGFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
-  { { C_STRING_WITH_LEN("LN") }, BUILDER(Create_func_ln)},
-  { { C_STRING_WITH_LEN("LOAD_FILE") }, BUILDER(Create_func_load_file)},
-  { { C_STRING_WITH_LEN("LOCATE") }, BUILDER(Create_func_locate)},
-  { { C_STRING_WITH_LEN("LOG") }, BUILDER(Create_func_log)},
-  { { C_STRING_WITH_LEN("LOG10") }, BUILDER(Create_func_log10)},
-  { { C_STRING_WITH_LEN("LOG2") }, BUILDER(Create_func_log2)},
-  { { C_STRING_WITH_LEN("LOWER") }, BUILDER(Create_func_lcase)},
-  { { C_STRING_WITH_LEN("LPAD") }, BUILDER(Create_func_lpad)},
-  { { C_STRING_WITH_LEN("LTRIM") }, BUILDER(Create_func_ltrim)},
-  { { C_STRING_WITH_LEN("MAKEDATE") }, BUILDER(Create_func_makedate)},
-  { { C_STRING_WITH_LEN("MAKETIME") }, BUILDER(Create_func_maketime)},
-  { { C_STRING_WITH_LEN("MAKE_SET") }, BUILDER(Create_func_make_set)},
-  { { C_STRING_WITH_LEN("MASTER_GTID_WAIT") }, BUILDER(Create_func_master_gtid_wait)},
-  { { C_STRING_WITH_LEN("MASTER_POS_WAIT") }, BUILDER(Create_func_master_pos_wait)},
-  { { C_STRING_WITH_LEN("MBRCONTAINS") }, GEOM_BUILDER(Create_func_mbr_contains)},
-  { { C_STRING_WITH_LEN("MBRDISJOINT") }, GEOM_BUILDER(Create_func_mbr_disjoint)},
-  { { C_STRING_WITH_LEN("MBREQUAL") }, GEOM_BUILDER(Create_func_mbr_equals)},
-  { { C_STRING_WITH_LEN("MBREQUALS") }, GEOM_BUILDER(Create_func_mbr_equals)},
-  { { C_STRING_WITH_LEN("MBRINTERSECTS") }, GEOM_BUILDER(Create_func_mbr_intersects)},
-  { { C_STRING_WITH_LEN("MBROVERLAPS") }, GEOM_BUILDER(Create_func_mbr_overlaps)},
-  { { C_STRING_WITH_LEN("MBRTOUCHES") }, GEOM_BUILDER(Create_func_touches)},
-  { { C_STRING_WITH_LEN("MBRWITHIN") }, GEOM_BUILDER(Create_func_mbr_within)},
-  { { C_STRING_WITH_LEN("MD5") }, BUILDER(Create_func_md5)},
-  { { C_STRING_WITH_LEN("MLINEFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
-  { { C_STRING_WITH_LEN("MLINEFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
-  { { C_STRING_WITH_LEN("MONTHNAME") }, BUILDER(Create_func_monthname)},
-  { { C_STRING_WITH_LEN("MPOINTFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
-  { { C_STRING_WITH_LEN("MPOINTFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
-  { { C_STRING_WITH_LEN("MPOLYFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
-  { { C_STRING_WITH_LEN("MPOLYFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
-  { { C_STRING_WITH_LEN("MULTILINESTRINGFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
-  { { C_STRING_WITH_LEN("MULTILINESTRINGFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
-  { { C_STRING_WITH_LEN("MULTIPOINTFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
-  { { C_STRING_WITH_LEN("MULTIPOINTFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
-  { { C_STRING_WITH_LEN("MULTIPOLYGONFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
-  { { C_STRING_WITH_LEN("MULTIPOLYGONFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
-  { { C_STRING_WITH_LEN("NAME_CONST") }, BUILDER(Create_func_name_const)},
-  { { C_STRING_WITH_LEN("NVL") }, BUILDER(Create_func_ifnull)},
-  { { C_STRING_WITH_LEN("NVL2") }, BUILDER(Create_func_nvl2)},
-  { { C_STRING_WITH_LEN("NULLIF") }, BUILDER(Create_func_nullif)},
-  { { C_STRING_WITH_LEN("NUMGEOMETRIES") }, GEOM_BUILDER(Create_func_numgeometries)},
-  { { C_STRING_WITH_LEN("NUMINTERIORRINGS") }, GEOM_BUILDER(Create_func_numinteriorring)},
-  { { C_STRING_WITH_LEN("NUMPOINTS") }, GEOM_BUILDER(Create_func_numpoints)},
-  { { C_STRING_WITH_LEN("OCT") }, BUILDER(Create_func_oct)},
-  { { C_STRING_WITH_LEN("OCTET_LENGTH") }, BUILDER(Create_func_octet_length)},
-  { { C_STRING_WITH_LEN("ORD") }, BUILDER(Create_func_ord)},
-  { { C_STRING_WITH_LEN("OVERLAPS") }, GEOM_BUILDER(Create_func_mbr_overlaps)},
-  { { C_STRING_WITH_LEN("PERIOD_ADD") }, BUILDER(Create_func_period_add)},
-  { { C_STRING_WITH_LEN("PERIOD_DIFF") }, BUILDER(Create_func_period_diff)},
-  { { C_STRING_WITH_LEN("PI") }, BUILDER(Create_func_pi)},
-  { { C_STRING_WITH_LEN("POINTFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
-  { { C_STRING_WITH_LEN("POINTFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
-  { { C_STRING_WITH_LEN("POINTN") }, GEOM_BUILDER(Create_func_pointn)},
-  { { C_STRING_WITH_LEN("POINTONSURFACE") }, GEOM_BUILDER(Create_func_pointonsurface)},
-  { { C_STRING_WITH_LEN("POLYFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
-  { { C_STRING_WITH_LEN("POLYFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
-  { { C_STRING_WITH_LEN("POLYGONFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
-  { { C_STRING_WITH_LEN("POLYGONFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
-  { { C_STRING_WITH_LEN("POW") }, BUILDER(Create_func_pow)},
-  { { C_STRING_WITH_LEN("POWER") }, BUILDER(Create_func_pow)},
-  { { C_STRING_WITH_LEN("QUOTE") }, BUILDER(Create_func_quote)},
-  { { C_STRING_WITH_LEN("REGEXP_INSTR") }, BUILDER(Create_func_regexp_instr)},
-  { { C_STRING_WITH_LEN("REGEXP_REPLACE") }, BUILDER(Create_func_regexp_replace)},
-  { { C_STRING_WITH_LEN("REGEXP_SUBSTR") }, BUILDER(Create_func_regexp_substr)},
-  { { C_STRING_WITH_LEN("RADIANS") }, BUILDER(Create_func_radians)},
-  { { C_STRING_WITH_LEN("RAND") }, BUILDER(Create_func_rand)},
-  { { C_STRING_WITH_LEN("RELEASE_LOCK") }, BUILDER(Create_func_release_lock)},
-  { { C_STRING_WITH_LEN("REPLACE_ORACLE") },
+  { { STRING_WITH_LEN("LINEFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
+  { { STRING_WITH_LEN("LINEFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
+  { { STRING_WITH_LEN("LINESTRINGFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
+  { { STRING_WITH_LEN("LINESTRINGFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
+  { { STRING_WITH_LEN("LN") }, BUILDER(Create_func_ln)},
+  { { STRING_WITH_LEN("LOAD_FILE") }, BUILDER(Create_func_load_file)},
+  { { STRING_WITH_LEN("LOCATE") }, BUILDER(Create_func_locate)},
+  { { STRING_WITH_LEN("LOG") }, BUILDER(Create_func_log)},
+  { { STRING_WITH_LEN("LOG10") }, BUILDER(Create_func_log10)},
+  { { STRING_WITH_LEN("LOG2") }, BUILDER(Create_func_log2)},
+  { { STRING_WITH_LEN("LOWER") }, BUILDER(Create_func_lcase)},
+  { { STRING_WITH_LEN("LPAD") }, BUILDER(Create_func_lpad)},
+  { { STRING_WITH_LEN("LPAD_ORACLE") }, BUILDER(Create_func_lpad_oracle)},
+  { { STRING_WITH_LEN("LTRIM") }, BUILDER(Create_func_ltrim)},
+  { { STRING_WITH_LEN("LTRIM_ORACLE") }, BUILDER(Create_func_ltrim_oracle)},
+  { { STRING_WITH_LEN("MAKEDATE") }, BUILDER(Create_func_makedate)},
+  { { STRING_WITH_LEN("MAKETIME") }, BUILDER(Create_func_maketime)},
+  { { STRING_WITH_LEN("MAKE_SET") }, BUILDER(Create_func_make_set)},
+  { { STRING_WITH_LEN("MASTER_GTID_WAIT") }, BUILDER(Create_func_master_gtid_wait)},
+  { { STRING_WITH_LEN("MASTER_POS_WAIT") }, BUILDER(Create_func_master_pos_wait)},
+  { { STRING_WITH_LEN("MBRCONTAINS") }, GEOM_BUILDER(Create_func_mbr_contains)},
+  { { STRING_WITH_LEN("MBRDISJOINT") }, GEOM_BUILDER(Create_func_mbr_disjoint)},
+  { { STRING_WITH_LEN("MBREQUAL") }, GEOM_BUILDER(Create_func_mbr_equals)},
+  { { STRING_WITH_LEN("MBREQUALS") }, GEOM_BUILDER(Create_func_mbr_equals)},
+  { { STRING_WITH_LEN("MBRINTERSECTS") }, GEOM_BUILDER(Create_func_mbr_intersects)},
+  { { STRING_WITH_LEN("MBROVERLAPS") }, GEOM_BUILDER(Create_func_mbr_overlaps)},
+  { { STRING_WITH_LEN("MBRTOUCHES") }, GEOM_BUILDER(Create_func_touches)},
+  { { STRING_WITH_LEN("MBRWITHIN") }, GEOM_BUILDER(Create_func_mbr_within)},
+  { { STRING_WITH_LEN("MD5") }, BUILDER(Create_func_md5)},
+  { { STRING_WITH_LEN("MLINEFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
+  { { STRING_WITH_LEN("MLINEFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
+  { { STRING_WITH_LEN("MONTHNAME") }, BUILDER(Create_func_monthname)},
+  { { STRING_WITH_LEN("MPOINTFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
+  { { STRING_WITH_LEN("MPOINTFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
+  { { STRING_WITH_LEN("MPOLYFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
+  { { STRING_WITH_LEN("MPOLYFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
+  { { STRING_WITH_LEN("MULTILINESTRINGFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
+  { { STRING_WITH_LEN("MULTILINESTRINGFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
+  { { STRING_WITH_LEN("MULTIPOINTFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
+  { { STRING_WITH_LEN("MULTIPOINTFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
+  { { STRING_WITH_LEN("MULTIPOLYGONFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
+  { { STRING_WITH_LEN("MULTIPOLYGONFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
+  { { STRING_WITH_LEN("NAME_CONST") }, BUILDER(Create_func_name_const)},
+  { { STRING_WITH_LEN("NVL") }, BUILDER(Create_func_ifnull)},
+  { { STRING_WITH_LEN("NVL2") }, BUILDER(Create_func_nvl2)},
+  { { STRING_WITH_LEN("NULLIF") }, BUILDER(Create_func_nullif)},
+  { { STRING_WITH_LEN("NUMGEOMETRIES") }, GEOM_BUILDER(Create_func_numgeometries)},
+  { { STRING_WITH_LEN("NUMINTERIORRINGS") }, GEOM_BUILDER(Create_func_numinteriorring)},
+  { { STRING_WITH_LEN("NUMPOINTS") }, GEOM_BUILDER(Create_func_numpoints)},
+  { { STRING_WITH_LEN("OCT") }, BUILDER(Create_func_oct)},
+  { { STRING_WITH_LEN("OCTET_LENGTH") }, BUILDER(Create_func_octet_length)},
+  { { STRING_WITH_LEN("ORD") }, BUILDER(Create_func_ord)},
+  { { STRING_WITH_LEN("OVERLAPS") }, GEOM_BUILDER(Create_func_mbr_overlaps)},
+  { { STRING_WITH_LEN("PERIOD_ADD") }, BUILDER(Create_func_period_add)},
+  { { STRING_WITH_LEN("PERIOD_DIFF") }, BUILDER(Create_func_period_diff)},
+  { { STRING_WITH_LEN("PI") }, BUILDER(Create_func_pi)},
+  { { STRING_WITH_LEN("POINTFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
+  { { STRING_WITH_LEN("POINTFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
+  { { STRING_WITH_LEN("POINTN") }, GEOM_BUILDER(Create_func_pointn)},
+  { { STRING_WITH_LEN("POINTONSURFACE") }, GEOM_BUILDER(Create_func_pointonsurface)},
+  { { STRING_WITH_LEN("POLYFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
+  { { STRING_WITH_LEN("POLYFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
+  { { STRING_WITH_LEN("POLYGONFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
+  { { STRING_WITH_LEN("POLYGONFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
+  { { STRING_WITH_LEN("POW") }, BUILDER(Create_func_pow)},
+  { { STRING_WITH_LEN("POWER") }, BUILDER(Create_func_pow)},
+  { { STRING_WITH_LEN("QUOTE") }, BUILDER(Create_func_quote)},
+  { { STRING_WITH_LEN("REGEXP_INSTR") }, BUILDER(Create_func_regexp_instr)},
+  { { STRING_WITH_LEN("REGEXP_REPLACE") }, BUILDER(Create_func_regexp_replace)},
+  { { STRING_WITH_LEN("REGEXP_SUBSTR") }, BUILDER(Create_func_regexp_substr)},
+  { { STRING_WITH_LEN("RADIANS") }, BUILDER(Create_func_radians)},
+  { { STRING_WITH_LEN("RAND") }, BUILDER(Create_func_rand)},
+  { { STRING_WITH_LEN("RELEASE_LOCK") }, BUILDER(Create_func_release_lock)},
+  { { STRING_WITH_LEN("REPLACE_ORACLE") },
       BUILDER(Create_func_replace_oracle)},
-  { { C_STRING_WITH_LEN("REVERSE") }, BUILDER(Create_func_reverse)},
-  { { C_STRING_WITH_LEN("ROUND") }, BUILDER(Create_func_round)},
-  { { C_STRING_WITH_LEN("RPAD") }, BUILDER(Create_func_rpad)},
-  { { C_STRING_WITH_LEN("RTRIM") }, BUILDER(Create_func_rtrim)},
-  { { C_STRING_WITH_LEN("SEC_TO_TIME") }, BUILDER(Create_func_sec_to_time)},
-  { { C_STRING_WITH_LEN("SHA") }, BUILDER(Create_func_sha)},
-  { { C_STRING_WITH_LEN("SHA1") }, BUILDER(Create_func_sha)},
-  { { C_STRING_WITH_LEN("SHA2") }, BUILDER(Create_func_sha2)},
-  { { C_STRING_WITH_LEN("SIGN") }, BUILDER(Create_func_sign)},
-  { { C_STRING_WITH_LEN("SIN") }, BUILDER(Create_func_sin)},
-  { { C_STRING_WITH_LEN("SLEEP") }, BUILDER(Create_func_sleep)},
-  { { C_STRING_WITH_LEN("SOUNDEX") }, BUILDER(Create_func_soundex)},
-  { { C_STRING_WITH_LEN("SPACE") }, BUILDER(Create_func_space)},
-  { { C_STRING_WITH_LEN("SQRT") }, BUILDER(Create_func_sqrt)},
-  { { C_STRING_WITH_LEN("SRID") }, GEOM_BUILDER(Create_func_srid)},
-  { { C_STRING_WITH_LEN("STARTPOINT") }, GEOM_BUILDER(Create_func_startpoint)},
-  { { C_STRING_WITH_LEN("STRCMP") }, BUILDER(Create_func_strcmp)},
-  { { C_STRING_WITH_LEN("STR_TO_DATE") }, BUILDER(Create_func_str_to_date)},
-  { { C_STRING_WITH_LEN("ST_AREA") }, GEOM_BUILDER(Create_func_area)},
-  { { C_STRING_WITH_LEN("ST_ASBINARY") }, GEOM_BUILDER(Create_func_as_wkb)},
-  { { C_STRING_WITH_LEN("ST_ASGEOJSON") }, GEOM_BUILDER(Create_func_as_geojson)},
-  { { C_STRING_WITH_LEN("ST_ASTEXT") }, GEOM_BUILDER(Create_func_as_wkt)},
-  { { C_STRING_WITH_LEN("ST_ASWKB") }, GEOM_BUILDER(Create_func_as_wkb)},
-  { { C_STRING_WITH_LEN("ST_ASWKT") }, GEOM_BUILDER(Create_func_as_wkt)},
-  { { C_STRING_WITH_LEN("ST_BOUNDARY") }, GEOM_BUILDER(Create_func_boundary)},
-  { { C_STRING_WITH_LEN("ST_BUFFER") }, GEOM_BUILDER(Create_func_buffer)},
-  { { C_STRING_WITH_LEN("ST_CENTROID") }, GEOM_BUILDER(Create_func_centroid)},
-  { { C_STRING_WITH_LEN("ST_CONTAINS") }, GEOM_BUILDER(Create_func_contains)},
-  { { C_STRING_WITH_LEN("ST_CONVEXHULL") }, GEOM_BUILDER(Create_func_convexhull)},
-  { { C_STRING_WITH_LEN("ST_CROSSES") }, GEOM_BUILDER(Create_func_crosses)},
-  { { C_STRING_WITH_LEN("ST_DIFFERENCE") }, GEOM_BUILDER(Create_func_difference)},
-  { { C_STRING_WITH_LEN("ST_DIMENSION") }, GEOM_BUILDER(Create_func_dimension)},
-  { { C_STRING_WITH_LEN("ST_DISJOINT") }, GEOM_BUILDER(Create_func_disjoint)},
-  { { C_STRING_WITH_LEN("ST_DISTANCE") }, GEOM_BUILDER(Create_func_distance)},
-  { { C_STRING_WITH_LEN("ST_ENDPOINT") }, GEOM_BUILDER(Create_func_endpoint)},
-  { { C_STRING_WITH_LEN("ST_ENVELOPE") }, GEOM_BUILDER(Create_func_envelope)},
-  { { C_STRING_WITH_LEN("ST_EQUALS") }, GEOM_BUILDER(Create_func_equals)},
-  { { C_STRING_WITH_LEN("ST_EXTERIORRING") }, GEOM_BUILDER(Create_func_exteriorring)},
-  { { C_STRING_WITH_LEN("ST_GEOMCOLLFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
-  { { C_STRING_WITH_LEN("ST_GEOMCOLLFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
-  { { C_STRING_WITH_LEN("ST_GEOMETRYCOLLECTIONFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
-  { { C_STRING_WITH_LEN("ST_GEOMETRYCOLLECTIONFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
-  { { C_STRING_WITH_LEN("ST_GEOMETRYFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
-  { { C_STRING_WITH_LEN("ST_GEOMETRYFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
-  { { C_STRING_WITH_LEN("ST_GEOMETRYN") }, GEOM_BUILDER(Create_func_geometryn)},
-  { { C_STRING_WITH_LEN("ST_GEOMETRYTYPE") }, GEOM_BUILDER(Create_func_geometry_type)},
-  { { C_STRING_WITH_LEN("ST_GEOMFROMGEOJSON") }, GEOM_BUILDER(Create_func_geometry_from_json)},
-  { { C_STRING_WITH_LEN("ST_GEOMFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
-  { { C_STRING_WITH_LEN("ST_GEOMFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
+  { { STRING_WITH_LEN("REVERSE") }, BUILDER(Create_func_reverse)},
+  { { STRING_WITH_LEN("ROUND") }, BUILDER(Create_func_round)},
+  { { STRING_WITH_LEN("RPAD") }, BUILDER(Create_func_rpad)},
+  { { STRING_WITH_LEN("RPAD_ORACLE") }, BUILDER(Create_func_rpad_oracle)},
+  { { STRING_WITH_LEN("RTRIM") }, BUILDER(Create_func_rtrim)},
+  { { STRING_WITH_LEN("RTRIM_ORACLE") }, BUILDER(Create_func_rtrim_oracle)},
+  { { STRING_WITH_LEN("SEC_TO_TIME") }, BUILDER(Create_func_sec_to_time)},
+  { { STRING_WITH_LEN("SHA") }, BUILDER(Create_func_sha)},
+  { { STRING_WITH_LEN("SHA1") }, BUILDER(Create_func_sha)},
+  { { STRING_WITH_LEN("SHA2") }, BUILDER(Create_func_sha2)},
+  { { STRING_WITH_LEN("SIGN") }, BUILDER(Create_func_sign)},
+  { { STRING_WITH_LEN("SIN") }, BUILDER(Create_func_sin)},
+  { { STRING_WITH_LEN("SLEEP") }, BUILDER(Create_func_sleep)},
+  { { STRING_WITH_LEN("SOUNDEX") }, BUILDER(Create_func_soundex)},
+  { { STRING_WITH_LEN("SPACE") }, BUILDER(Create_func_space)},
+  { { STRING_WITH_LEN("SQRT") }, BUILDER(Create_func_sqrt)},
+  { { STRING_WITH_LEN("SRID") }, GEOM_BUILDER(Create_func_srid)},
+  { { STRING_WITH_LEN("STARTPOINT") }, GEOM_BUILDER(Create_func_startpoint)},
+  { { STRING_WITH_LEN("STRCMP") }, BUILDER(Create_func_strcmp)},
+  { { STRING_WITH_LEN("STR_TO_DATE") }, BUILDER(Create_func_str_to_date)},
+  { { STRING_WITH_LEN("ST_AREA") }, GEOM_BUILDER(Create_func_area)},
+  { { STRING_WITH_LEN("ST_ASBINARY") }, GEOM_BUILDER(Create_func_as_wkb)},
+  { { STRING_WITH_LEN("ST_ASGEOJSON") }, GEOM_BUILDER(Create_func_as_geojson)},
+  { { STRING_WITH_LEN("ST_ASTEXT") }, GEOM_BUILDER(Create_func_as_wkt)},
+  { { STRING_WITH_LEN("ST_ASWKB") }, GEOM_BUILDER(Create_func_as_wkb)},
+  { { STRING_WITH_LEN("ST_ASWKT") }, GEOM_BUILDER(Create_func_as_wkt)},
+  { { STRING_WITH_LEN("ST_BOUNDARY") }, GEOM_BUILDER(Create_func_boundary)},
+  { { STRING_WITH_LEN("ST_BUFFER") }, GEOM_BUILDER(Create_func_buffer)},
+  { { STRING_WITH_LEN("ST_CENTROID") }, GEOM_BUILDER(Create_func_centroid)},
+  { { STRING_WITH_LEN("ST_CONTAINS") }, GEOM_BUILDER(Create_func_contains)},
+  { { STRING_WITH_LEN("ST_CONVEXHULL") }, GEOM_BUILDER(Create_func_convexhull)},
+  { { STRING_WITH_LEN("ST_CROSSES") }, GEOM_BUILDER(Create_func_crosses)},
+  { { STRING_WITH_LEN("ST_DIFFERENCE") }, GEOM_BUILDER(Create_func_difference)},
+  { { STRING_WITH_LEN("ST_DIMENSION") }, GEOM_BUILDER(Create_func_dimension)},
+  { { STRING_WITH_LEN("ST_DISJOINT") }, GEOM_BUILDER(Create_func_disjoint)},
+  { { STRING_WITH_LEN("ST_DISTANCE") }, GEOM_BUILDER(Create_func_distance)},
+  { { STRING_WITH_LEN("ST_ENDPOINT") }, GEOM_BUILDER(Create_func_endpoint)},
+  { { STRING_WITH_LEN("ST_ENVELOPE") }, GEOM_BUILDER(Create_func_envelope)},
+  { { STRING_WITH_LEN("ST_EQUALS") }, GEOM_BUILDER(Create_func_equals)},
+  { { STRING_WITH_LEN("ST_EXTERIORRING") }, GEOM_BUILDER(Create_func_exteriorring)},
+  { { STRING_WITH_LEN("ST_GEOMCOLLFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
+  { { STRING_WITH_LEN("ST_GEOMCOLLFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
+  { { STRING_WITH_LEN("ST_GEOMETRYCOLLECTIONFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
+  { { STRING_WITH_LEN("ST_GEOMETRYCOLLECTIONFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
+  { { STRING_WITH_LEN("ST_GEOMETRYFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
+  { { STRING_WITH_LEN("ST_GEOMETRYFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
+  { { STRING_WITH_LEN("ST_GEOMETRYN") }, GEOM_BUILDER(Create_func_geometryn)},
+  { { STRING_WITH_LEN("ST_GEOMETRYTYPE") }, GEOM_BUILDER(Create_func_geometry_type)},
+  { { STRING_WITH_LEN("ST_GEOMFROMGEOJSON") }, GEOM_BUILDER(Create_func_geometry_from_json)},
+  { { STRING_WITH_LEN("ST_GEOMFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
+  { { STRING_WITH_LEN("ST_GEOMFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
 #ifndef DBUG_OFF
-    { { C_STRING_WITH_LEN("ST_GIS_DEBUG") }, GEOM_BUILDER(Create_func_gis_debug)},
+    { { STRING_WITH_LEN("ST_GIS_DEBUG") }, GEOM_BUILDER(Create_func_gis_debug)},
 #endif
-  { { C_STRING_WITH_LEN("ST_EQUALS") }, GEOM_BUILDER(Create_func_equals)},
-  { { C_STRING_WITH_LEN("ST_INTERIORRINGN") }, GEOM_BUILDER(Create_func_interiorringn)},
-  { { C_STRING_WITH_LEN("ST_INTERSECTS") }, GEOM_BUILDER(Create_func_intersects)},
-  { { C_STRING_WITH_LEN("ST_INTERSECTION") }, GEOM_BUILDER(Create_func_intersection)},
-  { { C_STRING_WITH_LEN("ST_ISCLOSED") }, GEOM_BUILDER(Create_func_isclosed)},
-  { { C_STRING_WITH_LEN("ST_ISEMPTY") }, GEOM_BUILDER(Create_func_isempty)},
-  { { C_STRING_WITH_LEN("ST_ISRING") }, GEOM_BUILDER(Create_func_isring)},
-  { { C_STRING_WITH_LEN("ST_ISSIMPLE") }, GEOM_BUILDER(Create_func_issimple)},
-  { { C_STRING_WITH_LEN("ST_LENGTH") }, GEOM_BUILDER(Create_func_glength)},
-  { { C_STRING_WITH_LEN("ST_LINEFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
-  { { C_STRING_WITH_LEN("ST_LINEFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
-  { { C_STRING_WITH_LEN("ST_LINESTRINGFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
-  { { C_STRING_WITH_LEN("ST_LINESTRINGFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
-  { { C_STRING_WITH_LEN("ST_MLINEFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
-  { { C_STRING_WITH_LEN("ST_MLINEFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
-  { { C_STRING_WITH_LEN("ST_MPOINTFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
-  { { C_STRING_WITH_LEN("ST_MPOINTFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
-  { { C_STRING_WITH_LEN("ST_MPOLYFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
-  { { C_STRING_WITH_LEN("ST_MPOLYFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
-  { { C_STRING_WITH_LEN("ST_MULTILINESTRINGFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
-  { { C_STRING_WITH_LEN("ST_MULTILINESTRINGFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
-  { { C_STRING_WITH_LEN("ST_MULTIPOINTFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
-  { { C_STRING_WITH_LEN("ST_MULTIPOINTFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
-  { { C_STRING_WITH_LEN("ST_MULTIPOLYGONFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
-  { { C_STRING_WITH_LEN("ST_MULTIPOLYGONFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
-  { { C_STRING_WITH_LEN("ST_NUMGEOMETRIES") }, GEOM_BUILDER(Create_func_numgeometries)},
-  { { C_STRING_WITH_LEN("ST_NUMINTERIORRINGS") }, GEOM_BUILDER(Create_func_numinteriorring)},
-  { { C_STRING_WITH_LEN("ST_NUMPOINTS") }, GEOM_BUILDER(Create_func_numpoints)},
-  { { C_STRING_WITH_LEN("ST_OVERLAPS") }, GEOM_BUILDER(Create_func_overlaps)},
-  { { C_STRING_WITH_LEN("ST_POINTFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
-  { { C_STRING_WITH_LEN("ST_POINTFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
-  { { C_STRING_WITH_LEN("ST_POINTN") }, GEOM_BUILDER(Create_func_pointn)},
-  { { C_STRING_WITH_LEN("ST_POINTONSURFACE") }, GEOM_BUILDER(Create_func_pointonsurface)},
-  { { C_STRING_WITH_LEN("ST_POLYFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
-  { { C_STRING_WITH_LEN("ST_POLYFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
-  { { C_STRING_WITH_LEN("ST_POLYGONFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
-  { { C_STRING_WITH_LEN("ST_POLYGONFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
-  { { C_STRING_WITH_LEN("ST_RELATE") }, GEOM_BUILDER(Create_func_relate)},
-  { { C_STRING_WITH_LEN("ST_SRID") }, GEOM_BUILDER(Create_func_srid)},
-  { { C_STRING_WITH_LEN("ST_STARTPOINT") }, GEOM_BUILDER(Create_func_startpoint)},
-  { { C_STRING_WITH_LEN("ST_SYMDIFFERENCE") }, GEOM_BUILDER(Create_func_symdifference)},
-  { { C_STRING_WITH_LEN("ST_TOUCHES") }, GEOM_BUILDER(Create_func_touches)},
-  { { C_STRING_WITH_LEN("ST_UNION") }, GEOM_BUILDER(Create_func_union)},
-  { { C_STRING_WITH_LEN("ST_WITHIN") }, GEOM_BUILDER(Create_func_within)},
-  { { C_STRING_WITH_LEN("ST_X") }, GEOM_BUILDER(Create_func_x)},
-  { { C_STRING_WITH_LEN("ST_Y") }, GEOM_BUILDER(Create_func_y)},
-  { { C_STRING_WITH_LEN("SUBSTR_ORACLE") },
+  { { STRING_WITH_LEN("ST_EQUALS") }, GEOM_BUILDER(Create_func_equals)},
+  { { STRING_WITH_LEN("ST_INTERIORRINGN") }, GEOM_BUILDER(Create_func_interiorringn)},
+  { { STRING_WITH_LEN("ST_INTERSECTS") }, GEOM_BUILDER(Create_func_intersects)},
+  { { STRING_WITH_LEN("ST_INTERSECTION") }, GEOM_BUILDER(Create_func_intersection)},
+  { { STRING_WITH_LEN("ST_ISCLOSED") }, GEOM_BUILDER(Create_func_isclosed)},
+  { { STRING_WITH_LEN("ST_ISEMPTY") }, GEOM_BUILDER(Create_func_isempty)},
+  { { STRING_WITH_LEN("ST_ISRING") }, GEOM_BUILDER(Create_func_isring)},
+  { { STRING_WITH_LEN("ST_ISSIMPLE") }, GEOM_BUILDER(Create_func_issimple)},
+  { { STRING_WITH_LEN("ST_LENGTH") }, GEOM_BUILDER(Create_func_glength)},
+  { { STRING_WITH_LEN("ST_LINEFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
+  { { STRING_WITH_LEN("ST_LINEFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
+  { { STRING_WITH_LEN("ST_LINESTRINGFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
+  { { STRING_WITH_LEN("ST_LINESTRINGFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
+  { { STRING_WITH_LEN("ST_MLINEFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
+  { { STRING_WITH_LEN("ST_MLINEFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
+  { { STRING_WITH_LEN("ST_MPOINTFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
+  { { STRING_WITH_LEN("ST_MPOINTFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
+  { { STRING_WITH_LEN("ST_MPOLYFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
+  { { STRING_WITH_LEN("ST_MPOLYFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
+  { { STRING_WITH_LEN("ST_MULTILINESTRINGFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
+  { { STRING_WITH_LEN("ST_MULTILINESTRINGFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
+  { { STRING_WITH_LEN("ST_MULTIPOINTFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
+  { { STRING_WITH_LEN("ST_MULTIPOINTFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
+  { { STRING_WITH_LEN("ST_MULTIPOLYGONFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
+  { { STRING_WITH_LEN("ST_MULTIPOLYGONFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
+  { { STRING_WITH_LEN("ST_NUMGEOMETRIES") }, GEOM_BUILDER(Create_func_numgeometries)},
+  { { STRING_WITH_LEN("ST_NUMINTERIORRINGS") }, GEOM_BUILDER(Create_func_numinteriorring)},
+  { { STRING_WITH_LEN("ST_NUMPOINTS") }, GEOM_BUILDER(Create_func_numpoints)},
+  { { STRING_WITH_LEN("ST_OVERLAPS") }, GEOM_BUILDER(Create_func_overlaps)},
+  { { STRING_WITH_LEN("ST_POINTFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
+  { { STRING_WITH_LEN("ST_POINTFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
+  { { STRING_WITH_LEN("ST_POINTN") }, GEOM_BUILDER(Create_func_pointn)},
+  { { STRING_WITH_LEN("ST_POINTONSURFACE") }, GEOM_BUILDER(Create_func_pointonsurface)},
+  { { STRING_WITH_LEN("ST_POLYFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
+  { { STRING_WITH_LEN("ST_POLYFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
+  { { STRING_WITH_LEN("ST_POLYGONFROMTEXT") }, GEOM_BUILDER(Create_func_geometry_from_text)},
+  { { STRING_WITH_LEN("ST_POLYGONFROMWKB") }, GEOM_BUILDER(Create_func_geometry_from_wkb)},
+  { { STRING_WITH_LEN("ST_RELATE") }, GEOM_BUILDER(Create_func_relate)},
+  { { STRING_WITH_LEN("ST_SRID") }, GEOM_BUILDER(Create_func_srid)},
+  { { STRING_WITH_LEN("ST_STARTPOINT") }, GEOM_BUILDER(Create_func_startpoint)},
+  { { STRING_WITH_LEN("ST_SYMDIFFERENCE") }, GEOM_BUILDER(Create_func_symdifference)},
+  { { STRING_WITH_LEN("ST_TOUCHES") }, GEOM_BUILDER(Create_func_touches)},
+  { { STRING_WITH_LEN("ST_UNION") }, GEOM_BUILDER(Create_func_union)},
+  { { STRING_WITH_LEN("ST_WITHIN") }, GEOM_BUILDER(Create_func_within)},
+  { { STRING_WITH_LEN("ST_X") }, GEOM_BUILDER(Create_func_x)},
+  { { STRING_WITH_LEN("ST_Y") }, GEOM_BUILDER(Create_func_y)},
+  { { STRING_WITH_LEN("SUBSTR_ORACLE") },
       BUILDER(Create_func_substr_oracle)},
-  { { C_STRING_WITH_LEN("SUBSTRING_INDEX") }, BUILDER(Create_func_substr_index)},
-  { { C_STRING_WITH_LEN("SUBTIME") }, BUILDER(Create_func_subtime)},
-  { { C_STRING_WITH_LEN("TAN") }, BUILDER(Create_func_tan)},
-  { { C_STRING_WITH_LEN("TIMEDIFF") }, BUILDER(Create_func_timediff)},
-  { { C_STRING_WITH_LEN("TIME_FORMAT") }, BUILDER(Create_func_time_format)},
-  { { C_STRING_WITH_LEN("TIME_TO_SEC") }, BUILDER(Create_func_time_to_sec)},
-  { { C_STRING_WITH_LEN("TOUCHES") }, GEOM_BUILDER(Create_func_touches)},
-  { { C_STRING_WITH_LEN("TO_BASE64") }, BUILDER(Create_func_to_base64)},
-  { { C_STRING_WITH_LEN("TO_DAYS") }, BUILDER(Create_func_to_days)},
-  { { C_STRING_WITH_LEN("TO_SECONDS") }, BUILDER(Create_func_to_seconds)},
-  { { C_STRING_WITH_LEN("UCASE") }, BUILDER(Create_func_ucase)},
-  { { C_STRING_WITH_LEN("UNCOMPRESS") }, BUILDER(Create_func_uncompress)},
-  { { C_STRING_WITH_LEN("UNCOMPRESSED_LENGTH") }, BUILDER(Create_func_uncompressed_length)},
-  { { C_STRING_WITH_LEN("UNHEX") }, BUILDER(Create_func_unhex)},
-  { { C_STRING_WITH_LEN("UNIX_TIMESTAMP") }, BUILDER(Create_func_unix_timestamp)},
-  { { C_STRING_WITH_LEN("UPDATEXML") }, BUILDER(Create_func_xml_update)},
-  { { C_STRING_WITH_LEN("UPPER") }, BUILDER(Create_func_ucase)},
-  { { C_STRING_WITH_LEN("UUID") }, BUILDER(Create_func_uuid)},
-  { { C_STRING_WITH_LEN("UUID_SHORT") }, BUILDER(Create_func_uuid_short)},
-  { { C_STRING_WITH_LEN("VERSION") }, BUILDER(Create_func_version)},
-  { { C_STRING_WITH_LEN("WEEKDAY") }, BUILDER(Create_func_weekday)},
-  { { C_STRING_WITH_LEN("WEEKOFYEAR") }, BUILDER(Create_func_weekofyear)},
-  { { C_STRING_WITH_LEN("WITHIN") }, GEOM_BUILDER(Create_func_within)},
-  { { C_STRING_WITH_LEN("X") }, GEOM_BUILDER(Create_func_x)},
-  { { C_STRING_WITH_LEN("Y") }, GEOM_BUILDER(Create_func_y)},
-  { { C_STRING_WITH_LEN("YEARWEEK") }, BUILDER(Create_func_year_week)},
+  { { STRING_WITH_LEN("SUBSTRING_INDEX") }, BUILDER(Create_func_substr_index)},
+  { { STRING_WITH_LEN("SUBTIME") }, BUILDER(Create_func_subtime)},
+  { { STRING_WITH_LEN("TAN") }, BUILDER(Create_func_tan)},
+  { { STRING_WITH_LEN("TIMEDIFF") }, BUILDER(Create_func_timediff)},
+  { { STRING_WITH_LEN("TIME_FORMAT") }, BUILDER(Create_func_time_format)},
+  { { STRING_WITH_LEN("TIME_TO_SEC") }, BUILDER(Create_func_time_to_sec)},
+  { { STRING_WITH_LEN("TOUCHES") }, GEOM_BUILDER(Create_func_touches)},
+  { { STRING_WITH_LEN("TO_BASE64") }, BUILDER(Create_func_to_base64)},
+  { { STRING_WITH_LEN("TO_DAYS") }, BUILDER(Create_func_to_days)},
+  { { STRING_WITH_LEN("TO_SECONDS") }, BUILDER(Create_func_to_seconds)},
+  { { STRING_WITH_LEN("UCASE") }, BUILDER(Create_func_ucase)},
+  { { STRING_WITH_LEN("UNCOMPRESS") }, BUILDER(Create_func_uncompress)},
+  { { STRING_WITH_LEN("UNCOMPRESSED_LENGTH") }, BUILDER(Create_func_uncompressed_length)},
+  { { STRING_WITH_LEN("UNHEX") }, BUILDER(Create_func_unhex)},
+  { { STRING_WITH_LEN("UNIX_TIMESTAMP") }, BUILDER(Create_func_unix_timestamp)},
+  { { STRING_WITH_LEN("UPDATEXML") }, BUILDER(Create_func_xml_update)},
+  { { STRING_WITH_LEN("UPPER") }, BUILDER(Create_func_ucase)},
+  { { STRING_WITH_LEN("UUID") }, BUILDER(Create_func_uuid)},
+  { { STRING_WITH_LEN("UUID_SHORT") }, BUILDER(Create_func_uuid_short)},
+  { { STRING_WITH_LEN("VERSION") }, BUILDER(Create_func_version)},
+  { { STRING_WITH_LEN("WEEKDAY") }, BUILDER(Create_func_weekday)},
+  { { STRING_WITH_LEN("WEEKOFYEAR") }, BUILDER(Create_func_weekofyear)},
+  { { STRING_WITH_LEN("WITHIN") }, GEOM_BUILDER(Create_func_within)},
+  { { STRING_WITH_LEN("X") }, GEOM_BUILDER(Create_func_x)},
+  { { STRING_WITH_LEN("Y") }, GEOM_BUILDER(Create_func_y)},
+  { { STRING_WITH_LEN("YEARWEEK") }, BUILDER(Create_func_year_week)},
 
   { {0, 0}, NULL}
 };
@@ -7218,8 +7355,6 @@ get_native_fct_hash_key(const uchar *buff, size_t *length,
 
 int item_create_init()
 {
-  Native_func_registry *func;
-
   DBUG_ENTER("item_create_init");
 
   if (my_hash_init(& native_functions_hash,
@@ -7232,7 +7367,16 @@ int item_create_init()
                    MYF(0)))
     DBUG_RETURN(1);
 
-  for (func= func_array; func->builder != NULL; func++)
+  DBUG_RETURN(item_create_append(func_array));
+}
+
+int item_create_append(Native_func_registry array[])
+{
+  Native_func_registry *func;
+
+  DBUG_ENTER("item_create_append");
+
+  for (func= array; func->builder != NULL; func++)
   {
     if (my_hash_insert(& native_functions_hash, (uchar*) func))
       DBUG_RETURN(1);
@@ -7307,7 +7451,7 @@ have_important_literal_warnings(const MYSQL_TIME_STATUS *status)
 */
 
 Item *create_temporal_literal(THD *thd,
-                              const char *str, uint length,
+                              const char *str, size_t length,
                               CHARSET_INFO *cs,
                               enum_field_types type,
                               bool send_error)
@@ -7343,7 +7487,7 @@ Item *create_temporal_literal(THD *thd,
     DBUG_ASSERT(0);
   }
 
-  if (item)
+  if (likely(item))
   {
     if (status.warnings) // e.g. a note on nanosecond truncation
     {
@@ -7452,7 +7596,7 @@ Item *create_func_dyncol_get(THD *thd,  Item *str, Item *num,
 {
   Item *res;
 
-  if (!(res= new (thd->mem_root) Item_dyncol_get(thd, str, num)))
+  if (likely(!(res= new (thd->mem_root) Item_dyncol_get(thd, str, num))))
     return res;                                 // Return NULL
   return handler->create_typecast_item(thd, res,
                                        Type_cast_attributes(c_len, c_dec, cs));

@@ -30,6 +30,33 @@
 #include "sql_acl.h"                        // SELECT_ACL
 #include "sql_parse.h"                      // check_table_access
 
+
+Sp_rcontext_handler_local sp_rcontext_handler_local;
+Sp_rcontext_handler_package_body sp_rcontext_handler_package_body;
+
+sp_rcontext *Sp_rcontext_handler_local::get_rcontext(sp_rcontext *ctx) const
+{
+  return ctx;
+}
+
+sp_rcontext *Sp_rcontext_handler_package_body::get_rcontext(sp_rcontext *ctx) const
+{
+  return ctx->m_sp->m_parent->m_rcontext;
+}
+
+const LEX_CSTRING *Sp_rcontext_handler_local::get_name_prefix() const
+{
+  return &empty_clex_str;
+}
+
+const LEX_CSTRING *Sp_rcontext_handler_package_body::get_name_prefix() const
+{
+  static const LEX_CSTRING sp_package_body_variable_prefix_clex_str=
+                           {STRING_WITH_LEN("PACKAGE_BODY.")};
+  return &sp_package_body_variable_prefix_clex_str;
+}
+
+
 ///////////////////////////////////////////////////////////////////////////
 // sp_rcontext implementation.
 ///////////////////////////////////////////////////////////////////////////
@@ -67,6 +94,7 @@ sp_rcontext *sp_rcontext::create(THD *thd,
                                  Field *return_value_fld,
                                  Row_definition_list &field_def_lst)
 {
+  SELECT_LEX *save_current_select;
   sp_rcontext *ctx= new (thd->mem_root) sp_rcontext(owner,
                                                     root_parsing_ctx,
                                                     return_value_fld,
@@ -74,14 +102,19 @@ sp_rcontext *sp_rcontext::create(THD *thd,
   if (!ctx)
     return NULL;
 
+  /* Reset current_select as it's checked in Item_ident::Item_ident */
+  save_current_select= thd->lex->current_select;
+  thd->lex->current_select= 0;
+
   if (ctx->alloc_arrays(thd) ||
       ctx->init_var_table(thd, field_def_lst) ||
       ctx->init_var_items(thd, field_def_lst))
   {
     delete ctx;
-    return NULL;
+    ctx= 0;
   }
 
+  thd->lex->current_select= save_current_select;
   return ctx;
 }
 
@@ -163,11 +196,12 @@ bool sp_rcontext::init_var_table(THD *thd,
 */
 static inline bool
 check_column_grant_for_type_ref(THD *thd, TABLE_LIST *table_list,
-                                const char *str, size_t length)
+                                const char *str, size_t length,
+                                Field *fld)
 {
 #ifndef NO_EMBEDDED_ACCESS_CHECKS
   table_list->table->grant.want_privilege= SELECT_ACL;
-  return check_column_grant_in_table_ref(thd, table_list, str, length);
+  return check_column_grant_in_table_ref(thd, table_list, str, length, fld);
 #else
   return false;
 #endif
@@ -201,11 +235,11 @@ bool Qualified_column_ident::resolve_type_ref(THD *thd, Column_definition *def)
       !open_tables_only_view_structure(thd, table_list,
                                        thd->mdl_context.has_locks()))
   {
-    if ((src= lex.query_tables->table->find_field_by_name(&m_column)))
+    if (likely((src= lex.query_tables->table->find_field_by_name(&m_column))))
     {
       if (!(rc= check_column_grant_for_type_ref(thd, table_list,
                                                 m_column.str,
-                                                m_column.length)))
+                                                m_column.length, src)))
       {
         *def= Column_definition(thd, src, NULL/*No defaults,no constraints*/);
         def->flags&= (uint) ~NOT_NULL_FLAG;
@@ -269,7 +303,7 @@ bool Table_ident::resolve_table_rowtype_ref(THD *thd,
       LEX_CSTRING tmp= src[0]->field_name;
       Spvar_definition *def;
       if ((rc= check_column_grant_for_type_ref(thd, table_list,
-                                               tmp.str, tmp.length)) ||
+                                               tmp.str, tmp.length,src[0])) ||
           (rc= !(src[0]->field_name.str= thd->strmake(tmp.str, tmp.length))) ||
           (rc= !(def= new (thd->mem_root) Spvar_definition(thd, *src))))
         break;
@@ -310,7 +344,7 @@ bool sp_rcontext::init_var_items(THD *thd,
   uint num_vars= m_root_parsing_ctx->max_var_index();
 
   m_var_items.reset(
-    static_cast<Item **> (
+    static_cast<Item_field **> (
       thd->alloc(num_vars * sizeof (Item *))),
     num_vars);
 
@@ -381,22 +415,13 @@ bool Item_field_row::row_create_items(THD *thd, List<Spvar_definition> *list)
 }
 
 
-Field *Item_field_row::get_row_field(uint i) const
-{
-  DBUG_ASSERT(field);
-  Virtual_tmp_table **ptable= field->virtual_tmp_table_addr();
-  DBUG_ASSERT(ptable);
-  return ptable[0]->field[i];
-}
-
-
 bool sp_rcontext::set_return_value(THD *thd, Item **return_value_item)
 {
   DBUG_ASSERT(m_return_value_fld);
 
   m_return_value_set = true;
 
-  return sp_eval_expr(thd, NULL, m_return_value_fld, return_value_item);
+  return thd->sp_eval_expr(m_return_value_fld, return_value_item);
 }
 
 
@@ -416,7 +441,7 @@ bool sp_rcontext::push_cursor(THD *thd, sp_lex_keeper *lex_keeper)
 }
 
 
-void sp_rcontext::pop_cursors(uint count)
+void sp_rcontext::pop_cursors(size_t count)
 {
   DBUG_ASSERT(m_ccount >= count);
 
@@ -462,14 +487,14 @@ bool sp_rcontext::handle_sql_condition(THD *thd,
     handlers from this context are applicable: try to locate one
     in the outer scope.
   */
-  if (thd->is_fatal_sub_stmt_error && m_in_sub_stmt)
+  if (unlikely(thd->is_fatal_sub_stmt_error) && m_in_sub_stmt)
     DBUG_RETURN(false);
 
   Diagnostics_area *da= thd->get_stmt_da();
   const sp_handler *found_handler= NULL;
   const Sql_condition *found_condition= NULL;
 
-  if (thd->is_error())
+  if (unlikely(thd->is_error()))
   {
     found_handler=
       cur_spi->m_ctx->find_handler(da->get_error_condition_identity());
@@ -605,100 +630,64 @@ uint sp_rcontext::exit_handler(Diagnostics_area *da)
 
 int sp_rcontext::set_variable(THD *thd, uint idx, Item **value)
 {
-  Field *field= m_var_table->field[idx];
-  if (!value)
-  {
-    field->set_null();
-    return 0;
-  }
-  Item *dst= m_var_items[idx];
-
-  if (dst->cmp_type() != ROW_RESULT)
-    return sp_eval_expr(thd, dst, m_var_table->field[idx], value);
-
-  DBUG_ASSERT(dst->type() == Item::FIELD_ITEM);
-  if (value[0]->type() == Item::NULL_ITEM)
-  {
-    /*
-      We're in a auto-generated sp_inst_set, to assign
-      the explicit default NULL value to a ROW variable.
-    */
-    for (uint i= 0; i < dst->cols(); i++)
-    {
-      Item_field_row *item_field_row= (Item_field_row*) dst;
-      item_field_row->get_row_field(i)->set_null();
-    }
-    return false;
-  }
-
-  /**
-    - In case if we're assigning a ROW variable from another ROW variable,
-      value[0] points to Item_splocal. sp_prepare_func_item() will return the
-      fixed underlying Item_field_spvar with ROW members in its aguments().
-    - In case if we're assigning from a ROW() value, src and value[0] will
-      point to the same Item_row.
-  */
-  Item *src;
-  if (!(src= sp_prepare_func_item(thd, value, dst->cols())) ||
-      src->cmp_type() != ROW_RESULT)
-  {
-    my_error(ER_OPERAND_COLUMNS, MYF(0), dst->cols());
-    return true;
-  }
-  DBUG_ASSERT(dst->cols() == src->cols());
-  for (uint i= 0; i < src->cols(); i++)
-    set_variable_row_field(thd, idx, i, src->addr(i));
-  return false;
-}
-
-
-void sp_rcontext::set_variable_row_field_to_null(THD *thd,
-                                                 uint var_idx,
-                                                 uint field_idx)
-{
-  Item *dst= get_item(var_idx);
-  DBUG_ASSERT(dst->type() == Item::FIELD_ITEM);
-  DBUG_ASSERT(dst->cmp_type() == ROW_RESULT);
-  Item_field_row *item_field_row= (Item_field_row*) dst;
-  item_field_row->get_row_field(field_idx)->set_null();
+  DBUG_ENTER("sp_rcontext::set_variable");
+  DBUG_ASSERT(value);
+  DBUG_RETURN(thd->sp_eval_expr(m_var_table->field[idx], value));
 }
 
 
 int sp_rcontext::set_variable_row_field(THD *thd, uint var_idx, uint field_idx,
                                         Item **value)
 {
+  DBUG_ENTER("sp_rcontext::set_variable_row_field");
   DBUG_ASSERT(value);
-  Item *dst= get_item(var_idx);
-  DBUG_ASSERT(dst->type() == Item::FIELD_ITEM);
-  DBUG_ASSERT(dst->cmp_type() == ROW_RESULT);
-  Item_field_row *item_field_row= (Item_field_row*) dst;
+  Virtual_tmp_table *vtable= virtual_tmp_table_for_row(var_idx);
+  DBUG_RETURN(thd->sp_eval_expr(vtable->field[field_idx], value));
+}
 
-  Item *expr_item= sp_prepare_func_item(thd, value);
-  if (!expr_item)
-  {
-    DBUG_ASSERT(thd->is_error());
-    return true;
-  }
-  return sp_eval_expr(thd,
-                      item_field_row->arguments()[field_idx],
-                      item_field_row->get_row_field(field_idx),
-                      value);
+
+int sp_rcontext::set_variable_row_field_by_name(THD *thd, uint var_idx,
+                                                const LEX_CSTRING &field_name,
+                                                Item **value)
+{
+  DBUG_ENTER("sp_rcontext::set_variable_row_field_by_name");
+  uint field_idx;
+  if (find_row_field_by_name_or_error(&field_idx, var_idx, field_name))
+    DBUG_RETURN(1);
+  DBUG_RETURN(set_variable_row_field(thd, var_idx, field_idx, value));
 }
 
 
 int sp_rcontext::set_variable_row(THD *thd, uint var_idx, List<Item> &items)
 {
   DBUG_ENTER("sp_rcontext::set_variable_row");
-  DBUG_ASSERT(get_item(var_idx)->cols() == items.elements);
-  List_iterator<Item> it(items);
-  Item *item;
-  for (uint i= 0 ; (item= it++) ; i++)
-  {
-    int rc;
-    if ((rc= set_variable_row_field(thd, var_idx, i, &item)))
-      DBUG_RETURN(rc);
-  }
-  DBUG_RETURN(0);
+  DBUG_ASSERT(get_variable(var_idx)->cols() == items.elements);
+  Virtual_tmp_table *vtable= virtual_tmp_table_for_row(var_idx);
+  Sp_eval_expr_state state(thd);
+  DBUG_RETURN(vtable->sp_set_all_fields_from_item_list(thd, items));
+}
+
+
+Virtual_tmp_table *sp_rcontext::virtual_tmp_table_for_row(uint var_idx)
+{
+  DBUG_ASSERT(get_variable(var_idx)->type() == Item::FIELD_ITEM);
+  DBUG_ASSERT(get_variable(var_idx)->cmp_type() == ROW_RESULT);
+  Field *field= m_var_table->field[var_idx];
+  Virtual_tmp_table **ptable= field->virtual_tmp_table_addr();
+  DBUG_ASSERT(ptable);
+  DBUG_ASSERT(ptable[0]);
+  return ptable[0];
+}
+
+
+bool sp_rcontext::find_row_field_by_name_or_error(uint *field_idx,
+                                                  uint var_idx,
+                                                  const LEX_CSTRING &field_name)
+{
+  Virtual_tmp_table *vtable= virtual_tmp_table_for_row(var_idx);
+  Field *row= m_var_table->field[var_idx];
+  return vtable->sp_find_field_by_name_or_error(field_idx,
+                                                row->field_name, field_name);
 }
 
 
@@ -721,7 +710,7 @@ Item_cache *sp_rcontext::create_case_expr_holder(THD *thd,
 bool sp_rcontext::set_case_expr(THD *thd, int case_expr_id,
                                 Item **case_expr_item_ptr)
 {
-  Item *case_expr_item= sp_prepare_func_item(thd, case_expr_item_ptr);
+  Item *case_expr_item= thd->sp_prepare_func_item(case_expr_item_ptr);
   if (!case_expr_item)
     return true;
 
@@ -847,7 +836,7 @@ int sp_cursor::fetch(THD *thd, List<sp_variable> *vars, bool error_on_no_data)
   if (vars->elements != result.get_field_count() &&
       (vars->elements != 1 ||
        result.get_field_count() !=
-       thd->spcont->get_item(vars->head()->offset)->cols()))
+       thd->spcont->get_variable(vars->head()->offset)->cols()))
   {
     my_message(ER_SP_WRONG_NO_OF_FETCH_ARGS,
                ER_THD(thd, ER_SP_WRONG_NO_OF_FETCH_ARGS), MYF(0));
@@ -945,7 +934,7 @@ int sp_cursor::Select_fetch_into_spvars::send_data(List<Item> &items)
     on attempt to assign a scalar value to a ROW variable.
   */
   return spvar_list->elements == 1 &&
-         (item= thd->spcont->get_item(spvar_list->head()->offset)) &&
+         (item= thd->spcont->get_variable(spvar_list->head()->offset)) &&
          item->type_handler() == &type_handler_row &&
          item->cols() == items.elements ?
     thd->spcont->set_variable_row(thd, spvar_list->head()->offset, items) :

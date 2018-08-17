@@ -1,7 +1,7 @@
 /*****************************************************************************
 
 Copyright (c) 2016, Oracle and/or its affiliates. All Rights Reserved.
-Copyright (c) 2017, MariaDB Corporation.
+Copyright (c) 2017, 2018, MariaDB Corporation.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -37,6 +37,7 @@ Created 2014/01/16 Jimmy Yang
 #include "ibuf0ibuf.h"
 #include "trx0trx.h"
 #include "srv0mon.h"
+#include "que0que.h"
 #include "gis0geo.h"
 
 /** Restore the stored position of a persistent cursor bufferfixing the page */
@@ -95,7 +96,6 @@ rtr_pcur_getnext_from_path(
 {
 	dict_index_t*	index = btr_cur->index;
 	bool		found = false;
-	ulint		space = dict_index_get_space(index);
 	page_cur_t*	page_cursor;
 	ulint		level = 0;
 	node_visit_t	next_rec;
@@ -145,7 +145,7 @@ rtr_pcur_getnext_from_path(
 						| MTR_MEMO_X_LOCK));
 	}
 
-	const page_size_t&	page_size = dict_table_page_size(index->table);
+	const page_size_t	page_size(index->table->space->flags);
 
 	/* Pop each node/page to be searched from "path" structure
 	and do a search on it. Please note, any pages that are in
@@ -266,11 +266,11 @@ rtr_pcur_getnext_from_path(
 					btr_cur->page_cur.block)));
 #endif /* UNIV_RTR_DEBUG */
 
-		page_id_t	page_id(space, next_rec.page_no);
 		dberr_t err = DB_SUCCESS;
 
 		block = buf_page_get_gen(
-			page_id, page_size,
+			page_id_t(index->table->space->id,
+				  next_rec.page_no), page_size,
 			rw_latch, NULL, BUF_GET, __FILE__, __LINE__, mtr, &err);
 
 		if (block == NULL) {
@@ -299,11 +299,12 @@ rtr_pcur_getnext_from_path(
 			    && mode != PAGE_CUR_RTREE_LOCATE) {
 				ut_ad(rtr_info->thr);
 				lock_place_prdt_page_lock(
-					space, next_page_no, index,
+					index->table->space->id,
+					next_page_no, index,
 					rtr_info->thr);
 			}
 			new_split = true;
-#if UNIV_GIS_DEBUG
+#if defined(UNIV_GIS_DEBUG)
 			fprintf(stderr,
 				"GIS_DIAG: Splitted page found: %d, %ld\n",
 				static_cast<int>(need_parent), next_page_no);
@@ -406,8 +407,7 @@ rtr_pcur_getnext_from_path(
 			}
 
 			lock_prdt_lock(block, &prdt, index, LOCK_S,
-				       LOCK_PREDICATE, btr_cur->rtr_info->thr,
-				       mtr);
+				       LOCK_PREDICATE, btr_cur->rtr_info->thr);
 
 			if (rw_latch == RW_NO_LATCH) {
 				rw_lock_s_unlock(&(block->lock));
@@ -421,11 +421,11 @@ rtr_pcur_getnext_from_path(
 				if (my_latch_mode == BTR_MODIFY_TREE
 				    && level == 0) {
 					ut_ad(rw_latch == RW_NO_LATCH);
-					page_id_t	my_page_id(
-						space, block->page.id.page_no());
 
 					btr_cur_latch_leaves(
-						block, my_page_id,
+						block,
+						page_id_t(index->table->space->id,
+							  block->page.id.page_no()),
 						page_size, BTR_MODIFY_TREE,
 						btr_cur, mtr);
 				}
@@ -718,7 +718,7 @@ rtr_page_get_father_node_ptr(
 
 	ut_ad(dict_index_get_page(index) != page_no);
 
-	level = btr_page_get_level(btr_cur_get_page(cursor), mtr);
+	level = btr_page_get_level(btr_cur_get_page(cursor));
 
 	user_rec = btr_cur_get_rec(cursor);
 	ut_a(page_rec_is_user_rec(user_rec));
@@ -728,7 +728,7 @@ rtr_page_get_father_node_ptr(
 	rtr_get_mbr_from_rec(user_rec, offsets, &mbr);
 
 	tuple = rtr_index_build_node_ptr(
-			index, &mbr, user_rec, page_no, heap, level);
+		index, &mbr, user_rec, page_no, heap);
 
 	if (sea_cur && !sea_cur->rtr_info) {
 		sea_cur = NULL;
@@ -773,8 +773,9 @@ rtr_page_get_father_node_ptr(
 
 		error << ". You should dump + drop + reimport the table to"
 			" fix the corruption. If the crash happens at"
-			" database startup, see " REFMAN
-			"forcing-innodb-recovery.html about forcing"
+			" database startup, see "
+			"https://mariadb.com/kb/en/library/xtradbinnodb-recovery-modes/"
+			" about forcing"
 			" recovery. Then dump + drop + reimport.";
 	}
 
@@ -1254,8 +1255,8 @@ rtr_check_discard_page(
 	mutex_exit(&index->rtr_track->rtr_active_mutex);
 
 	lock_mutex_enter();
-	lock_prdt_page_free_from_discard(block, lock_sys->prdt_hash);
-	lock_prdt_page_free_from_discard(block, lock_sys->prdt_page_hash);
+	lock_prdt_page_free_from_discard(block, lock_sys.prdt_hash);
+	lock_prdt_page_free_from_discard(block, lock_sys.prdt_page_hash);
 	lock_mutex_exit();
 }
 
@@ -1344,9 +1345,8 @@ rtr_cur_restore_position(
 	const page_t*	page;
 	page_cur_t*	page_cursor;
 	node_visit_t*	node = rtr_get_parent_node(btr_cur, level, false);
-	ulint		space = dict_index_get_space(index);
 	node_seq_t	path_ssn = node->seq_no;
-	page_size_t	page_size = dict_table_page_size(index->table);
+	const page_size_t	page_size(index->table->space->flags);
 
 	ulint		page_no = node->page_no;
 
@@ -1359,11 +1359,11 @@ rtr_cur_restore_position(
 	ut_ad(r_cursor == node->cursor);
 
 search_again:
-	page_id_t	page_id(space, page_no);
 	dberr_t err = DB_SUCCESS;
 
 	block = buf_page_get_gen(
-		page_id, page_size, RW_X_LATCH, NULL,
+		page_id_t(index->table->space->id, page_no),
+		page_size, RW_X_LATCH, NULL,
 		BUF_GET, __FILE__, __LINE__, mtr, &err);
 
 	ut_ad(block);
@@ -1453,7 +1453,7 @@ rtr_leaf_push_match_rec(
 	data_len = rec_offs_data_size(offsets) + rec_offs_extra_size(offsets);
 	match_rec->used += data_len;
 
-	ut_ad(match_rec->used < UNIV_PAGE_SIZE);
+	ut_ad(match_rec->used < srv_page_size);
 }
 
 /**************************************************************//**
@@ -1679,7 +1679,7 @@ rtr_cur_search_with_match(
 
 	page = buf_block_get_frame(block);
 
-	const ulint level = btr_page_get_level(page, mtr);
+	const ulint level = btr_page_get_level(page);
 	const bool is_leaf = !level;
 
 	if (mode == PAGE_CUR_RTREE_LOCATE) {
@@ -1715,7 +1715,7 @@ rtr_cur_search_with_match(
 		first page as much as possible, as there will be problem
 		when update MIN_REC rec in compress table */
 		if (buf_block_get_page_zip(block)
-		    && mach_read_from_4(page + FIL_PAGE_PREV) == FIL_NULL
+		    && !page_has_prev(page)
 		    && page_get_n_recs(page) >= 2) {
 
 			rec = page_rec_get_next_const(rec);

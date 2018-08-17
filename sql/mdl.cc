@@ -20,7 +20,7 @@
 #include "sql_array.h"
 #include "rpl_rli.h"
 #include <lf.h>
-#include <mysqld_error.h>
+#include "unireg.h"
 #include <mysql/plugin.h>
 #include <mysql/service_thd_wait.h>
 #include <mysql/psi/mysql_stage.h>
@@ -85,6 +85,7 @@ PSI_stage_info MDL_key::m_namespace_to_wait_state_name[NAMESPACE_END]=
   {0, "Waiting for table metadata lock", 0},
   {0, "Waiting for stored function metadata lock", 0},
   {0, "Waiting for stored procedure metadata lock", 0},
+  {0, "Waiting for stored package body metadata lock", 0},
   {0, "Waiting for trigger metadata lock", 0},
   {0, "Waiting for event metadata lock", 0},
   {0, "Waiting for commit lock", 0},
@@ -3043,6 +3044,7 @@ const char *wsrep_get_mdl_namespace_name(MDL_key::enum_mdl_namespace ns)
   case MDL_key::TABLE     : return "TABLE";
   case MDL_key::FUNCTION  : return "FUNCTION";
   case MDL_key::PROCEDURE : return "PROCEDURE";
+  case MDL_key::PACKAGE_BODY: return "PACKAGE BODY";
   case MDL_key::TRIGGER   : return "TRIGGER";
   case MDL_key::EVENT     : return "EVENT";
   case MDL_key::COMMIT    : return "COMMIT";

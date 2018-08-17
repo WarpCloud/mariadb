@@ -103,7 +103,7 @@ bool Update_plan::save_explain_data_intern(MEM_ROOT *mem_root,
                                            bool is_analyze)
 {
   explain->select_type= "SIMPLE";
-  explain->table_name.append(table->pos_in_table_list->alias);
+  explain->table_name.append(&table->pos_in_table_list->alias);
   
   explain->impossible_where= false;
   explain->no_partitions= false;
@@ -223,18 +223,43 @@ bool Update_plan::save_explain_data_intern(MEM_ROOT *mem_root,
 
 
 static bool record_should_be_deleted(THD *thd, TABLE *table, SQL_SELECT *sel,
-                                     Explain_delete *explain)
+                                     Explain_delete *explain, bool truncate_history)
 {
+  bool check_delete= true;
+
+  if (table->versioned())
+  {
+    bool historical= !table->vers_end_field()->is_max();
+    check_delete= truncate_history ? historical : !historical;
+  }
+
   explain->tracker.on_record_read();
   thd->inc_examined_row_count(1);
   if (table->vfield)
     (void) table->update_virtual_fields(table->file, VCOL_UPDATE_FOR_DELETE);
-  if (!sel || sel->skip_record(thd) > 0)
+  if (check_delete && (!sel || sel->skip_record(thd) > 0))
   {
     explain->tracker.on_record_after_where();
     return true;
   }
   return false;
+}
+
+
+inline
+int TABLE::delete_row()
+{
+  if (!versioned(VERS_TIMESTAMP) || !vers_end_field()->is_max())
+    return file->ha_delete_row(record[0]);
+
+  store_record(this, record[1]);
+  vers_update_end();
+  int res;
+  if ((res= file->extra(HA_EXTRA_REMEMBER_POS)))
+    return res;
+  if ((res= file->ha_update_row(record[1], record[0])))
+    return res;
+  return file->extra(HA_EXTRA_RESTORE_POS);
 }
 
 
@@ -285,6 +310,28 @@ bool mysql_delete(THD *thd, TABLE_LIST *table_list, COND *conds,
     DBUG_RETURN(TRUE);
 
   THD_STAGE_INFO(thd, stage_init_update);
+
+  bool truncate_history= table_list->vers_conditions.is_set();
+  if (truncate_history)
+  {
+    if (table_list->is_view_or_derived())
+    {
+      my_error(ER_IT_IS_A_VIEW, MYF(0), table_list->table_name.str);
+      DBUG_RETURN(true);
+    }
+
+    TABLE *table= table_list->table;
+    DBUG_ASSERT(table);
+
+    DBUG_ASSERT(!conds || thd->stmt_arena->is_stmt_execute());
+    if (select_lex->vers_setup_conds(thd, table_list))
+      DBUG_RETURN(TRUE);
+
+    DBUG_ASSERT(!conds);
+    conds= table_list->on_expr;
+    table_list->on_expr= NULL;
+  }
+
   if (mysql_handle_list_of_derived(thd->lex, table_list, DT_MERGE_FOR_INSERT))
     DBUG_RETURN(TRUE);
   if (mysql_handle_list_of_derived(thd->lex, table_list, DT_PREPARE))
@@ -292,7 +339,7 @@ bool mysql_delete(THD *thd, TABLE_LIST *table_list, COND *conds,
 
   if (!table_list->single_table_updatable())
   {
-     my_error(ER_NON_UPDATABLE_TABLE, MYF(0), table_list->alias, "DELETE");
+     my_error(ER_NON_UPDATABLE_TABLE, MYF(0), table_list->alias.str, "DELETE");
      DBUG_RETURN(TRUE);
   }
   if (!(table= table_list->table) || !table->is_created())
@@ -354,7 +401,7 @@ bool mysql_delete(THD *thd, TABLE_LIST *table_list, COND *conds,
   }
 
   const_cond_result= const_cond && (!conds || conds->val_int());
-  if (thd->is_error())
+  if (unlikely(thd->is_error()))
   {
     /* Error evaluating val_int(). */
     DBUG_RETURN(TRUE);
@@ -380,7 +427,8 @@ bool mysql_delete(THD *thd, TABLE_LIST *table_list, COND *conds,
                  table->triggers->has_delete_triggers());
   if (!with_select && !using_limit && const_cond_result &&
       (!thd->is_current_stmt_binlog_format_row() &&
-       !has_triggers))
+       !has_triggers)
+      && !table->versioned(VERS_TIMESTAMP))
   {
     /* Update the table->file->stats.records number */
     table->file->info(HA_STATUS_VARIABLE | HA_STATUS_NO_LOCK | HA_STATUS_INIT_FEDX_INFO);
@@ -391,7 +439,7 @@ bool mysql_delete(THD *thd, TABLE_LIST *table_list, COND *conds,
     if (thd->lex->describe)
       goto produce_explain_and_leave;
 
-    if (!(error=table->file->ha_delete_all_rows()))
+    if (likely(!(error=table->file->ha_delete_all_rows())))
     {
       /*
         If delete_all_rows() is used, it is not possible to log the
@@ -447,7 +495,7 @@ bool mysql_delete(THD *thd, TABLE_LIST *table_list, COND *conds,
   table->quick_keys.clear_all();		// Can't use 'only index'
 
   select=make_select(table, 0, 0, conds, (SORT_INFO*) 0, 0, &error);
-  if (error)
+  if (unlikely(error))
     DBUG_RETURN(TRUE);
   if ((select && select->check_quick(thd, safe_update, limit)) || !limit)
   {
@@ -463,7 +511,7 @@ bool mysql_delete(THD *thd, TABLE_LIST *table_list, COND *conds,
       Currently they rely on the user checking DA for
       errors when unwinding the stack after calling Item::val_xxx().
     */
-    if (thd->is_error())
+    if (unlikely(thd->is_error()))
       DBUG_RETURN(TRUE);
     my_ok(thd, 0);
     DBUG_RETURN(0);				// Nothing to delete
@@ -629,10 +677,10 @@ bool mysql_delete(THD *thd, TABLE_LIST *table_list, COND *conds,
   else
     error= init_read_record_idx(&info, thd, table, 1, query_plan.index,
                                 reverse);
-  if (error)
+  if (unlikely(error))
     goto got_error;
   
-  if (init_ftfuncs(thd, select_lex, 1))
+  if (unlikely(init_ftfuncs(thd, select_lex, 1)))
     goto got_error;
 
   if ((table->file->ha_table_flags() & HA_CAN_FORCE_BULK_DELETE) &&
@@ -641,9 +689,9 @@ bool mysql_delete(THD *thd, TABLE_LIST *table_list, COND *conds,
 
   if (with_select)
   {
-    if (result->send_result_set_metadata(select_lex->item_list,
-                                         Protocol::SEND_NUM_ROWS |
-                                         Protocol::SEND_EOF))
+    if (unlikely(result->send_result_set_metadata(select_lex->item_list,
+                                                  Protocol::SEND_NUM_ROWS |
+                                                  Protocol::SEND_EOF)))
       goto cleanup;
   }
 
@@ -665,10 +713,11 @@ bool mysql_delete(THD *thd, TABLE_LIST *table_list, COND *conds,
     while (!(error=info.read_record()) && !thd->killed &&
           ! thd->is_error())
     {
-      if (record_should_be_deleted(thd, table, select, explain))
+      if (record_should_be_deleted(thd, table, select, explain, truncate_history))
       {
         table->file->position(table->record[0]);
-        if ((error= deltempfile->unique_add((char*) table->file->ref)))
+        if (unlikely((error=
+                      deltempfile->unique_add((char*) table->file->ref))))
         {
           error= 1;
           goto terminate_delete;
@@ -678,8 +727,10 @@ bool mysql_delete(THD *thd, TABLE_LIST *table_list, COND *conds,
       }
     }
     end_read_record(&info);
-    if (deltempfile->get(table) || table->file->ha_index_or_rnd_end() ||
-        init_read_record(&info, thd, table, 0, &deltempfile->sort, 0, 1, false))
+    if (unlikely(deltempfile->get(table)) ||
+        unlikely(table->file->ha_index_or_rnd_end()) ||
+        unlikely(init_read_record(&info, thd, table, 0, &deltempfile->sort, 0,
+                                  1, false)))
     {
       error= 1;
       goto terminate_delete;
@@ -688,14 +739,15 @@ bool mysql_delete(THD *thd, TABLE_LIST *table_list, COND *conds,
   }
 
   THD_STAGE_INFO(thd, stage_updating);
-  while (!(error=info.read_record()) && !thd->killed &&
-        ! thd->is_error())
+  while (likely(!(error=info.read_record())) && likely(!thd->killed) &&
+         likely(!thd->is_error()))
   {
     if (delete_while_scanning)
-      delete_record= record_should_be_deleted(thd, table, select, explain);
+      delete_record= record_should_be_deleted(thd, table, select, explain,
+                                              truncate_history);
     if (delete_record)
     {
-      if (table->triggers &&
+      if (!truncate_history && table->triggers &&
           table->triggers->process_triggers(thd, TRG_EVENT_DELETE,
                                             TRG_ACTION_BEFORE, FALSE))
       {
@@ -709,10 +761,11 @@ bool mysql_delete(THD *thd, TABLE_LIST *table_list, COND *conds,
         break;
       }
 
-      if (!(error= table->file->ha_delete_row(table->record[0])))
+      error= table->delete_row();
+      if (likely(!error))
       {
 	deleted++;
-        if (table->triggers &&
+        if (!truncate_history && table->triggers &&
             table->triggers->process_triggers(thd, TRG_EVENT_DELETE,
                                               TRG_ACTION_AFTER, FALSE))
         {
@@ -740,7 +793,7 @@ bool mysql_delete(THD *thd, TABLE_LIST *table_list, COND *conds,
       Don't try unlocking the row if skip_record reported an error since in
       this case the transaction might have been rolled back already.
     */
-    else if (!thd->is_error())
+    else if (likely(!thd->is_error()))
       table->file->unlock_row();  // Row failed selection, release lock on it
     else
       break;
@@ -748,9 +801,9 @@ bool mysql_delete(THD *thd, TABLE_LIST *table_list, COND *conds,
 
 terminate_delete:
   killed_status= thd->killed;
-  if (killed_status != NOT_KILLED || thd->is_error())
+  if (unlikely(killed_status != NOT_KILLED || thd->is_error()))
     error= 1;					// Aborted
-  if (will_batch && (loc_error= table->file->end_bulk_delete()))
+  if (will_batch && unlikely((loc_error= table->file->end_bulk_delete())))
   {
     if (error != 1)
       table->file->print_error(loc_error,MYF(0));
@@ -789,7 +842,7 @@ cleanup:
       thd->transaction.all.modified_non_trans_table= TRUE;
 
   /* See similar binlogging code in sql_update.cc, for comments */
-  if ((error < 0) || thd->transaction.stmt.modified_non_trans_table)
+  if (likely((error < 0) || thd->transaction.stmt.modified_non_trans_table))
   {
     if (WSREP_EMULATE_BINLOG(thd) || mysql_bin_log.is_open())
     {
@@ -799,6 +852,8 @@ cleanup:
       else
         errcode= query_error_code(thd, killed_status == NOT_KILLED);
 
+      ScopedStatementReplication scoped_stmt_rpl(
+          table->versioned(VERS_TRX_ID) ? thd : NULL);
       /*
         [binlog]: If 'handler::delete_all_rows()' was called and the
         storage engine does not inject the rows itself, we replicate
@@ -818,7 +873,7 @@ cleanup:
   }
   DBUG_ASSERT(transactional_table || !deleted || thd->transaction.stmt.modified_non_trans_table);
   
-  if (error < 0 || 
+  if (likely(error < 0) ||
       (thd->lex->ignore && !thd->is_error() && !thd->is_fatal_error))
   {
     if (thd->lex->analyze_stmt)
@@ -877,14 +932,14 @@ got_error:
     wild_num            - number of wildcards used in optional SELECT clause 
     field_list          - list of items in optional SELECT clause
     conds		- conditions
-l
+
   RETURN VALUE
     FALSE OK
     TRUE  error
 */
-  int mysql_prepare_delete(THD *thd, TABLE_LIST *table_list,
-                           uint wild_num, List<Item> &field_list, Item **conds,
-                           bool *delete_while_scanning)
+int mysql_prepare_delete(THD *thd, TABLE_LIST *table_list,
+                         uint wild_num, List<Item> &field_list, Item **conds,
+                         bool *delete_while_scanning)
 {
   Item *fake_conds= 0;
   SELECT_LEX *select_lex= &thd->lex->select_lex;
@@ -899,7 +954,18 @@ l
                                     select_lex->leaf_tables, FALSE, 
                                     DELETE_ACL, SELECT_ACL, TRUE))
     DBUG_RETURN(TRUE);
-  if ((wild_num && setup_wild(thd, table_list, field_list, NULL, wild_num)) ||
+  if (table_list->vers_conditions.is_set())
+  {
+    if (table_list->is_view())
+    {
+      my_error(ER_IT_IS_A_VIEW, MYF(0), table_list->table_name.str);
+      DBUG_RETURN(true);
+    }
+    if (select_lex->vers_setup_conds(thd, table_list))
+      DBUG_RETURN(true);
+  }
+  if ((wild_num && setup_wild(thd, table_list, field_list, NULL, wild_num,
+                              &select_lex->hidden_bit_fields)) ||
       setup_fields(thd, Ref_ptr_array(),
                    field_list, MARK_COLUMNS_READ, NULL, NULL, 0) ||
       setup_conds(thd, table_list, select_lex->leaf_tables, conds) ||
@@ -908,7 +974,7 @@ l
   if (!table_list->single_table_updatable() ||
       check_key_in_view(thd, table_list))
   {
-    my_error(ER_NON_UPDATABLE_TABLE, MYF(0), table_list->alias, "DELETE");
+    my_error(ER_NON_UPDATABLE_TABLE, MYF(0), table_list->alias.str, "DELETE");
     DBUG_RETURN(TRUE);
   }
 
@@ -1000,7 +1066,7 @@ int mysql_multi_delete_prepare(THD *thd)
         check_key_in_view(thd, target_tbl->correspondent_table))
     {
       my_error(ER_NON_UPDATABLE_TABLE, MYF(0),
-               target_tbl->table_name, "DELETE");
+               target_tbl->table_name.str, "DELETE");
       DBUG_RETURN(TRUE);
     }
     /*
@@ -1074,7 +1140,8 @@ multi_delete::initialize_tables(JOIN *join)
   Unique **tempfiles_ptr;
   DBUG_ENTER("initialize_tables");
 
-  if ((thd->variables.option_bits & OPTION_SAFE_UPDATES) && error_if_full_join(join))
+  if (unlikely((thd->variables.option_bits & OPTION_SAFE_UPDATES) &&
+               error_if_full_join(join)))
     DBUG_RETURN(1);
 
   table_map tables_to_delete_from=0;
@@ -1084,7 +1151,7 @@ multi_delete::initialize_tables(JOIN *join)
     TABLE_LIST *tbl= walk->correspondent_table->find_table_for_update();
     tables_to_delete_from|= tbl->table->map;
     if (delete_while_scanning &&
-        unique_table(thd, tbl, join->tables_list, false))
+        unique_table(thd, tbl, join->tables_list, 0))
     {
       /*
         If the table we are going to delete from appears
@@ -1185,6 +1252,11 @@ int multi_delete::send_data(List<Item> &values)
     if (table->status & (STATUS_NULL_ROW | STATUS_DELETED))
       continue;
 
+    if (table->versioned() && !table->vers_end_field()->is_max())
+    {
+      continue;
+    }
+
     table->file->position(table->record[0]);
     found++;
 
@@ -1197,7 +1269,9 @@ int multi_delete::send_data(List<Item> &values)
                                             TRG_ACTION_BEFORE, FALSE))
         DBUG_RETURN(1);
       table->status|= STATUS_DELETED;
-      if (!(error=table->file->ha_delete_row(table->record[0])))
+
+      error= table->delete_row();
+      if (likely(!error))
       {
         deleted++;
         if (!table->file->has_transactions())
@@ -1220,7 +1294,7 @@ int multi_delete::send_data(List<Item> &values)
     else
     {
       error=tempfiles[secure_counter]->unique_add((char*) table->file->ref);
-      if (error)
+      if (unlikely(error))
       {
 	error= 1;                               // Fatal error
 	DBUG_RETURN(1);
@@ -1316,19 +1390,19 @@ int multi_delete::do_deletes()
   { 
     TABLE *table = table_being_deleted->table;
     int local_error; 
-    if (tempfiles[counter]->get(table))
+    if (unlikely(tempfiles[counter]->get(table)))
       DBUG_RETURN(1);
 
     local_error= do_table_deletes(table, &tempfiles[counter]->sort,
                                   thd->lex->ignore);
 
-    if (thd->killed && !local_error)
+    if (unlikely(thd->killed) && likely(!local_error))
       DBUG_RETURN(1);
 
-    if (local_error == -1)				// End of file
-      local_error = 0;
+    if (unlikely(local_error == -1))            // End of file
+      local_error= 0;
 
-    if (local_error)
+    if (unlikely(local_error))
       DBUG_RETURN(local_error);
   }
   DBUG_RETURN(0);
@@ -1358,27 +1432,23 @@ int multi_delete::do_table_deletes(TABLE *table, SORT_INFO *sort_info,
   ha_rows last_deleted= deleted;
   DBUG_ENTER("do_deletes_for_table");
 
-  if (init_read_record(&info, thd, table, NULL, sort_info, 0, 1, FALSE))
+  if (unlikely(init_read_record(&info, thd, table, NULL, sort_info, 0, 1,
+                                FALSE)))
     DBUG_RETURN(1);
 
-  /*
-    Ignore any rows not found in reference tables as they may already have
-    been deleted by foreign key handling
-  */
-  info.ignore_not_found_rows= 1;
   bool will_batch= !table->file->start_bulk_delete();
-  while (!(local_error= info.read_record()) && !thd->killed)
+  while (likely(!(local_error= info.read_record())) && likely(!thd->killed))
   {
     if (table->triggers &&
-        table->triggers->process_triggers(thd, TRG_EVENT_DELETE,
-                                          TRG_ACTION_BEFORE, FALSE))
+        unlikely(table->triggers->process_triggers(thd, TRG_EVENT_DELETE,
+                                                   TRG_ACTION_BEFORE, FALSE)))
     {
       local_error= 1;
       break;
     }
-      
-    local_error= table->file->ha_delete_row(table->record[0]);
-    if (local_error && !ignore)
+
+    local_error= table->delete_row();
+    if (unlikely(local_error) && !ignore)
     {
       table->file->print_error(local_error, MYF(0));
       break;
@@ -1389,7 +1459,7 @@ int multi_delete::do_table_deletes(TABLE *table, SORT_INFO *sort_info,
       during ha_delete_row.
       Also, don't execute the AFTER trigger if the row operation failed.
     */
-    if (!local_error)
+    if (unlikely(!local_error))
     {
       deleted++;
       if (table->triggers &&
@@ -1404,7 +1474,7 @@ int multi_delete::do_table_deletes(TABLE *table, SORT_INFO *sort_info,
   if (will_batch)
   {
     int tmp_error= table->file->end_bulk_delete();
-    if (tmp_error && !local_error)
+    if (unlikely(tmp_error) && !local_error)
     {
       local_error= tmp_error;
       table->file->print_error(local_error, MYF(0));
@@ -1452,28 +1522,30 @@ bool multi_delete::send_eof()
   {
     query_cache_invalidate3(thd, delete_tables, 1);
   }
-  if ((local_error == 0) || thd->transaction.stmt.modified_non_trans_table)
+  if (likely((local_error == 0) ||
+             thd->transaction.stmt.modified_non_trans_table))
   {
     if(WSREP_EMULATE_BINLOG(thd) || mysql_bin_log.is_open())
     {
       int errcode= 0;
-      if (local_error == 0)
+      if (likely(local_error == 0))
         thd->clear_error();
       else
         errcode= query_error_code(thd, killed_status == NOT_KILLED);
-      if (thd->binlog_query(THD::ROW_QUERY_TYPE,
-                            thd->query(), thd->query_length(),
-                            transactional_tables, FALSE, FALSE, errcode) &&
+      if (unlikely(thd->binlog_query(THD::ROW_QUERY_TYPE,
+                                     thd->query(), thd->query_length(),
+                                     transactional_tables, FALSE, FALSE,
+                                     errcode)) &&
           !normal_tables)
       {
 	local_error=1;  // Log write failed: roll back the SQL statement
       }
     }
   }
-  if (local_error != 0)
+  if (unlikely(local_error != 0))
     error_handled= TRUE; // to force early leave from ::abort_result_set()
 
-  if (!local_error && !thd->lex->analyze_stmt)
+  if (likely(!local_error && !thd->lex->analyze_stmt))
   {
     ::my_ok(thd, deleted);
   }

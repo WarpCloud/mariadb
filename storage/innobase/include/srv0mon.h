@@ -2,7 +2,7 @@
 
 Copyright (c) 2010, 2015, Oracle and/or its affiliates. All Rights Reserved.
 Copyright (c) 2012, Facebook Inc.
-Copyright (c) 2013, 2017, MariaDB Corporation.
+Copyright (c) 2013, 2018, MariaDB Corporation.
 
 This program is free software; you can redistribute it and/or modify it
 under the terms of the GNU General Public License as published by the
@@ -503,18 +503,18 @@ extern ulint		monitor_set_tbl[(NUM_MONITOR + NUM_BITS_ULINT - 1) /
 
 /** Macros to turn on/off the control bit in monitor_set_tbl for a monitor
 counter option. */
-#define MONITOR_ON(monitor)				\
-	(monitor_set_tbl[monitor / NUM_BITS_ULINT] |=	\
-			((ulint)1 << (monitor % NUM_BITS_ULINT)))
+#define MONITOR_ON(monitor)					\
+	(monitor_set_tbl[unsigned(monitor) / NUM_BITS_ULINT] |=	\
+	 (ulint(1) << (unsigned(monitor) % NUM_BITS_ULINT)))
 
-#define MONITOR_OFF(monitor)				\
-	(monitor_set_tbl[monitor / NUM_BITS_ULINT] &=	\
-			~((ulint)1 << (monitor % NUM_BITS_ULINT)))
+#define MONITOR_OFF(monitor)					\
+	(monitor_set_tbl[unsigned(monitor) / NUM_BITS_ULINT] &=	\
+	 ~(ulint(1) << (unsigned(monitor) % NUM_BITS_ULINT)))
 
 /** Check whether the requested monitor is turned on/off */
-#define MONITOR_IS_ON(monitor)				\
-	(monitor_set_tbl[monitor / NUM_BITS_ULINT] &	\
-			((ulint)1 << (monitor % NUM_BITS_ULINT)))
+#define MONITOR_IS_ON(monitor)					\
+	(monitor_set_tbl[unsigned(monitor) / NUM_BITS_ULINT] &	\
+	 (ulint(1) << (unsigned(monitor) % NUM_BITS_ULINT)))
 
 /** The actual monitor counter array that records each monintor counter
 value */
@@ -608,8 +608,9 @@ Use MONITOR_INC if appropriate mutex protection exists.
 #define MONITOR_ATOMIC_INC_LOW(monitor, enabled)			\
 	if (enabled) {							\
 		ib_uint64_t	value;					\
-		value  = my_atomic_add64(				\
-			(int64*) &MONITOR_VALUE(monitor), 1) + 1;	\
+		value  = my_atomic_add64_explicit(			\
+			(int64*) &MONITOR_VALUE(monitor), 1,		\
+			MY_MEMORY_ORDER_RELAXED) + 1;			\
 		/* Note: This is not 100% accurate because of the	\
 		inherent race, we ignore it due to performance. */	\
 		if (value > (ib_uint64_t) MONITOR_MAX_VALUE(monitor)) {	\
@@ -624,8 +625,9 @@ Use MONITOR_DEC if appropriate mutex protection exists.
 #define MONITOR_ATOMIC_DEC_LOW(monitor, enabled)			\
 	if (enabled) {							\
 		ib_uint64_t	value;					\
-		value = my_atomic_add64(				\
-			(int64*) &MONITOR_VALUE(monitor), -1) - 1;	\
+		value = my_atomic_add64_explicit(			\
+			(int64*) &MONITOR_VALUE(monitor), -1,		\
+			MY_MEMORY_ORDER_RELAXED) - 1;			\
 		/* Note: This is not 100% accurate because of the	\
 		inherent race, we ignore it due to performance. */	\
 		if (value < (ib_uint64_t) MONITOR_MIN_VALUE(monitor)) {	\

@@ -140,7 +140,7 @@ elif [ "x$warning_mode" = "xmaintainer" ]; then
   debug_extra_cflags="-g3"
 else
 # Both C and C++ warnings
-  warnings="-Wall -Wextra -Wunused -Wwrite-strings -Wno-uninitialized"
+  warnings="-Wall -Wextra -Wunused -Wwrite-strings -Wno-uninitialized -Wno-strict-aliasing"
 
 # For more warnings, uncomment the following line
 # warnings="$warnings -Wshadow"
@@ -307,3 +307,6 @@ gprof_compile_flags="-O2 -pg -g"
 
 gprof_link_flags="--disable-shared $static_link"
 
+disable_gprof_plugins="--with-zlib-dir=bundled --without-plugin-oqgraph --without-plugin-mroonga"
+
+disable_asan_plugins="--without-plugin-rocksdb"

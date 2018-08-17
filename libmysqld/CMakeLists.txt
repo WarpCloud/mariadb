@@ -120,6 +120,7 @@ SET(SQL_EMBEDDED_SOURCES emb_qcache.cc libmysqld.c lib_sql.cc
            ../sql/proxy_protocol.cc
            ../sql/sql_tvc.cc ../sql/sql_tvc.h
            ../sql/opt_split.cc
+           ../sql/item_vers.cc
            ${GEN_SOURCES}
            ${MYSYS_LIBWRAP_SOURCE}
 )
@@ -136,7 +137,7 @@ IF(WIN32)
   SET(COMPONENT_MYSQLSERVER "Embedded")
   SET(COMPONENT_LIBMYSQLD "Embedded")
 ELSE()
-  SET(MYSQLSERVER_OUTPUT_NAME mysqld)
+  SET(MYSQLSERVER_OUTPUT_NAME mariadbd)
   SET(COMPONENT_MYSQLSERVER "Development")
   SET(COMPONENT_LIBMYSQLD "Server")
 ENDIF()
@@ -164,7 +165,9 @@ ENDFOREACH()
 
 MERGE_LIBRARIES(mysqlserver STATIC ${EMBEDDED_LIBS} 
   OUTPUT_NAME ${MYSQLSERVER_OUTPUT_NAME} COMPONENT ${COMPONENT_MYSQLSERVER})
-
+IF(UNIX)
+  INSTALL_SYMLINK(libmysqld.a mysqlserver ${INSTALL_LIBDIR} ${COMPONENT_MYSQLSERVER})
+ENDIF()
 INSTALL(FILES embedded_priv.h DESTINATION ${INSTALL_INCLUDEDIR}/server/private COMPONENT  ${COMPONENT_MYSQLSERVER})
 
 
@@ -436,12 +439,15 @@ IF(NOT DISABLE_SHARED)
     # Name the shared library, handle versioning (provides same api as client
     # library hence the same version)
     SET_TARGET_PROPERTIES(libmysqld PROPERTIES 
-      OUTPUT_NAME mysqld 
+      OUTPUT_NAME mariadbd
       SOVERSION "${SHARED_LIB_MAJOR_VERSION}")
+    INSTALL_SYMLINK(libmysqld.so libmysqld ${INSTALL_LIBDIR} ${COMPONENT_LIBMYSQLD})
     # Clean direct output flags, as 2 targets have the same base name
     # libmysqld
     SET_TARGET_PROPERTIES(libmysqld PROPERTIES CLEAN_DIRECT_OUTPUT 1)
+    TARGET_LINK_LIBRARIES(libmysqld ${CRC32_VPMSUM_LIBRARY})
     SET_TARGET_PROPERTIES(mysqlserver PROPERTIES CLEAN_DIRECT_OUTPUT 1)
+    TARGET_LINK_LIBRARIES(mysqlserver ${CRC32_VPMSUM_LIBRARY})
     IF(LIBMYSQLD_SO_EXTRA_LIBS)
        TARGET_LINK_LIBRARIES(libmysqld ${LIBMYSQLD_SO_EXTRA_LIBS})
     ENDIF()

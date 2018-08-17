@@ -1,7 +1,7 @@
 /*****************************************************************************
 
 Copyright (c) 1996, 2017, Oracle and/or its affiliates. All Rights Reserved.
-Copyright (c) 2015, 2017, MariaDB Corporation.
+Copyright (c) 2015, 2018, MariaDB Corporation.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -248,7 +248,7 @@ row_upd_check_references_constraints(
 
 	DEBUG_SYNC_C("foreign_constraint_check_for_update");
 
-	mtr_start_trx(mtr, trx);
+	mtr->start();
 
 	if (trx->dict_operation_lock_mode == 0) {
 		got_s_lock = TRUE;
@@ -303,25 +303,26 @@ row_upd_check_references_constraints(
 			undergoing a truncate, ignore the FK check. */
 
 			if (foreign_table) {
-				mutex_enter(&fil_system->mutex);
-				const fil_space_t* space = fil_space_get_by_id(
-					foreign_table->space);
-				const bool being_truncated = space
-					&& space->is_being_truncated;
-				mutex_exit(&fil_system->mutex);
-				if (being_truncated) {
+				if (foreign_table->space
+				    && foreign_table->space
+				    ->is_being_truncated) {
 					continue;
 				}
+
+				foreign_table->inc_fk_checks();
 			}
 
 			/* NOTE that if the thread ends up waiting for a lock
 			we will release dict_operation_lock temporarily!
-			But the counter on the table protects 'foreign' from
+			But the inc_fk_checks() protects foreign_table from
 			being dropped while the check is running. */
 
 			err = row_ins_check_foreign_constraint(
 				FALSE, foreign, table, entry, thr);
 
+			if (foreign_table) {
+				foreign_table->dec_fk_checks();
+			}
 			if (ref_table != NULL) {
 				dict_table_close(ref_table, FALSE, FALSE);
 			}
@@ -342,11 +343,6 @@ func_exit:
 	mem_heap_free(heap);
 
 	DEBUG_SYNC_C("foreign_constraint_check_for_update_done");
-
-	DBUG_EXECUTE_IF("row_upd_cascade_lock_wait_err",
-		err = DB_LOCK_WAIT;
-		DBUG_SET("-d,row_upd_cascade_lock_wait_err"););
-
 	DBUG_RETURN(err);
 }
 
@@ -460,18 +456,15 @@ func_exit:
 @param[in]	node	query node
 @param[in]	trx	transaction
 @return	whether the node cannot be ignored */
-inline
-bool
-wsrep_must_process_fk(const upd_node_t* node, const trx_t* trx)
+
+inline bool wsrep_must_process_fk(const upd_node_t* node, const trx_t* trx)
 {
-	if (que_node_get_type(node->common.parent) != QUE_NODE_UPDATE
-	    || !wsrep_on_trx(trx)) {
+	if (!wsrep_on_trx(trx)) {
 		return false;
 	}
-
-	const upd_node_t* parent = static_cast<const upd_node_t*>(node->common.parent);
-
-	return parent->cascade_upd_nodes->empty();
+	return que_node_get_type(node->common.parent) != QUE_NODE_UPDATE
+		|| static_cast<upd_node_t*>(node->common.parent)->cascade_node
+		!= node;
 }
 #endif /* WITH_WSREP */
 
@@ -520,9 +513,7 @@ row_upd_rec_sys_fields_in_recovery(
 
 		field = rec_get_nth_field(rec, offsets, pos, &len);
 		ut_ad(len == DATA_TRX_ID_LEN);
-#if DATA_TRX_ID + 1 != DATA_ROLL_PTR
-# error "DATA_TRX_ID + 1 != DATA_ROLL_PTR"
-#endif
+		compile_time_assert(DATA_TRX_ID + 1 == DATA_ROLL_PTR);
 		trx_write_trx_id(field, trx_id);
 		trx_write_roll_ptr(field + DATA_TRX_ID_LEN, roll_ptr);
 	}
@@ -581,6 +572,7 @@ row_upd_changes_field_size_or_external(
 	ulint			i;
 
 	ut_ad(rec_offs_validate(NULL, index, offsets));
+	ut_ad(!index->table->skip_alter_undo);
 	n_fields = upd_get_n_fields(update);
 
 	for (i = 0; i < n_fields; i++) {
@@ -705,6 +697,7 @@ row_upd_rec_in_place(
 	ulint			i;
 
 	ut_ad(rec_offs_validate(rec, index, offsets));
+	ut_ad(!index->table->skip_alter_undo);
 
 	if (rec_offs_comp(offsets)) {
 #ifdef UNIV_DEBUG
@@ -714,9 +707,19 @@ row_upd_rec_in_place(
 		case REC_STATUS_COLUMNS_ADDED:
 			ut_ad(index->is_instant());
 			break;
+		case REC_STATUS_NODE_PTR:
+			if (index->is_dummy
+			    && fil_page_get_type(page_align(rec))
+			    == FIL_PAGE_RTREE) {
+				/* The function rtr_update_mbr_field_in_place()
+				is generating MLOG_COMP_REC_UPDATE_IN_PLACE
+				and MLOG_REC_UPDATE_IN_PLACE records for
+				node pointer pages. */
+				break;
+			}
+			/* fall through */
 		case REC_STATUS_INFIMUM:
 		case REC_STATUS_SUPREMUM:
-		case REC_STATUS_NODE_PTR:
 			ut_ad(!"wrong record status in update");
 		}
 #endif /* UNIV_DEBUG */
@@ -840,10 +843,7 @@ row_upd_index_write_log(
 	log_ptr += mach_write_compressed(log_ptr, n_fields);
 
 	for (i = 0; i < n_fields; i++) {
-
-#if MLOG_BUF_MARGIN <= 30
-# error "MLOG_BUF_MARGIN <= 30"
-#endif
+		compile_time_assert(MLOG_BUF_MARGIN > 30);
 
 		if (log_ptr + 30 > buf_end) {
 			mlog_close(mtr, log_ptr);
@@ -861,8 +861,8 @@ row_upd_index_write_log(
 		/* If this is a virtual column, mark it using special
 		field_no */
 		ulint	field_no = upd_fld_is_virtual_col(upd_field)
-				   ? REC_MAX_N_FIELDS + upd_field->field_no
-				   : upd_field->field_no;
+			? REC_MAX_N_FIELDS + unsigned(upd_field->field_no)
+			: unsigned(upd_field->field_no);
 
 		log_ptr += mach_write_compressed(log_ptr, field_no);
 		log_ptr += mach_write_compressed(log_ptr, len);
@@ -1003,6 +1003,7 @@ row_upd_build_sec_rec_difference_binary(
 	ut_ad(rec_offs_n_fields(offsets) == dtuple_get_n_fields(entry));
 	ut_ad(!rec_offs_any_extern(offsets));
 	ut_ad(!rec_offs_any_default(offsets));
+	ut_ad(!index->table->skip_alter_undo);
 
 	update = upd_create(dtuple_get_n_fields(entry), heap);
 
@@ -1084,6 +1085,7 @@ row_upd_build_difference_binary(
 
 	/* This function is used only for a clustered index */
 	ut_a(dict_index_is_clust(index));
+	ut_ad(!index->table->skip_alter_undo);
 
 	update = upd_create(n_fld + n_v_fld, heap);
 
@@ -1281,7 +1283,7 @@ row_upd_index_replace_new_col_val(
 		}
 
 		len = dtype_get_at_most_n_mbchars(col->prtype,
-						  col->mbminmaxlen,
+						  col->mbminlen, col->mbmaxlen,
 						  field->prefix_len, len,
 						  (const char*) data);
 
@@ -1319,7 +1321,7 @@ row_upd_index_replace_new_col_val(
 
 		/* Copy the locally stored prefix. */
 		memcpy(buf, data,
-		       uf->orig_len - BTR_EXTERN_FIELD_REF_SIZE);
+		       unsigned(uf->orig_len) - BTR_EXTERN_FIELD_REF_SIZE);
 
 		/* Copy the BLOB pointer. */
 		memcpy(buf + uf->orig_len - BTR_EXTERN_FIELD_REF_SIZE,
@@ -1346,6 +1348,8 @@ row_upd_index_replace_new_col_vals_index_pos(
 	const upd_t*		update,
 	mem_heap_t*		heap)
 {
+	ut_ad(!index->table->skip_alter_undo);
+
 	const page_size_t&	page_size = dict_table_page_size(index->table);
 
 	dtuple_set_info_bits(entry, update->info_bits);
@@ -1357,7 +1361,7 @@ row_upd_index_replace_new_col_vals_index_pos(
 
 		field = dict_index_get_nth_field(index, i);
 		col = dict_field_get_col(field);
-		if (dict_col_is_virtual(col)) {
+		if (col->is_virtual()) {
 			const dict_v_col_t*	vcol = reinterpret_cast<
 							const dict_v_col_t*>(
 								col);
@@ -1400,6 +1404,8 @@ row_upd_index_replace_new_col_vals(
 		= dict_table_get_first_index(index->table);
 	const page_size_t&	page_size = dict_table_page_size(index->table);
 
+	ut_ad(!index->table->skip_alter_undo);
+
 	dtuple_set_info_bits(entry, update->info_bits);
 
 	for (i = 0; i < dict_index_get_n_fields(index); i++) {
@@ -1409,7 +1415,7 @@ row_upd_index_replace_new_col_vals(
 
 		field = dict_index_get_nth_field(index, i);
 		col = dict_field_get_col(field);
-		if (dict_col_is_virtual(col)) {
+		if (col->is_virtual()) {
 			const dict_v_col_t*	vcol = reinterpret_cast<
 							const dict_v_col_t*>(
 								col);
@@ -1474,6 +1480,8 @@ row_upd_replace_vcol(
 	ulint			i;
 	ulint			n_cols;
 
+	ut_ad(!table->skip_alter_undo);
+
 	n_cols = dtuple_get_n_v_fields(row);
 	for (col_no = 0; col_no < n_cols; col_no++) {
 		dfield_t*		dfield;
@@ -1512,12 +1520,7 @@ row_upd_replace_vcol(
 				dfield_copy_data(dfield, upd_field->old_v_val);
 			}
 
-			dfield_get_type(dfield)->mtype =
-				upd_field->new_val.type.mtype;
-			dfield_get_type(dfield)->prtype =
-				upd_field->new_val.type.prtype;
-			dfield_get_type(dfield)->mbminmaxlen =
-				upd_field->new_val.type.mbminmaxlen;
+			dfield->type = upd_field->new_val.type;
 			break;
 		}
 	}
@@ -1695,6 +1698,7 @@ row_upd_changes_ord_field_binary_func(
 	ut_ad(thr);
 	ut_ad(thr->graph);
 	ut_ad(thr->graph->trx);
+	ut_ad(!index->table->skip_alter_undo);
 
 	n_unique = dict_index_get_n_unique(index);
 
@@ -1716,7 +1720,7 @@ row_upd_changes_ord_field_binary_func(
 		ind_field = dict_index_get_nth_field(index, i);
 		col = dict_field_get_col(ind_field);
 		col_no = dict_col_get_no(col);
-		is_virtual = dict_col_is_virtual(col);
+		is_virtual = col->is_virtual();
 
 		if (is_virtual) {
 			vcol = reinterpret_cast<const dict_v_col_t*>(col);
@@ -1954,6 +1958,8 @@ row_upd_changes_doc_id(
 	dict_index_t*	clust_index;
 	fts_t*		fts = table->fts;
 
+	ut_ad(!table->skip_alter_undo);
+
 	clust_index = dict_table_get_first_index(table);
 
 	/* Convert from index-specific column number to table-global
@@ -1975,6 +1981,8 @@ row_upd_changes_fts_column(
 	ulint		col_no;
 	dict_index_t*	clust_index;
 	fts_t*		fts = table->fts;
+
+	ut_ad(!table->skip_alter_undo);
 
 	if (upd_fld_is_virtual_col(upd_field)) {
 		col_no = upd_field->field_no;
@@ -2104,6 +2112,7 @@ row_upd_eval_new_vals(
 @param[in]	update		an update vector if it is update
 @param[in]	thd		mysql thread handle
 @param[in,out]	mysql_table	mysql table object */
+static
 void
 row_upd_store_v_row(
 	upd_node_t*	node,
@@ -2151,7 +2160,6 @@ row_upd_store_v_row(
 						cascade update. And virtual
 						column can't be affected,
 						so it is Ok to set it to NULL */
-						ut_ad(!node->cascade_top);
 						dfield_set_null(dfield);
 					} else {
 						dfield_t*       vfield
@@ -2231,7 +2239,7 @@ row_upd_store_row(
 				    thd, mysql_table);
 	}
 
-	if (node->is_delete) {
+	if (node->is_delete == PLAIN_DELETE) {
 		node->upd_row = NULL;
 		node->upd_ext = NULL;
 	} else {
@@ -2243,25 +2251,6 @@ row_upd_store_row(
 	if (UNIV_LIKELY_NULL(heap)) {
 		mem_heap_free(heap);
 	}
-}
-
-/***********************************************************//**
-Print a MBR data from disk */
-static
-void
-srv_mbr_print(const byte* data)
-{
-        double a, b, c, d;
-        a = mach_double_read(data);
-        data += sizeof(double);
-        b = mach_double_read(data);
-        data += sizeof(double);
-        c = mach_double_read(data);
-        data += sizeof(double);
-        d = mach_double_read(data);
-
-        ib::info() << "GIS MBR INFO: " << a << " and " << b << ", " << c
-		<< ", " << d << "\n";
 }
 
 /***********************************************************//**
@@ -2309,15 +2298,15 @@ row_upd_sec_index_entry(
 	DEBUG_SYNC_C_IF_THD(trx->mysql_thd,
 			    "before_row_upd_sec_index_entry");
 
-	mtr_start_trx(&mtr, trx);
+	mtr.start();
 
-	switch (index->space) {
+	switch (index->table->space->id) {
 	case SRV_TMP_SPACE_ID:
 		mtr.set_log_mode(MTR_LOG_NO_REDO);
 		flags = BTR_NO_LOCKING_FLAG;
 		break;
 	default:
-		mtr.set_named_space(index->space);
+		index->set_modified(mtr);
 		/* fall through */
 	case IBUF_SPACE_ID:
 		flags = index->table->no_rollback() ? BTR_NO_ROLLBACK : 0;
@@ -2359,7 +2348,7 @@ row_upd_sec_index_entry(
 		are no foreign key constraints referring to the index.
 		Change buffering is disabled for temporary tables and
 		spatial index. */
-		mode = (referenced || dict_table_is_temporary(index->table)
+		mode = (referenced || index->table->is_temporary()
 			|| dict_index_is_spatial(index))
 			? BTR_MODIFY_LEAF_ALREADY_S_LATCHED
 			: BTR_DELETE_MARK_LEAF_ALREADY_S_LATCHED;
@@ -2373,7 +2362,7 @@ row_upd_sec_index_entry(
 		are no foreign key constraints referring to the index.
 		Change buffering is disabled for temporary tables and
 		spatial index. */
-		mode = (referenced || dict_table_is_temporary(index->table)
+		mode = (referenced || index->table->is_temporary()
 			|| dict_index_is_spatial(index))
 			? BTR_MODIFY_LEAF
 			: BTR_DELETE_MARK_LEAF;
@@ -2427,8 +2416,6 @@ row_upd_sec_index_entry(
 			<< " of table " << index->table->name
 			<< " was not found on update: " << *entry
 			<< " at: " << rec_index_print(rec, index);
-		if (entry->fields[0].data)
-			srv_mbr_print((unsigned char*)entry->fields[0].data);
 #ifdef UNIV_DEBUG
 		mtr_commit(&mtr);
 		mtr_start(&mtr);
@@ -2506,7 +2493,7 @@ row_upd_sec_index_entry(
 	btr_pcur_close(&pcur);
 	mtr_commit(&mtr);
 
-	if (node->is_delete || err != DB_SUCCESS) {
+	if (node->is_delete == PLAIN_DELETE || err != DB_SUCCESS) {
 
 		goto func_exit;
 	}
@@ -2659,7 +2646,9 @@ row_upd_clust_rec_by_insert(
 	que_thr_t*	thr,	/*!< in: query thread */
 	ibool		referenced,/*!< in: TRUE if index may be referenced in
 				a foreign key constraint */
-	ibool		foreign, /*!< in: TRUE if index is foreign key index */
+#ifdef WITH_WSREP
+	bool		foreign,/*!< in: whether this is a foreign key */
+#endif
 	mtr_t*		mtr)	/*!< in/out: mtr; gets committed here */
 {
 	mem_heap_t*	heap;
@@ -2826,6 +2815,7 @@ row_upd_clust_rec(
 	ut_ad(node);
 	ut_ad(dict_index_is_clust(index));
 	ut_ad(!thr_get_trx(thr)->in_rollback);
+	ut_ad(!node->table->skip_alter_undo);
 
 	pcur = node->pcur;
 	btr_cur = btr_pcur_get_btr_cur(pcur);
@@ -2870,16 +2860,15 @@ row_upd_clust_rec(
 	/* We may have to modify the tree structure: do a pessimistic descent
 	down the index tree */
 
-	mtr_start_trx(mtr, thr_get_trx(thr));
-	mtr->set_named_space(index->space);
+	mtr->start();
 
-	/* Disable REDO logging as lifetime of temp-tables is limited to
-	server or connection lifetime and so REDO information is not needed
-	on restart for recovery.
-	Disable locking as temp-tables are not shared across connection. */
-	if (dict_table_is_temporary(index->table)) {
+	if (index->table->is_temporary()) {
+		/* Disable locking, because temporary tables are never
+		shared between transactions or connections. */
 		flags |= BTR_NO_LOCKING_FLAG;
 		mtr->set_log_mode(MTR_LOG_NO_REDO);
+	} else {
+		index->set_modified(*mtr);
 	}
 
 	/* NOTE: this transaction has an s-lock or x-lock on the record and
@@ -2948,7 +2937,9 @@ row_upd_del_mark_clust_rec(
 	ibool		referenced,
 				/*!< in: TRUE if index may be referenced in
 				a foreign key constraint */
-	ibool		foreign,/*!< in: TRUE if index is foreign key index */
+#ifdef WITH_WSREP
+	bool		foreign,/*!< in: whether this is a foreign key */
+#endif
 	mtr_t*		mtr)	/*!< in: mtr; gets committed here */
 {
 	btr_pcur_t*	pcur;
@@ -2959,7 +2950,7 @@ row_upd_del_mark_clust_rec(
 
 	ut_ad(node);
 	ut_ad(dict_index_is_clust(index));
-	ut_ad(node->is_delete);
+	ut_ad(node->is_delete == PLAIN_DELETE);
 
 	pcur = node->pcur;
 	btr_cur = btr_pcur_get_btr_cur(pcur);
@@ -3040,7 +3031,6 @@ row_upd_clust_step(
 	ulint*		offsets;
 	ibool		referenced;
 	ulint		flags;
-	ibool		foreign = FALSE;
 	trx_t*		trx = thr_get_trx(thr);
 
 	rec_offs_init(offsets_);
@@ -3050,18 +3040,16 @@ row_upd_clust_step(
 	referenced = row_upd_index_is_referenced(index, trx);
 
 #ifdef WITH_WSREP
-	foreign = wsrep_row_upd_index_is_foreign(
-		index, thr_get_trx(thr));
+	const bool foreign = wsrep_row_upd_index_is_foreign(index, trx);
 #endif
 
 	pcur = node->pcur;
 
 	/* We have to restore the cursor to its position */
 
-	mtr_start_trx(&mtr, thr_get_trx(thr));
-	mtr.set_named_space(index->space);
+	mtr.start();
 
-	if (dict_table_is_temporary(node->table)) {
+	if (node->table->is_temporary()) {
 		/* Disable locking, because temporary tables are
 		private to the connection (no concurrent access). */
 		flags = node->table->no_rollback()
@@ -3071,6 +3059,7 @@ row_upd_clust_step(
 		mtr.set_log_mode(MTR_LOG_NO_REDO);
 	} else {
 		flags = node->table->no_rollback() ? BTR_NO_ROLLBACK : 0;
+		index->set_modified(mtr);
 	}
 
 	/* If the restoration does not succeed, then the same
@@ -3111,24 +3100,25 @@ row_upd_clust_step(
 	then we have to free the file segments of the index tree associated
 	with the index */
 
-	if (node->is_delete && node->table->id == DICT_INDEXES_ID) {
+	if (node->is_delete == PLAIN_DELETE
+	    && node->table->id == DICT_INDEXES_ID) {
 
 		ut_ad(!dict_index_is_online_ddl(index));
 
 		dict_drop_index_tree(
 			btr_pcur_get_rec(pcur), pcur, &mtr);
 
-		mtr_commit(&mtr);
+		mtr.commit();
 
-		mtr_start_trx(&mtr, thr_get_trx(thr));
-		mtr.set_named_space(index->space);
+		mtr.start();
+		index->set_modified(mtr);
 
 		success = btr_pcur_restore_position(BTR_MODIFY_LEAF, pcur,
 						    &mtr);
 		if (!success) {
 			err = DB_ERROR;
 
-			mtr_commit(&mtr);
+			mtr.commit();
 
 			return(err);
 		}
@@ -3143,7 +3133,7 @@ row_upd_clust_step(
 			0, btr_pcur_get_block(pcur),
 			rec, index, offsets, thr);
 		if (err != DB_SUCCESS) {
-			mtr_commit(&mtr);
+			mtr.commit();
 			goto exit_func;
 		}
 	}
@@ -3155,9 +3145,13 @@ row_upd_clust_step(
 
 	/* NOTE: the following function calls will also commit mtr */
 
-	if (node->is_delete) {
+	if (node->is_delete == PLAIN_DELETE) {
 		err = row_upd_del_mark_clust_rec(
-			node, index, offsets, thr, referenced, foreign, &mtr);
+			node, index, offsets, thr, referenced,
+#ifdef WITH_WSREP
+			foreign,
+#endif
+			&mtr);
 
 		if (err == DB_SUCCESS) {
 			node->state = UPD_NODE_UPDATE_ALL_SEC;
@@ -3203,7 +3197,11 @@ row_upd_clust_step(
 		externally! */
 
 		err = row_upd_clust_rec_by_insert(
-			node, index, thr, referenced, foreign, &mtr);
+			node, index, thr, referenced,
+#ifdef WITH_WSREP
+			foreign,
+#endif
+			&mtr);
 		if (err != DB_SUCCESS) {
 
 			goto exit_func;
@@ -3260,7 +3258,7 @@ row_upd(
 		/* We do not get the cmpl_info value from the MySQL
 		interpreter: we must calculate it on the fly: */
 
-		if (node->is_delete
+		if (node->is_delete == PLAIN_DELETE
 		    || row_upd_changes_some_index_ord_field_binary(
 			    node->table, node->update)) {
 			node->cmpl_info = 0;
@@ -3444,55 +3442,56 @@ error_handling:
 	DBUG_RETURN(thr);
 }
 
-#ifndef DBUG_OFF
+/** Write query start time as SQL field data to a buffer. Needed by InnoDB.
+@param	thd	Thread object
+@param	buf	Buffer to hold start time data */
+void thd_get_query_start_data(THD *thd, char *buf);
 
-/** Ensure that the member cascade_upd_nodes has only one update node
-for each of the tables.  This is useful for testing purposes. */
-void upd_node_t::check_cascade_only_once()
+/** Appends row_start or row_end field to update vector and sets a
+CURRENT_TIMESTAMP/trx->id value to it.
+Supposed to be called only by make_versioned_update() and
+make_versioned_delete().
+@param[in]	trx	transaction
+@param[in]	vers_sys_idx	table->row_start or table->row_end */
+void upd_node_t::make_versioned_helper(const trx_t* trx, ulint idx)
 {
-	DBUG_ENTER("upd_node_t::check_cascade_only_once");
+	ut_ad(in_mysql_interface); // otherwise needs to recalculate
+				   // node->cmpl_info
+	ut_ad(idx == table->vers_start || idx == table->vers_end);
 
-	dbug_trace();
+	dict_index_t* clust_index = dict_table_get_first_index(table);
 
-	for (upd_cascade_t::const_iterator i = cascade_upd_nodes->begin();
-	     i != cascade_upd_nodes->end(); ++i) {
+	update->n_fields++;
+	upd_field_t* ufield =
+		upd_get_nth_field(update, upd_get_n_fields(update) - 1);
+	const dict_col_t* col = dict_table_get_nth_col(table, idx);
 
-		const upd_node_t*	update_node = *i;
-		std::string	table_name(update_node->table->name.m_name);
-		ulint	count = 0;
+	upd_field_set_field_no(ufield, dict_col_get_clust_pos(col, clust_index),
+			       clust_index);
 
-		for (upd_cascade_t::const_iterator j
-			= cascade_upd_nodes->begin();
-		     j != cascade_upd_nodes->end(); ++j) {
-
-			const upd_node_t*	node = *j;
-
-			if (table_name == node->table->name.m_name) {
-				DBUG_ASSERT(count++ == 0);
-			}
-		}
+	char* where = reinterpret_cast<char*>(update->vers_sys_value);
+	if (col->vers_native()) {
+		mach_write_to_8(where, trx->id);
+	} else {
+		thd_get_query_start_data(trx->mysql_thd, where);
 	}
 
-	DBUG_VOID_RETURN;
+	dfield_set_data(&ufield->new_val, update->vers_sys_value, col->len);
 }
 
-/** Print information about this object into the trace log file. */
-void upd_node_t::dbug_trace()
+/** Also set row_start = CURRENT_TIMESTAMP/trx->id
+@param[in]	trx	transaction */
+void upd_node_t::make_versioned_update(const trx_t* trx)
 {
-	DBUG_ENTER("upd_node_t::dbug_trace");
-
-	for (upd_cascade_t::const_iterator i = cascade_upd_nodes->begin();
-	     i != cascade_upd_nodes->end(); ++i) {
-		DBUG_LOG("upd_node_t", "cascade_upd_nodes: Cascade to table: "
-			 << (*i)->table->name);
-	}
-
-	for (upd_cascade_t::const_iterator j = new_upd_nodes->begin();
-	     j != new_upd_nodes->end(); ++j) {
-		DBUG_LOG("upd_node_t", "new_upd_nodes: Cascade to table: "
-			 << (*j)->table->name);
-	}
-
-	DBUG_VOID_RETURN;
+	make_versioned_helper(trx, table->vers_start);
 }
-#endif /* !DBUG_OFF */
+
+/** Only set row_end = CURRENT_TIMESTAMP/trx->id.
+Do not touch other fields at all.
+@param[in]	trx	transaction */
+void upd_node_t::make_versioned_delete(const trx_t* trx)
+{
+	update->n_fields = 0;
+	is_delete = VERSIONED_DELETE;
+	make_versioned_helper(trx, table->vers_end);
+}

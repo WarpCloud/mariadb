@@ -1,5 +1,5 @@
 /* Copyright (c) 2000, 2012, Oracle and/or its affiliates.
-   Copyright (c) 1995, 2017, MariaDB Corporation.
+   Copyright (c) 1995, 2018, MariaDB Corporation.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -208,7 +208,13 @@ enum ha_extra_function {
     Used in ha_partition::handle_ordered_index_scan() to inform engine
     that we are starting an ordered index scan. Needed by Spider
   */
-  HA_EXTRA_STARTING_ORDERED_INDEX_SCAN
+  HA_EXTRA_STARTING_ORDERED_INDEX_SCAN,
+  /** Start writing rows during ALTER TABLE...ALGORITHM=COPY. */
+  HA_EXTRA_BEGIN_ALTER_COPY,
+  /** Finish writing rows during ALTER TABLE...ALGORITHM=COPY. */
+  HA_EXTRA_END_ALTER_COPY,
+  /** Fake the start of a statement after wsrep_load_data_splitting hack */
+  HA_EXTRA_FAKE_START_STMT
 };
 
 /* Compatible option, to be deleted in 6.0 */
@@ -264,7 +270,7 @@ enum ha_base_keytype {
 #define HA_UNIQUE_CHECK		256U	/* Check the key for uniqueness */
 #define HA_SPATIAL		1024U   /* For spatial search */
 #define HA_NULL_ARE_EQUAL	2048U	/* NULL in key are cmp as equal */
-#define HA_GENERATED_KEY	8192U	/* Automaticly generated key */
+#define HA_GENERATED_KEY	8192U	/* Automatically generated key */
 
         /* The combination of the above can be used for key type comparison. */
 #define HA_KEYFLAG_MASK (HA_NOSAME | HA_PACK_KEY | HA_AUTO_KEY | \
@@ -414,7 +420,11 @@ enum ha_base_keytype {
   when only HA_STATUS_VARIABLE but it won't be used.
 */
 #define HA_STATUS_VARIABLE_EXTRA 128U
-#define HA_STATUS_INIT_FEDX_INFO 256U
+/*
+  Treat empty table as empty (ignore HA_STATUS_TIME hack).
+*/
+#define HA_STATUS_OPEN           256U
+#define HA_STATUS_INIT_FEDX_INFO 512U 
 
 /*
   Errorcodes given by handler functions
@@ -638,7 +648,7 @@ typedef ulong		ha_rows;
 #define HA_POS_ERROR	(~ (ha_rows) 0)
 #define HA_OFFSET_ERROR	(~ (my_off_t) 0)
 
-#if SYSTEM_SIZEOF_OFF_T == 4
+#if SIZEOF_OFF_T == 4
 #define MAX_FILE_SIZE	INT_MAX32
 #else
 #define MAX_FILE_SIZE	LONGLONG_MAX

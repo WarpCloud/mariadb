@@ -28,6 +28,17 @@ Copyright (c) 2006, 2015, Percona and/or its affiliates. All rights reserved.
 
 #define TOKU_METADB_NAME "tokudb_meta"
 
+static pfs_key_t tokudb_map_mutex_key;
+
+static PSI_mutex_info all_tokudb_mutexes[] = {
+    {&tokudb_map_mutex_key, "tokudb_map_mutex", 0},
+    {&ha_tokudb_mutex_key, "ha_tokudb_mutex", 0},
+};
+
+static PSI_rwlock_info all_tokudb_rwlocks[] = {
+    {&num_DBs_lock_key, "num_DBs_lock", 0},
+};
+
 typedef struct savepoint_info {
     DB_TXN* txn;
     tokudb_trx_data* trx;
@@ -51,7 +62,7 @@ static bool tokudb_show_status(
     THD* thd,
     stat_print_fn* print,
     enum ha_stat_type);
-#if TOKU_INCLUDE_HANDLERTON_HANDLE_FATAL_SIGNAL
+#if defined(TOKU_INCLUDE_HANDLERTON_HANDLE_FATAL_SIGNAL)
 static void tokudb_handle_fatal_signal(handlerton* hton, THD* thd, int sig);
 #endif
 static int tokudb_close_connection(handlerton* hton, THD* thd);
@@ -109,8 +120,8 @@ handlerton* tokudb_hton;
 const char* ha_tokudb_ext = ".tokudb";
 DB_ENV* db_env;
 
-#if TOKU_THDVAR_MEMALLOC_BUG
 static tokudb::thread::mutex_t tokudb_map_mutex;
+#if TOKU_THDVAR_MEMALLOC_BUG
 static TREE tokudb_map;
 struct tokudb_map_pair {
     THD* thd;
@@ -212,6 +223,10 @@ extern "C" {
 // use constructor and destructor functions to create and destroy
 // the lock before and after main(), respectively.
 int tokudb_hton_initialized;
+
+// tokudb_hton_initialized_lock can not be instrumented as it must be
+// initialized before mysql_mutex_register() call to protect
+// some globals from race condition.
 tokudb::thread::rwlock_t tokudb_hton_initialized_lock;
 
 static SHOW_VAR *toku_global_status_variables = NULL;
@@ -267,10 +282,23 @@ static int tokudb_init_func(void *p) {
     int r;
 
     // 3938: lock the handlerton's initialized status flag for writing
-    tokudb_hton_initialized_lock.lock_write();
+    rwlock_t_lock_write(tokudb_hton_initialized_lock);
+
+#ifdef HAVE_PSI_INTERFACE
+    /* Register TokuDB mutex keys with MySQL performance schema */
+    int count;
+
+    count = array_elements(all_tokudb_mutexes);
+    mysql_mutex_register("tokudb", all_tokudb_mutexes, count);
+
+    count = array_elements(all_tokudb_rwlocks);
+    mysql_rwlock_register("tokudb", all_tokudb_rwlocks, count);
+
+    tokudb_map_mutex.reinit(tokudb_map_mutex_key);
+#endif /* HAVE_PSI_INTERFACE */
 
     db_env = NULL;
-    tokudb_hton = (handlerton *) p;
+    tokudb_hton = (handlerton*)p;
 
     if (tokudb::sysvars::check_jemalloc) {
         typedef int (*mallctl_type)(
@@ -365,7 +393,7 @@ static int tokudb_init_func(void *p) {
     tokudb_hton->panic = tokudb_end;
     tokudb_hton->flush_logs = tokudb_flush_logs;
     tokudb_hton->show_status = tokudb_show_status;
-#if TOKU_INCLUDE_HANDLERTON_HANDLE_FATAL_SIGNAL
+#if defined(TOKU_INCLUDE_HANDLERTON_HANDLE_FATAL_SIGNAL)
     tokudb_hton->handle_fatal_signal = tokudb_handle_fatal_signal;
 #endif
 
@@ -668,7 +696,7 @@ int tokudb_end(handlerton* hton, ha_panic_function type) {
     // initialized. grab a writer lock for the duration of the
     // call, so we can drop the flag and destroy the mutexes
     // in isolation.
-    tokudb_hton_initialized_lock.lock_write();
+    rwlock_t_lock_write(tokudb_hton_initialized_lock);
     assert_always(tokudb_hton_initialized);
 
     tokudb::background::destroy();
@@ -748,16 +776,16 @@ static int tokudb_close_connection(handlerton* hton, THD* thd) {
     }
     tokudb::memory::free(trx);
 #if TOKU_THDVAR_MEMALLOC_BUG
-    tokudb_map_mutex.lock();
-    struct tokudb_map_pair key = { thd, NULL };
+    mutex_t_lock(tokudb_map_mutex);
+    struct tokudb_map_pair key = {thd, NULL};
     struct tokudb_map_pair* found_key =
-        (struct tokudb_map_pair*) tree_search(&tokudb_map, &key, NULL);
+        (struct tokudb_map_pair*)tree_search(&tokudb_map, &key, NULL);
 
     if (found_key) {
         tokudb::memory::free(found_key->last_lock_timeout);
         tree_delete(&tokudb_map, found_key, sizeof(*found_key), NULL);
     }
-    tokudb_map_mutex.unlock();
+    mutex_t_unlock(tokudb_map_mutex);
 #endif
     return error;
 }
@@ -950,7 +978,7 @@ static bool tokudb_sync_on_prepare(void) {
 }   
 
 static int tokudb_xa_prepare(handlerton* hton, THD* thd, bool all) {
-    TOKUDB_DBUG_ENTER("");
+    TOKUDB_DBUG_ENTER("%u", all);
     TOKUDB_TRACE_FOR_FLAGS(TOKUDB_DEBUG_XA, "enter");
     int r = 0;
 
@@ -978,6 +1006,22 @@ static int tokudb_xa_prepare(handlerton* hton, THD* thd, bool all) {
         r = txn->xa_prepare(txn, &thd_xid, syncflag);
         // test hook to induce a crash on a debug build
         DBUG_EXECUTE_IF("tokudb_crash_prepare_after", DBUG_SUICIDE(););
+
+        // XA log entries can be interleaved in the binlog since XA prepare on the master
+        // flushes to the binlog.  There can be log entries from different clients pushed
+        // into the binlog before XA commit is executed on the master.  Therefore, the slave
+        // thread must be able to juggle multiple XA transactions.  Tokudb does this by
+        // zapping the client transaction context on the slave when executing the XA prepare
+        // and expecting to process XA commit with commit_by_xid (which supplies the XID so
+        // that the transaction can be looked up and committed).
+        if (r == 0 && all && thd->slave_thread) {
+            TOKUDB_TRACE_FOR_FLAGS(TOKUDB_DEBUG_XA, "zap txn context %u", thd_sql_command(thd));
+            if (thd_sql_command(thd) == SQLCOM_XA_PREPARE) {
+                trx->all = NULL;
+                trx->sub_sp_level = NULL;
+                trx->sp_level = NULL;
+            }
+        }
     } else {
         TOKUDB_TRACE_FOR_FLAGS(TOKUDB_DEBUG_XA, "nothing to prepare %d", all);
     }
@@ -1008,6 +1052,7 @@ static int tokudb_xa_recover(handlerton* hton, XID* xid_list, uint len) {
 static int tokudb_commit_by_xid(handlerton* hton, XID* xid) {
     TOKUDB_DBUG_ENTER("");
     TOKUDB_TRACE_FOR_FLAGS(TOKUDB_DEBUG_XA, "enter");
+    TOKUDB_TRACE_FOR_FLAGS(TOKUDB_DEBUG_XA, "xid %p", xid);
     int r = 0;
     DB_TXN* txn = NULL;
     TOKU_XA_XID* toku_xid = (TOKU_XA_XID*)xid;
@@ -1027,6 +1072,7 @@ cleanup:
 static int tokudb_rollback_by_xid(handlerton* hton, XID*  xid) {
     TOKUDB_DBUG_ENTER("");
     TOKUDB_TRACE_FOR_FLAGS(TOKUDB_DEBUG_XA, "enter");
+    TOKUDB_TRACE_FOR_FLAGS(TOKUDB_DEBUG_XA, "xid %p", xid);
     int r = 0;
     DB_TXN* txn = NULL;
     TOKU_XA_XID* toku_xid = (TOKU_XA_XID*)xid;
@@ -1489,7 +1535,7 @@ static bool tokudb_show_status(
     return false;
 }
 
-#if TOKU_INCLUDE_HANDLERTON_HANDLE_FATAL_SIGNAL
+#if defined(TOKU_INCLUDE_HANDLERTON_HANDLE_FATAL_SIGNAL)
 static void tokudb_handle_fatal_signal(
     TOKUDB_UNUSED(handlerton* hton),
     TOKUDB_UNUSD(THD* thd),
@@ -1571,7 +1617,7 @@ struct st_mysql_storage_engine tokudb_storage_engine = {
     MYSQL_HANDLERTON_INTERFACE_VERSION
 };
 
-#if TOKU_INCLUDE_LOCK_TIMEOUT_QUERY_STRING
+#if defined(TOKU_INCLUDE_LOCK_TIMEOUT_QUERY_STRING)
 struct tokudb_search_txn_extra {
     bool match_found;
     uint64_t match_txn_id;
@@ -1718,12 +1764,12 @@ static void tokudb_lock_timeout_callback(
                 tokudb::memory::strdup(log_str.c_ptr(), MY_FAE);
             tokudb::sysvars::set_last_lock_timeout(thd, new_lock_timeout);
 #if TOKU_THDVAR_MEMALLOC_BUG
-            tokudb_map_mutex.lock();
-            struct tokudb_map_pair old_key = { thd, old_lock_timeout };
+            mutex_t_lock(tokudb_map_mutex);
+            struct tokudb_map_pair old_key = {thd, old_lock_timeout};
             tree_delete(&tokudb_map, &old_key, sizeof old_key, NULL);
-            struct tokudb_map_pair new_key = { thd, new_lock_timeout };
+            struct tokudb_map_pair new_key = {thd, new_lock_timeout};
             tree_insert(&tokudb_map, &new_key, sizeof new_key, NULL);
-            tokudb_map_mutex.unlock();
+            mutex_t_unlock(tokudb_map_mutex);
 #endif
             tokudb::memory::free(old_lock_timeout);
         }
@@ -1740,7 +1786,7 @@ static void tokudb_lock_timeout_callback(
                 mysql_thread_id,
                 (int)qs->length,
                 qs->str);
-#if TOKU_INCLUDE_LOCK_TIMEOUT_QUERY_STRING
+#if defined(TOKU_INCLUDE_LOCK_TIMEOUT_QUERY_STRING)
             uint64_t blocking_thread_id = 0;
             if (tokudb_txn_id_to_client_id(
                     thd,

@@ -1,5 +1,5 @@
-/* Copyright (c) 2000, 2015, Oracle and/or its affiliates.
-   Copyright (c) 2008, 2016, MariaDB
+/* Copyright (c) 2000, 2017, Oracle and/or its affiliates.
+   Copyright (c) 2008, 2018, MariaDB
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -68,6 +68,11 @@ LEX_CSTRING GENERAL_LOG_NAME= {STRING_WITH_LEN("general_log")};
 /* SLOW_LOG name */
 LEX_CSTRING SLOW_LOG_NAME= {STRING_WITH_LEN("slow_log")};
 
+LEX_CSTRING TRANSACTION_REG_NAME= {STRING_WITH_LEN("transaction_registry")};
+LEX_CSTRING MYSQL_USER_NAME= {STRING_WITH_LEN("user")};
+LEX_CSTRING MYSQL_DB_NAME= {STRING_WITH_LEN("db")};
+LEX_CSTRING MYSQL_PROC_NAME= {STRING_WITH_LEN("proc")};
+
 /* 
   Keyword added as a prefix when parsing the defining expression for a
   virtual column read from the column definition saved in the frm file
@@ -82,7 +87,7 @@ static void fix_type_pointers(const char ***array, TYPELIB *point_to_type,
 			      uint types, char **names);
 static uint find_field(Field **fields, uchar *record, uint start, uint length);
 
-inline bool is_system_table_name(const char *name, uint length);
+inline bool is_system_table_name(const char *name, size_t length);
 
 /**************************************************************************
   Object_creation_ctx implementation.
@@ -161,8 +166,8 @@ View_creation_ctx * View_creation_ctx::create(THD *thd,
     push_warning_printf(thd, Sql_condition::WARN_LEVEL_NOTE,
                         ER_VIEW_NO_CREATION_CTX,
                         ER_THD(thd, ER_VIEW_NO_CREATION_CTX),
-                        (const char *) view->db,
-                        (const char *) view->table_name);
+                        view->db.str,
+                        view->table_name.str);
 
     ctx->m_client_cs= system_charset_info;
     ctx->m_connection_cl= system_charset_info;
@@ -187,16 +192,16 @@ View_creation_ctx * View_creation_ctx::create(THD *thd,
   {
     sql_print_warning("View '%s'.'%s': there is unknown charset/collation "
                       "names (client: '%s'; connection: '%s').",
-                      (const char *) view->db,
-                      (const char *) view->table_name,
+                      view->db.str,
+                      view->table_name.str,
                       (const char *) view->view_client_cs_name.str,
                       (const char *) view->view_connection_cl_name.str);
 
     push_warning_printf(thd, Sql_condition::WARN_LEVEL_NOTE,
                         ER_VIEW_INVALID_CREATION_CTX,
                         ER_THD(thd, ER_VIEW_INVALID_CREATION_CTX),
-                        (const char *) view->db,
-                        (const char *) view->table_name);
+                        view->db.str,
+                        view->table_name.str);
   }
 
   return ctx;
@@ -244,21 +249,24 @@ TABLE_CATEGORY get_table_category(const LEX_CSTRING *db,
   DBUG_ASSERT(db != NULL);
   DBUG_ASSERT(name != NULL);
 
-  if (is_infoschema_db(db->str, db->length))
+  if (is_infoschema_db(db))
     return TABLE_CATEGORY_INFORMATION;
 
-  if (lex_string_eq(&PERFORMANCE_SCHEMA_DB_NAME, db) == 0)
+  if (lex_string_eq(&PERFORMANCE_SCHEMA_DB_NAME, db))
     return TABLE_CATEGORY_PERFORMANCE;
 
-  if (lex_string_eq(&MYSQL_SCHEMA_NAME, db) == 0)
+  if (lex_string_eq(&MYSQL_SCHEMA_NAME, db))
   {
     if (is_system_table_name(name->str, name->length))
       return TABLE_CATEGORY_SYSTEM;
 
-    if (lex_string_eq(&GENERAL_LOG_NAME, name) == 0)
+    if (lex_string_eq(&GENERAL_LOG_NAME, name))
       return TABLE_CATEGORY_LOG;
 
-    if (lex_string_eq(&SLOW_LOG_NAME, name) == 0)
+    if (lex_string_eq(&SLOW_LOG_NAME, name))
+      return TABLE_CATEGORY_LOG;
+
+    if (lex_string_eq(&TRANSACTION_REG_NAME, name))
       return TABLE_CATEGORY_LOG;
   }
 
@@ -294,7 +302,7 @@ TABLE_SHARE *alloc_table_share(const char *db, const char *table_name,
 
   path_length= build_table_filename(path, sizeof(path) - 1,
                                     db, table_name, "", 0);
-  init_sql_alloc(&mem_root, TABLE_ALLOC_BLOCK_SIZE, 0, MYF(0));
+  init_sql_alloc(&mem_root, "table_share", TABLE_ALLOC_BLOCK_SIZE, 0, MYF(0));
   if (multi_alloc_root(&mem_root,
                        &share, sizeof(*share),
                        &key_buff, key_length,
@@ -320,7 +328,8 @@ TABLE_SHARE *alloc_table_share(const char *db, const char *table_name,
                      (const uchar*) "mysql", 6) == 0)
       share->not_usable_by_query_cache= 1;
 
-    init_sql_alloc(&share->stats_cb.mem_root, TABLE_ALLOC_BLOCK_SIZE, 0, MYF(0));
+    init_sql_alloc(&share->stats_cb.mem_root, "share_stats",
+                   TABLE_ALLOC_BLOCK_SIZE, 0, MYF(0));
 
     memcpy((char*) &share->mem_root, (char*) &mem_root, sizeof(mem_root));
     mysql_mutex_init(key_TABLE_SHARE_LOCK_share,
@@ -377,8 +386,8 @@ void init_tmp_table_share(THD *thd, TABLE_SHARE *share, const char *key,
     This can't be MY_THREAD_SPECIFIC for slaves as they are freed
     during cleanup() from Relay_log_info::close_temporary_tables()
   */
-  init_sql_alloc(&share->mem_root, TABLE_ALLOC_BLOCK_SIZE, 0, 
-                 MYF(thd->slave_thread ? 0 : MY_THREAD_SPECIFIC));
+  init_sql_alloc(&share->mem_root, "tmp_table_share", TABLE_ALLOC_BLOCK_SIZE,
+                 0, MYF(thd->slave_thread ? 0 : MY_THREAD_SPECIFIC));
   share->table_category=         TABLE_CATEGORY_TEMPORARY;
   share->tmp_table=              INTERNAL_TMP_TABLE;
   share->db.str=                 (char*) key;
@@ -497,7 +506,7 @@ void free_table_share(TABLE_SHARE *share)
   and should not contain user tables.
 */
 
-inline bool is_system_table_name(const char *name, uint length)
+inline bool is_system_table_name(const char *name, size_t length)
 {
   CHARSET_INFO *ci= system_charset_info;
 
@@ -668,7 +677,7 @@ err:
   mysql_file_close(file, MYF(MY_WME));
 
 err_not_open:
-  if (share->error && !error_given)
+  if (unlikely(share->error && !error_given))
   {
     share->open_errno= my_errno;
     open_table_error(share, share->error, share->open_errno);
@@ -1162,14 +1171,12 @@ int TABLE_SHARE::init_from_binary_frm_image(THD *thd, bool write,
   uint db_create_options, keys, key_parts, n_length;
   uint com_length, null_bit_pos, UNINIT_VAR(mysql57_vcol_null_bit_pos), bitmap_count;
   uint i;
-  uint field_additional_property_length= 0;
   bool use_hash, mysql57_null_bits= 0;
   char *keynames, *names, *comment_pos;
   const uchar *forminfo, *extra2;
   const uchar *frm_image_end = frm_image + frm_length;
-  uchar *record, *null_flags, *null_pos, *mysql57_vcol_null_pos= 0;
+  uchar *record, *null_flags, *null_pos, *UNINIT_VAR(mysql57_vcol_null_pos);
   const uchar *disk_buff, *strpos;
-  const uchar *field_properties= NULL;
   ulong pos, record_offset;
   ulong rec_buff_length;
   handler *handler_file= 0;
@@ -1180,15 +1187,21 @@ int TABLE_SHARE::init_from_binary_frm_image(THD *thd, bool write,
   enum legacy_db_type legacy_db_type;
   my_bitmap_map *bitmaps;
   bool null_bits_are_used;
-  uint vcol_screen_length, UNINIT_VAR(options_len);
+  uint vcol_screen_length;
+  size_t UNINIT_VAR(options_len);
   uchar *vcol_screen_pos;
   const uchar *options= 0;
-  uint UNINIT_VAR(gis_options_len);
+  size_t UNINIT_VAR(gis_options_len);
   const uchar *gis_options= 0;
   KEY first_keyinfo;
   uint len;
   uint ext_key_parts= 0;
   plugin_ref se_plugin= 0;
+  const uchar *system_period= 0;
+  bool vers_can_native= false;
+  const uchar *extra2_field_flags= 0;
+  size_t extra2_field_flags_length= 0;
+
   MEM_ROOT *old_root= thd->mem_root;
   Virtual_column_info **table_check_constraints;
   DBUG_ENTER("TABLE_SHARE::init_from_binary_frm_image");
@@ -1282,9 +1295,16 @@ int TABLE_SHARE::init_from_binary_frm_image(THD *thd, bool write,
         }
 #endif /*HAVE_SPATIAL*/
         break;
+      case EXTRA2_PERIOD_FOR_SYSTEM_TIME:
+        if (system_period || length != 2 * sizeof(uint16))
+          goto err;
+        system_period = extra2;
+        break;
       case EXTRA2_FIELD_FLAGS:
-         field_properties = extra2;
-         field_additional_property_length= length;
+        if (extra2_field_flags)
+          goto err;
+        extra2_field_flags= extra2;
+        extra2_field_flags_length= length;
         break;
       default:
         /* abort frm parsing if it's an unknown but important extra2 value */
@@ -1595,15 +1615,16 @@ int TABLE_SHARE::init_from_binary_frm_image(THD *thd, bool write,
 
   rec_buff_length= ALIGN_SIZE(share->reclength + 1);
   share->rec_buff_length= rec_buff_length;
-  if (!(record= (uchar *) alloc_root(&share->mem_root,
-                                     rec_buff_length)))
+  if (!(record= (uchar *) alloc_root(&share->mem_root, rec_buff_length)))
     goto err;                          /* purecov: inspected */
+  MEM_NOACCESS(record, rec_buff_length);
+  MEM_UNDEFINED(record, share->reclength);
   share->default_values= record;
   memcpy(record, frm_image + record_offset, share->reclength);
 
   disk_buff= frm_image + pos + FRM_FORMINFO_SIZE;
   share->fields= uint2korr(forminfo+258);
-  if (field_properties && field_additional_property_length != share->fields)
+  if (extra2_field_flags && extra2_field_flags_length != share->fields)
     goto err;
   pos= uint2korr(forminfo+260);   /* Length of all screens */
   n_length= uint2korr(forminfo+268);
@@ -1676,7 +1697,7 @@ int TABLE_SHARE::init_from_binary_frm_image(THD *thd, bool write,
       for (count= 0; count < interval->count; count++)
       {
         char *val= (char*) interval->type_names[count];
-        interval->type_lengths[count]= strlen(val);
+        interval->type_lengths[count]= (uint)strlen(val);
       }
       interval->type_lengths[count]= 0;
     }
@@ -1737,6 +1758,28 @@ int TABLE_SHARE::init_from_binary_frm_image(THD *thd, bool write,
                                     strpos, vcol_screen_pos);
   }
 
+  /* Set system versioning information. */
+  if (system_period == NULL)
+  {
+    versioned= VERS_UNDEFINED;
+    row_start_field= 0;
+    row_end_field= 0;
+  }
+  else
+  {
+    DBUG_PRINT("info", ("Setting system versioning informations"));
+    uint16 row_start= uint2korr(system_period);
+    uint16 row_end= uint2korr(system_period + sizeof(uint16));
+    if (row_start >= share->fields || row_end >= share->fields)
+      goto err;
+    DBUG_PRINT("info", ("Columns with system versioning: [%d, %d]", row_start, row_end));
+    versioned= VERS_TIMESTAMP;
+    vers_can_native= plugin_hton(se_plugin)->flags & HTON_NATIVE_SYS_VERSIONING;
+    row_start_field= row_start;
+    row_end_field= row_end;
+    status_var_increment(thd->status_var.feature_system_versioning);
+  } // if (system_period == NULL)
+
   for (i=0 ; i < share->fields; i++, strpos+=field_pack_length, field_ptr++)
   {
     uint pack_flag, interval_nr, unireg_type, recpos, field_length;
@@ -1751,6 +1794,7 @@ int TABLE_SHARE::init_from_binary_frm_image(THD *thd, bool write,
     uint gis_length, gis_decimals, srid= 0;
     Field::utype unireg_check;
     const Type_handler *handler;
+    uint32 flags= 0;
 
     if (new_frm_ver >= 3)
     {
@@ -1793,7 +1837,7 @@ int TABLE_SHARE::init_from_binary_frm_image(THD *thd, bool write,
           char tmp[10];
           if (!csname || csname[0] =='?')
           {
-            my_snprintf(tmp, sizeof(tmp), "#%d", cs_new);
+            my_snprintf(tmp, sizeof(tmp), "#%u", cs_new);
             csname= tmp;
           }
           my_printf_error(ER_UNKNOWN_COLLATION,
@@ -1960,6 +2004,36 @@ int TABLE_SHARE::init_from_binary_frm_image(THD *thd, bool write,
       swap_variables(uint, null_bit_pos, mysql57_vcol_null_bit_pos);
     }
 
+    if (versioned)
+    {
+      if (i == row_start_field)
+        flags|= VERS_SYS_START_FLAG;
+      else if (i == row_end_field)
+        flags|= VERS_SYS_END_FLAG;
+
+      if (flags & VERS_SYSTEM_FIELD)
+      {
+        switch (field_type)
+        {
+        case MYSQL_TYPE_TIMESTAMP2:
+        case MYSQL_TYPE_DATETIME2:
+          break;
+        case MYSQL_TYPE_LONGLONG:
+          if (vers_can_native)
+          {
+            versioned= VERS_TRX_ID;
+            break;
+          }
+          /* Fallthrough */
+        default:
+          my_error(ER_VERS_FIELD_WRONG_TYPE, MYF(0), fieldnames.type_names[i],
+            versioned == VERS_TIMESTAMP ? "TIMESTAMP(6)" : "BIGINT(20) UNSIGNED",
+            table_name.str);
+          goto err;
+        }
+      }
+    }
+
     /* Convert pre-10.2.2 timestamps to use Field::default_value */
     unireg_check= (Field::utype) MTYP_TYPENR(unireg_type);
     name.str= fieldnames.type_names[i];
@@ -1971,7 +2045,7 @@ int TABLE_SHARE::init_from_binary_frm_image(THD *thd, bool write,
 		 null_pos, null_bit_pos, pack_flag, handler, charset,
 		 geom_type, srid, unireg_check,
 		 (interval_nr ? share->intervals+interval_nr-1 : NULL),
-		 &name);
+		 &name, flags);
     if (!reg_field)				// Not supported field type
       goto err;
 
@@ -1987,14 +2061,18 @@ int TABLE_SHARE::init_from_binary_frm_image(THD *thd, bool write,
     reg_field->field_index= i;
     reg_field->comment=comment;
     reg_field->vcol_info= vcol_info;
-    if(field_properties!=NULL)
+    reg_field->flags|= flags;
+    if (extra2_field_flags)
     {
-      uint temp= *field_properties++;
-      reg_field->field_visibility= f_visibility(temp);
+      uchar flags= *extra2_field_flags++;
+      if (flags & VERS_OPTIMIZED_UPDATE)
+        reg_field->flags|= VERS_UPDATE_UNVERSIONED_FLAG;
+
+      reg_field->invisible= f_visibility(flags);
     }
-    if (reg_field->field_visibility == USER_DEFINED_INVISIBLE)
+    if (reg_field->invisible == INVISIBLE_USER)
       status_var_increment(thd->status_var.feature_invisible_columns);
-    if (reg_field->field_visibility == NOT_INVISIBLE)
+    if (!reg_field->invisible)
       share->visible_fields++;
     if (field_type == MYSQL_TYPE_BIT && !f_bit_as_char(pack_flag))
     {
@@ -2245,7 +2323,7 @@ int TABLE_SHARE::init_from_binary_frm_image(THD *thd, bool write,
 
         field= key_part->field= share->field[key_part->fieldnr-1];
         key_part->type= field->key_type();
-        if (field->field_visibility > USER_DEFINED_INVISIBLE)
+        if (field->invisible > INVISIBLE_USER && !field->vers_sys_field())
           keyinfo->flags |= HA_INVISIBLE_KEY;
         if (field->null_ptr)
         {
@@ -2433,7 +2511,10 @@ int TABLE_SHARE::init_from_binary_frm_image(THD *thd, bool write,
         reg_field= share->field[field_nr];
       }
       else
-        reg_field= 0;                           // Safety
+      {
+        reg_field= 0;
+        DBUG_ASSERT(name_length);
+      }
 
       vcol_screen_pos+= FRM_VCOL_NEW_HEADER_SIZE;
       vcol_info->set_vcol_type((enum_vcol_info_type) type);
@@ -2566,19 +2647,21 @@ int TABLE_SHARE::init_from_binary_frm_image(THD *thd, bool write,
     bitmap_clear_all(share->check_set);
   }
 
-  delete handler_file;
 #ifndef DBUG_OFF
   if (use_hash)
     (void) my_hash_check(&share->name_hash);
 #endif
 
   share->db_plugin= se_plugin;
+  delete handler_file;
+
   share->error= OPEN_FRM_OK;
   thd->status_var.opened_shares++;
   thd->mem_root= old_root;
   DBUG_RETURN(0);
 
- err:
+err:
+  share->db_plugin= NULL;
   share->error= OPEN_FRM_CORRUPTED;
   share->open_errno= my_errno;
   delete handler_file;
@@ -2629,6 +2712,9 @@ static bool sql_unusable_for_discovery(THD *thd, handlerton *engine,
   // ... engine
   if (create_info->db_type && create_info->db_type != engine)
     return 1;
+  // ... WITH SYSTEM VERSIONING
+  if (create_info->versioned())
+    return 1;
 
   return 0;
 }
@@ -2649,7 +2735,7 @@ int TABLE_SHARE::init_from_sql_statement_string(THD *thd, bool write,
   uint unused2;
   handlerton *hton= plugin_hton(db_plugin);
   LEX_CUSTRING frm= {0,0};
-  LEX_STRING db_backup= { thd->db, thd->db_length };
+  LEX_CSTRING db_backup= thd->db;
   DBUG_ENTER("TABLE_SHARE::init_from_sql_statement_string");
 
   /*
@@ -2676,11 +2762,11 @@ int TABLE_SHARE::init_from_sql_statement_string(THD *thd, bool write,
   else
     thd->set_n_backup_active_arena(arena, &backup);
 
-  thd->reset_db((char*) db.str, db.length);
+  thd->reset_db(&db);
   lex_start(thd);
 
-  if ((error= parse_sql(thd, & parser_state, NULL) || 
-              sql_unusable_for_discovery(thd, hton, sql_copy)))
+  if (unlikely((error= parse_sql(thd, & parser_state, NULL) ||
+                sql_unusable_for_discovery(thd, hton, sql_copy))))
     goto ret;
 
   thd->lex->create_info.db_type= hton;
@@ -2689,7 +2775,7 @@ int TABLE_SHARE::init_from_sql_statement_string(THD *thd, bool write,
     thd->lex->create_info.tabledef_version= tabledef_version;
 
   promote_first_timestamp_column(&thd->lex->alter_info.create_list);
-  file= mysql_create_frm_image(thd, db.str, table_name.str,
+  file= mysql_create_frm_image(thd, &db, &table_name,
                                &thd->lex->create_info, &thd->lex->alter_info,
                                C_ORDINARY_CREATE, &unused1, &unused2, &frm);
   error|= file == 0;
@@ -2705,14 +2791,14 @@ int TABLE_SHARE::init_from_sql_statement_string(THD *thd, bool write,
 ret:
   my_free(const_cast<uchar*>(frm.str));
   lex_end(thd->lex);
-  thd->reset_db(db_backup.str, db_backup.length);
+  thd->reset_db(&db_backup);
   thd->lex= old_lex;
   if (arena)
     thd->restore_active_arena(arena, &backup);
   reenable_binlog(thd);
   thd->variables.sql_mode= saved_mode;
   thd->variables.character_set_client= old_cs;
-  if (thd->is_error() || error)
+  if (unlikely(thd->is_error() || error))
   {
     thd->clear_error();
     my_error(ER_SQL_DISCOVER_ERROR, MYF(0),
@@ -2760,12 +2846,12 @@ static bool fix_vcol_expr(THD *thd, Virtual_column_info *vcol)
 {
   DBUG_ENTER("fix_vcol_expr");
 
-  const enum enum_mark_columns save_mark_used_columns= thd->mark_used_columns;
-  thd->mark_used_columns= MARK_COLUMNS_NONE;
+  const enum enum_column_usage saved_column_usage= thd->column_usage;
+  thd->column_usage= COLUMNS_WRITE;
 
   int error= vcol->expr->fix_fields(thd, &vcol->expr);
 
-  thd->mark_used_columns= save_mark_used_columns;
+  thd->column_usage= saved_column_usage;
 
   if (unlikely(error))
   {
@@ -2872,14 +2958,14 @@ static bool fix_and_check_vcol_expr(THD *thd, TABLE *table,
   res.errors= 0;
 
   int error= func_expr->walk(&Item::check_vcol_func_processor, 0, &res);
-  if (error || (res.errors & VCOL_IMPOSSIBLE))
+  if (unlikely(error || (res.errors & VCOL_IMPOSSIBLE)))
   {
     // this can only happen if the frm was corrupted
     my_error(ER_VIRTUAL_COLUMN_FUNCTION_IS_NOT_ALLOWED, MYF(0), res.name,
              vcol->get_vcol_type_name(), vcol->name.str);
     DBUG_RETURN(1);
   }
-  else if (res.errors & VCOL_AUTO_INC)
+  else if (unlikely(res.errors & VCOL_AUTO_INC))
   {
     /*
       An auto_increment field may not be used in an expression for
@@ -2960,7 +3046,7 @@ unpack_vcol_info_from_frm(THD *thd, MEM_ROOT *mem_root, TABLE *table,
   lex.last_field= &vcol_storage;
 
   error= parse_sql(thd, &parser_state, NULL);
-  if (error)
+  if (unlikely(error))
     goto end;
 
   if (lex.current_select->table_list.first[0].next_global)
@@ -3011,6 +3097,7 @@ static bool check_vcol_forward_refs(Field *field, Virtual_column_info *vcol)
     prgflag   		READ_ALL etc..
     ha_open_flags	HA_OPEN_ABORT_IF_LOCKED etc..
     outparam       	result table
+    partitions_to_open  open only these partitions.
 
   RETURN VALUES
    0	ok
@@ -3023,9 +3110,9 @@ static bool check_vcol_forward_refs(Field *field, Virtual_column_info *vcol)
 */
 
 enum open_frm_error open_table_from_share(THD *thd, TABLE_SHARE *share,
-                       const char *alias, uint db_stat, uint prgflag,
+                       const LEX_CSTRING *alias, uint db_stat, uint prgflag,
                        uint ha_open_flags, TABLE *outparam,
-                       bool is_create_table)
+                       bool is_create_table, List<String> *partitions_to_open)
 {
   enum open_frm_error error;
   uint records, i, bitmap_size, bitmap_count;
@@ -3053,9 +3140,10 @@ enum open_frm_error open_table_from_share(THD *thd, TABLE_SHARE *share,
     error= OPEN_FRM_NEEDS_REBUILD;
     goto err;
   }
-  init_sql_alloc(&outparam->mem_root, TABLE_ALLOC_BLOCK_SIZE, 0, MYF(0));
+  init_sql_alloc(&outparam->mem_root, "table", TABLE_ALLOC_BLOCK_SIZE, 0,
+                 MYF(0));
 
-  if (outparam->alias.copy(alias, strlen(alias), table_alias_charset))
+  if (outparam->alias.copy(alias->str, alias->length, table_alias_charset))
     goto err;
   outparam->quick_keys.init();
   outparam->covering_keys.init();
@@ -3094,26 +3182,34 @@ enum open_frm_error open_table_from_share(THD *thd, TABLE_SHARE *share,
   records=0;
   if ((db_stat & HA_OPEN_KEYFILE) || (prgflag & DELAYED_OPEN))
     records=1;
-  if (prgflag & (READ_ALL+EXTRA_RECORD))
+  if (prgflag & (READ_ALL + EXTRA_RECORD))
+  {
     records++;
-
-  if (!(record= (uchar*) alloc_root(&outparam->mem_root,
-                                    share->rec_buff_length * records)))
-    goto err;                                   /* purecov: inspected */
+    if (share->versioned)
+      records++;
+  }
 
   if (records == 0)
   {
     /* We are probably in hard repair, and the buffers should not be used */
-    outparam->record[0]= outparam->record[1]= share->default_values;
+    record= share->default_values;
   }
   else
   {
-    outparam->record[0]= record;
-    if (records > 1)
-      outparam->record[1]= record+ share->rec_buff_length;
-    else
-      outparam->record[1]= outparam->record[0];   // Safety
+    if (!(record= (uchar*) alloc_root(&outparam->mem_root,
+                                      share->rec_buff_length * records)))
+      goto err;                                   /* purecov: inspected */
+    MEM_NOACCESS(record, share->rec_buff_length * records);
   }
+
+  for (i= 0; i < 3;)
+  {
+    outparam->record[i]= record;
+    if (++i < records)
+      record+= share->rec_buff_length;
+  }
+  for (i= 0; i < records; i++)
+    MEM_UNDEFINED(outparam->record[i], share->reclength);
 
   if (!(field_ptr = (Field **) alloc_root(&outparam->mem_root,
                                           (uint) ((share->fields+1)*
@@ -3136,6 +3232,8 @@ enum open_frm_error open_table_from_share(THD *thd, TABLE_SHARE *share,
       goto err;
   }
   (*field_ptr)= 0;                              // End marker
+
+  outparam->vers_write= share->versioned;
 
   if (share->found_next_number_field)
     outparam->found_next_number_field=
@@ -3217,7 +3315,8 @@ enum open_frm_error open_table_from_share(THD *thd, TABLE_SHARE *share,
     if (share->table_check_constraints || share->field_check_constraints)
       outparam->check_constraints= check_constraint_ptr;
 
-    if (parse_vcol_defs(thd, &outparam->mem_root, outparam, &error_reported))
+    if (unlikely(parse_vcol_defs(thd, &outparam->mem_root, outparam,
+                                 &error_reported)))
     {
       error= OPEN_FRM_CORRUPTED;
       goto err;
@@ -3228,6 +3327,7 @@ enum open_frm_error open_table_from_share(THD *thd, TABLE_SHARE *share,
   }
 
 #ifdef WITH_PARTITION_STORAGE_ENGINE
+  bool work_part_info_used;
   if (share->partition_info_str_len && outparam->file)
   {
   /*
@@ -3248,7 +3348,6 @@ enum open_frm_error open_table_from_share(THD *thd, TABLE_SHARE *share,
     thd->set_n_backup_active_arena(&part_func_arena, &backup_arena);
     thd->stmt_arena= &part_func_arena;
     bool tmp;
-    bool work_part_info_used;
 
     tmp= mysql_unpack_partition(thd, share->partition_info_str,
                                 share->partition_info_str_len,
@@ -3362,14 +3461,15 @@ partititon_err:
 
     int ha_err= outparam->file->ha_open(outparam, share->normalized_path.str,
                                  (db_stat & HA_READ_ONLY ? O_RDONLY : O_RDWR),
-                                  ha_open_flags);
+                                 ha_open_flags, 0, partitions_to_open);
     if (ha_err)
     {
       share->open_errno= ha_err;
       /* Set a flag if the table is crashed and it can be auto. repaired */
       share->crashed= (outparam->file->auto_repair(ha_err) &&
                        !(ha_open_flags & HA_OPEN_FOR_REPAIR));
-      outparam->file->print_error(ha_err, MYF(0));
+      if (!thd->is_error())
+        outparam->file->print_error(ha_err, MYF(0));
       error_reported= TRUE;
 
       if (ha_err == HA_ERR_TABLE_DEF_CHANGED)
@@ -3442,7 +3542,7 @@ partititon_err:
     table		TABLE object to free
 */
 
-int closefrm(register TABLE *table)
+int closefrm(TABLE *table)
 {
   int error=0;
   DBUG_ENTER("closefrm");
@@ -3479,7 +3579,7 @@ int closefrm(register TABLE *table)
 
 /* Deallocate temporary blob storage */
 
-void free_blobs(register TABLE *table)
+void free_blobs(TABLE *table)
 {
   uint *ptr, *end;
   for (ptr= table->s->blob_field, end=ptr + table->s->blob_fields ;
@@ -3666,24 +3766,13 @@ static uint find_field(Field **fields, uchar *record, uint start, uint length)
     May fail with some multibyte charsets though.
 */
 
-void append_unescaped(String *res, const char *pos, uint length)
+void append_unescaped(String *res, const char *pos, size_t length)
 {
   const char *end= pos+length;
   res->append('\'');
 
   for (; pos != end ; pos++)
   {
-#if defined(USE_MB) && MYSQL_VERSION_ID < 40100
-    uint mblen;
-    if (use_mb(default_charset_info) &&
-        (mblen= my_ismbchar(default_charset_info, pos, end)))
-    {
-      res->append(pos, mblen);
-      pos+= mblen;
-      continue;
-    }
-#endif
-
     switch (*pos) {
     case 0:				/* Must be escaped for 'mysql' */
       res->append('\\');
@@ -3717,7 +3806,7 @@ void append_unescaped(String *res, const char *pos, uint length)
 void prepare_frm_header(THD *thd, uint reclength, uchar *fileinfo,
                         HA_CREATE_INFO *create_info, uint keys, KEY *key_info)
 {
-  ulong key_comment_total_bytes= 0;
+  size_t key_comment_total_bytes= 0;
   uint i;
   DBUG_ENTER("prepare_frm_header");
 
@@ -3727,7 +3816,7 @@ void prepare_frm_header(THD *thd, uint reclength, uchar *fileinfo,
   if (create_info->min_rows > UINT_MAX32)
     create_info->min_rows= UINT_MAX32;
 
-  uint key_length, tmp_key_length, tmp, csid;
+  size_t key_length, tmp_key_length, tmp, csid;
   bzero((char*) fileinfo, FRM_HEADER_SIZE);
   /* header */
   fileinfo[0]=(uchar) 254;
@@ -3953,7 +4042,7 @@ bool ok_for_lower_case_names(const char *name)
 bool check_db_name(LEX_STRING *org_name)
 {
   char *name= org_name->str;
-  uint name_length= org_name->length;
+  size_t name_length= org_name->length;
   bool check_for_path_chars;
 
   if ((check_for_path_chars= check_mysql50_prefix(name)))
@@ -4098,7 +4187,7 @@ Table_check_intact::check(TABLE *table, const TABLE_FIELD_DEF *table_def)
 
   /* Whether the table definition has already been validated. */
   if (table->s->table_field_def_cache == table_def)
-    DBUG_RETURN(FALSE);
+    goto end;
 
   if (table->s->fields != table_def->count)
   {
@@ -4131,6 +4220,8 @@ Table_check_intact::check(TABLE *table, const TABLE_FIELD_DEF *table_def)
       is backward compatible.
     */
   }
+  else
+  {
   StringBuffer<1024> sql_type(system_charset_info);
   sql_type.extra_allocation(256); // Allocate min 256 characters at once
   for (i=0 ; i < table_def->count; i++, field_def++)
@@ -4216,6 +4307,7 @@ Table_check_intact::check(TABLE *table, const TABLE_FIELD_DEF *table_def)
       error= TRUE;
     }
   }
+  }
 
   if (table_def->primary_key_parts)
   {
@@ -4257,8 +4349,18 @@ Table_check_intact::check(TABLE *table, const TABLE_FIELD_DEF *table_def)
     }
   }
 
-  if (! error)
+  if (likely(! error))
     table->s->table_field_def_cache= table_def;
+
+end:
+
+  if (has_keys && !error && !table->key_info)
+  {
+    report_error(0, "Incorrect definition of table %s.%s: "
+                 "indexes are missing",
+                 table->s->db.str, table->alias.c_ptr());
+    error= TRUE;
+  }
 
   DBUG_RETURN(error);
 }
@@ -4475,10 +4577,10 @@ void TABLE::init(THD *thd, TABLE_LIST *tl)
   if (thd->lex->need_correct_ident())
     alias_name_used= my_strcasecmp(table_alias_charset,
                                    s->table_name.str,
-                                   tl->alias);
+                                   tl->alias.str);
   /* Fix alias if table name changes. */
-  if (strcmp(alias.c_ptr(), tl->alias))
-    alias.copy(tl->alias, strlen(tl->alias), alias.charset());
+  if (strcmp(alias.c_ptr(), tl->alias.str))
+    alias.copy(tl->alias.str, tl->alias.length, alias.charset());
 
   tablenr= thd->current_tablenr++;
   used_fields= 0;
@@ -4630,7 +4732,7 @@ bool TABLE_LIST::create_field_translation(THD *thd)
   bool res= FALSE;
   DBUG_ENTER("TABLE_LIST::create_field_translation");
   DBUG_PRINT("enter", ("Alias: '%s'  Unit: %p",
-                      (alias ? alias : "<NULL>"),
+                      (alias.str ? alias.str : "<NULL>"),
                        get_unit()));
 
   if (thd->stmt_arena->is_conventional() ||
@@ -4658,16 +4760,20 @@ bool TABLE_LIST::create_field_translation(THD *thd)
     */
     if (is_view() && get_unit()->prepared && !field_translation_updated)
     {
+      field_translation_updated= TRUE;
+      if (static_cast<uint>(field_translation_end - field_translation) <
+          select->item_list.elements)
+        goto allocate;
       while ((item= it++))
       {
         field_translation[field_count++].item= item;
       }
-      field_translation_updated= TRUE;
     }
 
     DBUG_RETURN(FALSE);
   }
 
+allocate:
   arena= thd->activate_stmt_arena_if_needed(&backup);
 
   /* Create view fields translation table */
@@ -4875,7 +4981,7 @@ merge_on_conds(THD *thd, TABLE_LIST *table, bool is_cascaded)
   DBUG_ENTER("merge_on_conds");
 
   Item *cond= NULL;
-  DBUG_PRINT("info", ("alias: %s", table->alias));
+  DBUG_PRINT("info", ("alias: %s", table->alias.str));
   if (table->on_expr)
     cond= table->on_expr->copy_andor_structure(thd);
   if (!table->view)
@@ -5103,9 +5209,9 @@ int TABLE_LIST::view_check_option(THD *thd, bool ignore_failure)
     {
       TABLE_LIST *main_view= top_table();
       const char *name_db= (main_view->view ? main_view->view_db.str :
-                            main_view->db);
+                            main_view->db.str);
       const char *name_table= (main_view->view ? main_view->view_name.str :
-                               main_view->table_name);
+                               main_view->table_name.str);
       my_error(ER_VIEW_CHECK_FAILED, MYF(ignore_failure ? ME_JUST_WARNING : 0),
                name_db, name_table);
       return ignore_failure ? VIEW_CHECK_SKIP : VIEW_CHECK_ERROR;
@@ -5117,14 +5223,25 @@ int TABLE_LIST::view_check_option(THD *thd, bool ignore_failure)
 
 int TABLE::verify_constraints(bool ignore_failure)
 {
+  /*
+    We have to check is_error() first as we are checking it for each
+    constraint to catch fatal warnings.
+  */
+  if (in_use->is_error())
+    return (VIEW_CHECK_ERROR);
+
   /* go trough check option clauses for fields and table */
   if (check_constraints &&
       !(in_use->variables.option_bits & OPTION_NO_CHECK_CONSTRAINT_CHECKS))
   {
     for (Virtual_column_info **chk= check_constraints ; *chk ; chk++)
     {
-      /* yes! NULL is ok, see 4.23.3.4 Table check constraints, part 2, SQL:2016 */
-      if ((*chk)->expr->val_int() == 0 && !(*chk)->expr->null_value)
+      /*
+        yes! NULL is ok.
+        see 4.23.3.4 Table check constraints, part 2, SQL:2016
+      */
+      if (((*chk)->expr->val_int() == 0 && !(*chk)->expr->null_value) ||
+          in_use->is_error())
       {
         my_error(ER_CONSTRAINT_FAILED,
                  MYF(ignore_failure ? ME_JUST_WARNING : 0), (*chk)->name.str,
@@ -5133,7 +5250,11 @@ int TABLE::verify_constraints(bool ignore_failure)
       }
     }
   }
-  return(VIEW_CHECK_OK);
+  /*
+    We have to check in_use() as checking constraints may have generated
+    warnings that should be treated as errors
+  */
+  return(!in_use->is_error() ? VIEW_CHECK_OK : VIEW_CHECK_ERROR);
 }
 
 /*
@@ -5405,7 +5526,7 @@ void TABLE_LIST::register_want_access(ulong want_access)
 bool TABLE_LIST::prepare_view_security_context(THD *thd)
 {
   DBUG_ENTER("TABLE_LIST::prepare_view_security_context");
-  DBUG_PRINT("enter", ("table: %s", alias));
+  DBUG_PRINT("enter", ("table: %s", alias.str));
 
   DBUG_ASSERT(!prelocking_placeholder && view);
   if (view_suid)
@@ -5413,7 +5534,7 @@ bool TABLE_LIST::prepare_view_security_context(THD *thd)
     DBUG_PRINT("info", ("This table is suid view => load contest"));
     DBUG_ASSERT(view && view_sctx);
     if (acl_getroot(view_sctx, definer.user.str, definer.host.str,
-                                definer.host.str, thd->db))
+                                definer.host.str, thd->db.str))
     {
       if ((thd->lex->sql_command == SQLCOM_SHOW_CREATE) ||
           (thd->lex->sql_command == SQLCOM_SHOW_FIELDS))
@@ -5478,7 +5599,7 @@ Security_context *TABLE_LIST::find_view_security_context(THD *thd)
   if (upper_view)
   {
     DBUG_PRINT("info", ("Securety context of view %s will be used",
-                        upper_view->alias));
+                        upper_view->alias.str));
     sctx= upper_view->view_sctx;
     DBUG_ASSERT(sctx);
   }
@@ -5527,8 +5648,8 @@ bool TABLE_LIST::prepare_security(THD *thd)
     }
     else
     {
-      local_db= tbl->db;
-      local_table_name= tbl->table_name;
+      local_db= tbl->db.str;
+      local_table_name= tbl->table_name.str;
     }
     fill_effective_table_privileges(thd, &tbl->grant, local_db,
                                     local_table_name);
@@ -5679,30 +5800,29 @@ Field *Natural_join_column::field()
 }
 
 
-const char *Natural_join_column::table_name()
+const char *Natural_join_column::safe_table_name()
 {
   DBUG_ASSERT(table_ref);
-  return table_ref->alias;
+  return table_ref->alias.str ? table_ref->alias.str : "";
 }
 
 
-const char *Natural_join_column::db_name()
+const char *Natural_join_column::safe_db_name()
 {
   if (view_field)
-    return table_ref->view_db.str;
+    return table_ref->view_db.str ? table_ref->view_db.str : "";
 
   /*
     Test that TABLE_LIST::db is the same as TABLE_SHARE::db to
     ensure consistency. An exception are I_S schema tables, which
     are inconsistent in this respect.
   */
-  DBUG_ASSERT(!strcmp(table_ref->db,
-                      table_ref->table->s->db.str) ||
+  DBUG_ASSERT(!cmp(&table_ref->db,
+                   &table_ref->table->s->db) ||
               (table_ref->schema_table &&
-               is_infoschema_db(table_ref->table->s->db.str,
-                                table_ref->table->s->db.length)) ||
-               table_ref->is_materialized_derived());
-  return table_ref->db;
+               is_infoschema_db(&table_ref->table->s->db)) ||
+              table_ref->is_materialized_derived());
+  return table_ref->db.str ? table_ref->db.str : "";
 }
 
 
@@ -5803,7 +5923,7 @@ Item *create_view_field(THD *thd, TABLE_LIST *view, Item **field_ref,
   Name_resolution_context *context= view->view ? &view->view->select_lex.context :
                                     &thd->lex->select_lex.context;
   Item *item= (new (thd->mem_root)
-               Item_direct_view_ref(thd, context, field_ref, view->alias,
+               Item_direct_view_ref(thd, context, field_ref, view->alias.str,
                                     name, view));
   /*
     Force creation of nullable item for the result tmp table for outer joined
@@ -5867,7 +5987,7 @@ void Field_iterator_table_ref::set_field_iterator()
                    table_ref->table->s->fields))));
     field_it= &natural_join_it;
     DBUG_PRINT("info",("field_it for '%s' is Field_iterator_natural_join",
-                       table_ref->alias));
+                       table_ref->alias.str));
   }
   /* This is a merge view, so use field_translation. */
   else if (table_ref->field_translation)
@@ -5875,7 +5995,7 @@ void Field_iterator_table_ref::set_field_iterator()
     DBUG_ASSERT(table_ref->is_merged_derived());
     field_it= &view_field_it;
     DBUG_PRINT("info", ("field_it for '%s' is Field_iterator_view",
-                        table_ref->alias));
+                        table_ref->alias.str));
   }
   /* This is a base table or stored view. */
   else
@@ -5883,7 +6003,7 @@ void Field_iterator_table_ref::set_field_iterator()
     DBUG_ASSERT(table_ref->table || table_ref->view);
     field_it= &table_field_it;
     DBUG_PRINT("info", ("field_it for '%s' is Field_iterator_table",
-                        table_ref->alias));
+                        table_ref->alias.str));
   }
   field_it->set(table_ref);
   DBUG_VOID_RETURN;
@@ -5925,11 +6045,11 @@ const char *Field_iterator_table_ref::get_table_name()
   if (table_ref->is_derived())
     return table_ref->table->s->table_name.str;
   else if (table_ref->is_natural_join)
-    return natural_join_it.column_ref()->table_name();
+    return natural_join_it.column_ref()->safe_table_name();
 
-  DBUG_ASSERT(!strcmp(table_ref->table_name,
+  DBUG_ASSERT(!strcmp(table_ref->table_name.str,
                       table_ref->table->s->table_name.str));
-  return table_ref->table_name;
+  return table_ref->table_name.str;
 }
 
 
@@ -5938,19 +6058,18 @@ const char *Field_iterator_table_ref::get_db_name()
   if (table_ref->view)
     return table_ref->view_db.str;
   else if (table_ref->is_natural_join)
-    return natural_join_it.column_ref()->db_name();
+    return natural_join_it.column_ref()->safe_db_name();
 
   /*
     Test that TABLE_LIST::db is the same as TABLE_SHARE::db to
     ensure consistency. An exception are I_S schema tables, which
     are inconsistent in this respect.
   */
-  DBUG_ASSERT(!strcmp(table_ref->db, table_ref->table->s->db.str) ||
+  DBUG_ASSERT(!cmp(&table_ref->db, &table_ref->table->s->db) ||
               (table_ref->schema_table &&
-               is_infoschema_db(table_ref->table->s->db.str,
-                                table_ref->table->s->db.length)));
+               is_infoschema_db(&table_ref->table->s->db)));
 
-  return table_ref->db;
+  return table_ref->db.str;
 }
 
 
@@ -6304,6 +6423,13 @@ void TABLE::mark_columns_needed_for_delete()
 
   if (need_signal)
     file->column_bitmaps_signal();
+
+  if (s->versioned)
+  {
+    bitmap_set_bit(read_set, s->vers_start_field()->field_index);
+    bitmap_set_bit(read_set, s->vers_end_field()->field_index);
+    bitmap_set_bit(write_set, s->vers_end_field()->field_index);
+  }
 }
 
 
@@ -6346,7 +6472,7 @@ void TABLE::mark_columns_needed_for_update()
     for (KEY *k= key_info; k < end; k++)
     {
       KEY_PART_INFO *kpend= k->key_part + k->ext_key_parts;
-      bool any_written= false, all_read= true;
+      int any_written= 0, all_read= 1;
       for (KEY_PART_INFO *kp= k->key_part; kp < kpend; kp++)
       {
         int idx= kp->fieldnr - 1;
@@ -6381,6 +6507,15 @@ void TABLE::mark_columns_needed_for_update()
       mark_columns_used_by_index_no_reset(s->primary_key, read_set);
       need_signal= true;
     }
+  }
+  /*
+     For System Versioning we have to read all columns since we will store
+     a copy of previous row with modified Sys_end column back to a table.
+  */
+  if (s->versioned)
+  {
+    // We will copy old columns to a new row.
+    use_all_columns();
   }
   if (check_constraints)
   {
@@ -6628,7 +6763,7 @@ bool TABLE::mark_virtual_columns_for_write(bool insert_fl)
     if (bitmap_is_set(write_set, tmp_vfield->field_index))
       bitmap_updated= mark_virtual_col(tmp_vfield);
     else if (tmp_vfield->vcol_info->stored_in_db ||
-             (tmp_vfield->flags & PART_KEY_FLAG))
+             (tmp_vfield->flags & (PART_KEY_FLAG | FIELD_IN_PART_FUNC_FLAG)))
     {
       if (insert_fl)
       {
@@ -7258,7 +7393,7 @@ bool TABLE_LIST::process_index_hints(TABLE *tbl)
           (pos= find_type(&tbl->s->keynames, hint->key_name.str,
                           hint->key_name.length, 1)) <= 0)
       {
-        my_error(ER_KEY_DOES_NOT_EXITS, MYF(0), hint->key_name.str, alias);
+        my_error(ER_KEY_DOES_NOT_EXITS, MYF(0), hint->key_name.str, alias.str);
         return 1;
       }
 
@@ -7358,7 +7493,7 @@ void init_mdl_requests(TABLE_LIST *table_list)
 {
   for ( ; table_list ; table_list= table_list->next_global)
     table_list->mdl_request.init(MDL_key::TABLE,
-                                 table_list->db, table_list->table_name,
+                                 table_list->db.str, table_list->table_name.str,
                                  table_list->lock_type >= TL_WRITE_ALLOW_WRITE ?
                                  MDL_SHARED_WRITE : MDL_SHARED_READ,
                                  MDL_TRANSACTION);
@@ -7627,6 +7762,37 @@ int TABLE::update_default_fields(bool update_command, bool ignore_errors)
   DBUG_RETURN(res);
 }
 
+
+void TABLE::vers_update_fields()
+{
+  bitmap_set_bit(write_set, vers_start_field()->field_index);
+  bitmap_set_bit(write_set, vers_end_field()->field_index);
+
+  if (versioned(VERS_TIMESTAMP))
+  {
+    if (!vers_write)
+      return;
+    if (vers_start_field()->store_timestamp(in_use->query_start(),
+                                            in_use->query_start_sec_part()))
+      DBUG_ASSERT(0);
+  }
+  else
+  {
+    if (!vers_write)
+      return;
+  }
+
+  vers_end_field()->set_max();
+}
+
+
+void TABLE::vers_update_end()
+{
+  if (vers_end_field()->store_timestamp(in_use->query_start(),
+                                        in_use->query_start_sec_part()))
+    DBUG_ASSERT(0);
+}
+
 /**
    Reset markers that fields are being updated
 */
@@ -7774,7 +7940,7 @@ bool TABLE::insert_all_rows_into_tmp_table(THD *thd,
     tmp_table->file->ha_disable_indexes(HA_KEY_SWITCH_ALL);
   file->ha_index_or_rnd_end();
 
-  if (file->ha_rnd_init_with_error(1))
+  if (unlikely(file->ha_rnd_init_with_error(1)))
     DBUG_RETURN(1);
 
   if (tmp_table->no_rows)
@@ -7786,10 +7952,10 @@ bool TABLE::insert_all_rows_into_tmp_table(THD *thd,
     tmp_table->file->ha_start_bulk_insert(file->stats.records);
   }
 
-  while (!file->ha_rnd_next(tmp_table->record[0]))
+  while (likely(!file->ha_rnd_next(tmp_table->record[0])))
   {
     write_err= tmp_table->file->ha_write_tmp_row(tmp_table->record[0]);
-    if (write_err)
+    if (unlikely(write_err))
     {
       bool is_duplicate;
       if (tmp_table->file->is_fatal_error(write_err, HA_CHECK_DUP) &&
@@ -7800,7 +7966,7 @@ bool TABLE::insert_all_rows_into_tmp_table(THD *thd,
 	DBUG_RETURN(1);
        
     }  
-    if (thd->check_killed())
+    if (unlikely(thd->check_killed()))
     {
       thd->send_kill_message();
       goto err_killed;
@@ -7971,7 +8137,21 @@ bool TABLE_LIST::init_derived(THD *thd, bool init_view)
       (first_table && first_table->is_multitable()))
     set_multitable();
 
-  unit->derived= this;
+  if (!unit->derived)
+    unit->derived= this;
+  else if (!is_with_table_recursive_reference() && unit->derived != this)
+  {
+    if (unit->derived->is_with_table_recursive_reference())
+      unit->derived= this;
+    else if (vers_conditions.eq(unit->derived->vers_conditions))
+      vers_conditions.empty();
+    else
+    {
+      my_error(ER_CONFLICTING_FOR_SYSTEM_TIME, MYF(0));
+      return TRUE;
+    }
+  }
+
   if (init_view && !view)
   {
     /* This is all what we can do for a derived table for now. */
@@ -8155,7 +8335,6 @@ bool TABLE_LIST::is_with_table()
   return derived && derived->with_element;
 }
 
-
 uint TABLE_SHARE::actual_n_key_parts(THD *thd)
 {
   return use_ext_keys &&
@@ -8272,6 +8451,7 @@ Item* TABLE_LIST::build_pushable_cond_for_table(THD *thd, Item *cond)
       return 0;		
     List_iterator<Item> li(*((Item_cond*) cond)->argument_list());
     Item *item;
+    bool is_fix_needed= false;
     while ((item=li++))
     {
       if (item->get_extraction_flag() == NO_EXTRACTION_FL)
@@ -8285,8 +8465,16 @@ Item* TABLE_LIST::build_pushable_cond_for_table(THD *thd, Item *cond)
 	return 0;
       if (!fix) 
 	continue;
+
+      if (fix->type() == Item::COND_ITEM &&
+          ((Item_cond*) fix)->functype() == Item_func::COND_AND_FUNC)
+	is_fix_needed= true;
+
       new_cond->argument_list()->push_back(fix, thd->mem_root);
     }
+    if (is_fix_needed && new_cond->fix_fields(thd, 0))
+      return 0;
+
     switch (new_cond->argument_list()->elements) 
     {
     case 0:
@@ -8372,15 +8560,434 @@ LEX_CSTRING *fk_option_name(enum_fk_option opt)
   return names + opt;
 }
 
+bool fk_modifies_child(enum_fk_option opt)
+{
+  static bool can_write[]= { false, false, true, true, false, true };
+  return can_write[opt];
+}
+
+enum TR_table::enabled TR_table::use_transaction_registry= TR_table::MAYBE;
+
+TR_table::TR_table(THD* _thd, bool rw) :
+  thd(_thd), open_tables_backup(NULL)
+{
+  init_one_table(&MYSQL_SCHEMA_NAME, &TRANSACTION_REG_NAME,
+                 NULL, rw ? TL_WRITE : TL_READ);
+}
+
+bool TR_table::open()
+{
+  DBUG_ASSERT(!table);
+  open_tables_backup= new Open_tables_backup;
+  if (!open_tables_backup)
+  {
+    my_error(ER_OUT_OF_RESOURCES, MYF(0));
+    return true;
+  }
+
+  All_tmp_tables_list *temporary_tables= thd->temporary_tables;
+  bool error= !open_log_table(thd, this, open_tables_backup);
+  thd->temporary_tables= temporary_tables;
+
+  if (use_transaction_registry == MAYBE)
+    error= check(error);
+
+  use_transaction_registry= error ? NO : YES;
+
+  return error;
+}
+
+TR_table::~TR_table()
+{
+  if (table)
+  {
+    thd->temporary_tables= NULL;
+    close_log_table(thd, open_tables_backup);
+  }
+  delete open_tables_backup;
+}
+
+void TR_table::store(uint field_id, ulonglong val)
+{
+  table->field[field_id]->store(val, true);
+  table->field[field_id]->set_notnull();
+}
+
+void TR_table::store(uint field_id, timeval ts)
+{
+  table->field[field_id]->store_timestamp(ts.tv_sec, ts.tv_usec);
+  table->field[field_id]->set_notnull();
+}
+
+enum_tx_isolation TR_table::iso_level() const
+{
+  enum_tx_isolation res= (enum_tx_isolation) ((*this)[FLD_ISO_LEVEL]->val_int() - 1);
+  DBUG_ASSERT(res <= ISO_SERIALIZABLE);
+  return res;
+}
+
+bool TR_table::update(ulonglong start_id, ulonglong end_id)
+{
+  if (!table && open())
+    return true;
+
+  store(FLD_BEGIN_TS, thd->transaction_time());
+  timeval end_time= {thd->query_start(), long(thd->query_start_sec_part())};
+  store(FLD_TRX_ID, start_id);
+  store(FLD_COMMIT_ID, end_id);
+  store(FLD_COMMIT_TS, end_time);
+  store_iso_level(thd->tx_isolation);
+
+  int error= table->file->ha_write_row(table->record[0]);
+  if (unlikely(error))
+    table->file->print_error(error, MYF(0));
+  return error;
+}
+
+#define newx new (thd->mem_root)
+bool TR_table::query(ulonglong trx_id)
+{
+  if (!table && open())
+    return false;
+  SQL_SELECT_auto select;
+  READ_RECORD info;
+  int error;
+  List<TABLE_LIST> dummy;
+  SELECT_LEX &slex= thd->lex->select_lex;
+  Name_resolution_context_backup backup(slex.context, *this);
+  Item *field= newx Item_field(thd, &slex.context, (*this)[FLD_TRX_ID]);
+  Item *value= newx Item_int(thd, trx_id);
+  COND *conds= newx Item_func_eq(thd, field, value);
+  if (unlikely((error= setup_conds(thd, this, dummy, &conds))))
+    return false;
+  select= make_select(table, 0, 0, conds, NULL, 0, &error);
+  if (unlikely(error || !select))
+    return false;
+  // FIXME: (performance) force index 'transaction_id'
+  error= init_read_record(&info, thd, table, select, NULL,
+                          1 /* use_record_cache */, true /* print_error */,
+                          false /* disable_rr_cache */);
+  while (!(error= info.read_record()) && !thd->killed && !thd->is_error())
+  {
+    if (select->skip_record(thd) > 0)
+      return true;
+  }
+  return false;
+}
+
+bool TR_table::query(MYSQL_TIME &commit_time, bool backwards)
+{
+  if (!table && open())
+    return false;
+  SQL_SELECT_auto select;
+  READ_RECORD info;
+  int error;
+  List<TABLE_LIST> dummy;
+  SELECT_LEX &slex= thd->lex->select_lex;
+  Name_resolution_context_backup backup(slex.context, *this);
+  Item *field= newx Item_field(thd, &slex.context, (*this)[FLD_COMMIT_TS]);
+  Item *value= newx Item_datetime_literal(thd, &commit_time, 6);
+  COND *conds;
+  if (backwards)
+    conds= newx Item_func_ge(thd, field, value);
+  else
+    conds= newx Item_func_le(thd, field, value);
+  if (unlikely((error= setup_conds(thd, this, dummy, &conds))))
+    return false;
+  // FIXME: (performance) force index 'commit_timestamp'
+  select= make_select(table, 0, 0, conds, NULL, 0, &error);
+  if (unlikely(error || !select))
+    return false;
+  error= init_read_record(&info, thd, table, select, NULL,
+                          1 /* use_record_cache */, true /* print_error */,
+                          false /* disable_rr_cache */);
+
+  // With PK by transaction_id the records are ordered by PK, so we have to
+  // scan TRT fully and collect min (backwards == true)
+  // or max (backwards == false) stats.
+  bool found= false;
+  MYSQL_TIME found_ts;
+  while (!(error= info.read_record()) && !thd->killed && !thd->is_error())
+  {
+    int res= select->skip_record(thd);
+    if (res > 0)
+    {
+      MYSQL_TIME commit_ts;
+      if ((*this)[FLD_COMMIT_TS]->get_date(&commit_ts, 0))
+      {
+        found= false;
+        break;
+      }
+      int c;
+      if (!found || ((c= my_time_compare(&commit_ts, &found_ts)) &&
+        (backwards ? c < 0 : c > 0)))
+      {
+        found_ts= commit_ts;
+        found= true;
+        // TODO: (performance) make ORDER DESC and break after first found.
+        // Otherwise it is O(n) scan (+copy)!
+        store_record(table, record[1]);
+      }
+    }
+    else if (res < 0)
+    {
+      found= false;
+      break;
+    }
+ }
+  if (found)
+    restore_record(table, record[1]);
+  return found;
+}
+#undef newx
+
+bool TR_table::query_sees(bool &result, ulonglong trx_id1, ulonglong trx_id0,
+                          ulonglong commit_id1, enum_tx_isolation iso_level1,
+                          ulonglong commit_id0)
+{
+  if (trx_id1 == trx_id0)
+  {
+    return false;
+  }
+
+  if (trx_id1 == ULONGLONG_MAX || trx_id0 == 0)
+  {
+    result= true;
+    return false;
+  }
+
+  if (trx_id0 == ULONGLONG_MAX || trx_id1 == 0)
+  {
+    result= false;
+    return false;
+  }
+
+  if (!commit_id1)
+  {
+    if (!query(trx_id1))
+      return true;
+
+    commit_id1= (*this)[FLD_COMMIT_ID]->val_int();
+    iso_level1= iso_level();
+  }
+
+  if (!commit_id0)
+  {
+    if (!query(trx_id0))
+      return true;
+
+    commit_id0= (*this)[FLD_COMMIT_ID]->val_int();
+  }
+
+  // Trivial case: TX1 started after TX0 committed
+  if (trx_id1 > commit_id0
+      // Concurrent transactions: TX1 committed after TX0 and TX1 is read (un)committed
+      || (commit_id1 > commit_id0 && iso_level1 < ISO_REPEATABLE_READ))
+  {
+    result= true;
+  }
+  else // All other cases: TX1 does not see TX0
+  {
+    result= false;
+  }
+
+  return false;
+}
+
+void TR_table::warn_schema_incorrect(const char *reason)
+{
+  if (MYSQL_VERSION_ID == table->s->mysql_version)
+  {
+    sql_print_error("%`s.%`s schema is incorrect: %s.",
+                    db.str, table_name.str, reason);
+  }
+  else
+  {
+    sql_print_error("%`s.%`s schema is incorrect: %s. Created with MariaDB %d, "
+                    "now running %d.",
+                    db.str, table_name.str, reason, MYSQL_VERSION_ID,
+                    static_cast<int>(table->s->mysql_version));
+  }
+}
+
+bool TR_table::check(bool error)
+{
+  if (error)
+  {
+    sql_print_warning("%`s.%`s does not exist (open failed).", db.str,
+                      table_name.str);
+    return true;
+  }
+
+  if (table->file->ht->db_type != DB_TYPE_INNODB)
+  {
+    warn_schema_incorrect("Wrong table engine (expected InnoDB)");
+    return true;
+  }
+
+#define WARN_SCHEMA(...) \
+  char reason[128]; \
+  snprintf(reason, 128, __VA_ARGS__); \
+  warn_schema_incorrect(reason);
+
+  if (table->s->fields != FIELD_COUNT)
+  {
+    WARN_SCHEMA("Wrong field count (expected %d)", FIELD_COUNT);
+    return true;
+  }
+
+  if (table->field[FLD_TRX_ID]->type() != MYSQL_TYPE_LONGLONG)
+  {
+    WARN_SCHEMA("Wrong field %d type (expected BIGINT UNSIGNED)", FLD_TRX_ID);
+    return true;
+  }
+
+  if (table->field[FLD_COMMIT_ID]->type() != MYSQL_TYPE_LONGLONG)
+  {
+    WARN_SCHEMA("Wrong field %d type (expected BIGINT UNSIGNED)", FLD_COMMIT_ID);
+    return true;
+  }
+
+  if (table->field[FLD_BEGIN_TS]->type() != MYSQL_TYPE_TIMESTAMP)
+  {
+    WARN_SCHEMA("Wrong field %d type (expected TIMESTAMP(6))", FLD_BEGIN_TS);
+    return true;
+  }
+
+  if (table->field[FLD_COMMIT_TS]->type() != MYSQL_TYPE_TIMESTAMP)
+  {
+    WARN_SCHEMA("Wrong field %d type (expected TIMESTAMP(6))", FLD_COMMIT_TS);
+    return true;
+  }
+
+  if (table->field[FLD_ISO_LEVEL]->type() != MYSQL_TYPE_STRING ||
+      !(table->field[FLD_ISO_LEVEL]->flags & ENUM_FLAG))
+  {
+  wrong_enum:
+    WARN_SCHEMA("Wrong field %d type (expected ENUM('READ-UNCOMMITTED', "
+                "'READ-COMMITTED', 'REPEATABLE-READ', 'SERIALIZABLE'))",
+                FLD_ISO_LEVEL);
+    return true;
+  }
+
+  Field_enum *iso_level= static_cast<Field_enum *>(table->field[FLD_ISO_LEVEL]);
+  st_typelib *typelib= iso_level->typelib;
+
+  if (typelib->count != 4)
+    goto wrong_enum;
+
+  if (strcmp(typelib->type_names[0], "READ-UNCOMMITTED") ||
+      strcmp(typelib->type_names[1], "READ-COMMITTED") ||
+      strcmp(typelib->type_names[2], "REPEATABLE-READ") ||
+      strcmp(typelib->type_names[3], "SERIALIZABLE"))
+  {
+    goto wrong_enum;
+  }
+
+  if (!table->key_info || !table->key_info->key_part)
+    goto wrong_pk;
+
+  if (strcmp(table->key_info->key_part->field->field_name.str, "transaction_id"))
+  {
+  wrong_pk:
+    WARN_SCHEMA("Wrong PRIMARY KEY (expected `transaction_id`)");
+    return true;
+  }
+
+  return false;
+}
+
+bool vers_select_conds_t::resolve_units(THD *thd)
+{
+  DBUG_ASSERT(type != SYSTEM_TIME_UNSPECIFIED);
+  DBUG_ASSERT(start.item);
+  return start.resolve_unit(thd) ||
+         end.resolve_unit(thd);
+}
+
+bool vers_select_conds_t::eq(const vers_select_conds_t &conds) const
+{
+  if (type != conds.type)
+    return false;
+  switch (type) {
+  case SYSTEM_TIME_UNSPECIFIED:
+  case SYSTEM_TIME_ALL:
+    return true;
+  case SYSTEM_TIME_BEFORE:
+    DBUG_ASSERT(0);
+  case SYSTEM_TIME_AS_OF:
+    return start.eq(conds.start);
+  case SYSTEM_TIME_FROM_TO:
+  case SYSTEM_TIME_BETWEEN:
+    return start.eq(conds.start) && end.eq(conds.end);
+  }
+  DBUG_ASSERT(0);
+  return false;
+}
+
+
+bool Vers_history_point::resolve_unit(THD *thd)
+{
+  if (!item)
+    return false;
+  if (!item->fixed && item->fix_fields(thd, &item))
+    return true;
+  return item->this_item()->type_handler_for_system_time()->
+           Vers_history_point_resolve_unit(thd, this);
+}
+
+
+void Vers_history_point::bad_expression_data_type_error(const char *type) const
+{
+  my_error(ER_ILLEGAL_PARAMETER_DATA_TYPE_FOR_OPERATION, MYF(0),
+           type, "FOR SYSTEM_TIME");
+}
+
+
+void Vers_history_point::fix_item()
+{
+  if (item && item->decimals == 0 && item->type() == Item::FUNC_ITEM &&
+      ((Item_func*)item)->functype() == Item_func::NOW_FUNC)
+    item->decimals= 6;
+}
+
+
+bool Vers_history_point::eq(const vers_history_point_t &point) const
+{
+  return unit == point.unit && item->eq(point.item, false);
+}
+
+void Vers_history_point::print(String *str, enum_query_type query_type,
+                               const char *prefix, size_t plen) const
+{
+  const static LEX_CSTRING unit_type[]=
+  {
+    { STRING_WITH_LEN("") },
+    { STRING_WITH_LEN("TIMESTAMP ") },
+    { STRING_WITH_LEN("TRANSACTION ") }
+  };
+  str->append(prefix, plen);
+  str->append(unit_type + unit);
+  item->print(str, query_type);
+}
 
 Field *TABLE::find_field_by_name(LEX_CSTRING *str) const
 {
-  uint length= str->length;
-  for (Field **tmp= field; *tmp; tmp++)
+  Field **tmp;
+  size_t length= str->length;
+  if (s->name_hash.records)
   {
-    if ((*tmp)->field_name.length == length &&
-        !lex_string_cmp(system_charset_info, &(*tmp)->field_name, str))
-      return *tmp;
+    tmp= (Field**) my_hash_search(&s->name_hash, (uchar*) str->str, length);
+    return tmp ? field[tmp - s->field] : NULL;
+  }
+  else
+  {
+    for (tmp= field; *tmp; tmp++)
+    {
+      if ((*tmp)->field_name.length == length &&
+          !lex_string_cmp(system_charset_info, &(*tmp)->field_name, str))
+        return *tmp;
+    }
   }
   return NULL;
 }

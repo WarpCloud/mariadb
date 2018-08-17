@@ -142,7 +142,7 @@ row_purge_remove_clust_if_poss_low(
 
 	log_free_check();
 	mtr_start(&mtr);
-	mtr.set_named_space(index->space);
+	index->set_modified(mtr);
 
 	if (!row_purge_reposition_pcur(mode, node, &mtr)) {
 		/* The record was already removed. */
@@ -295,7 +295,7 @@ row_purge_remove_sec_if_poss_tree(
 
 	log_free_check();
 	mtr_start(&mtr);
-	mtr.set_named_space(index->space);
+	index->set_modified(mtr);
 
 	if (!index->is_committed()) {
 		/* The index->online_status may change if the index is
@@ -414,9 +414,9 @@ row_purge_remove_sec_if_poss_leaf(
 
 	log_free_check();
 	ut_ad(index->table == node->table);
-	ut_ad(!dict_table_is_temporary(index->table));
+	ut_ad(!index->table->is_temporary());
 	mtr_start(&mtr);
-	mtr.set_named_space(index->space);
+	index->set_modified(mtr);
 
 	if (!index->is_committed()) {
 		/* For uncommitted spatial index, we also skip the purge. */
@@ -705,7 +705,11 @@ row_purge_reset_trx_id(purge_node_t* node, mtr_t* mtr)
 		    == row_get_rec_roll_ptr(rec, index, offsets)) {
 			ut_ad(!rec_get_deleted_flag(rec,
 						    rec_offs_comp(offsets)));
-			mtr->set_named_space(index->space);
+			DBUG_LOG("purge", "reset DB_TRX_ID="
+				 << ib::hex(row_get_rec_trx_id(
+						    rec, index, offsets)));
+
+			index->set_modified(*mtr);
 			if (page_zip_des_t* page_zip
 			    = buf_block_get_page_zip(
 				    btr_pcur_get_block(&node->pcur))) {
@@ -718,13 +722,8 @@ row_purge_reset_trx_id(purge_node_t* node, mtr_t* mtr)
 				byte*	ptr = rec_get_nth_field(
 					rec, offsets, trx_id_pos, &len);
 				ut_ad(len == DATA_TRX_ID_LEN);
-				memset(ptr, 0, DATA_TRX_ID_LEN
-				       + DATA_ROLL_PTR_LEN);
-				ptr[DATA_TRX_ID_LEN] = 1U
-					<< (ROLL_PTR_INSERT_FLAG_POS - CHAR_BIT
-					    * (DATA_ROLL_PTR_LEN - 1));
-				mlog_log_string(ptr, DATA_TRX_ID_LEN
-						+ DATA_ROLL_PTR_LEN, mtr);
+				mlog_write_string(ptr, reset_trx_id,
+						  sizeof reset_trx_id, mtr);
 			}
 		}
 	}
@@ -748,6 +747,7 @@ row_purge_upd_exist_or_extern_func(
 	mem_heap_t*	heap;
 
 	ut_ad(rw_lock_own(dict_operation_lock, RW_LOCK_S));
+	ut_ad(!node->table->skip_alter_undo);
 
 	if (node->rec_type == TRX_UNDO_UPD_DEL_REC
 	    || (node->cmpl_info & UPD_NODE_NO_ORD_CHANGE)) {
@@ -806,18 +806,18 @@ skip_secondaries:
 			can calculate from node->roll_ptr the file
 			address of the new_val data */
 
-			internal_offset
-				= ((const byte*)
-				   dfield_get_data(&ufield->new_val))
-				- undo_rec;
+			internal_offset = ulint(
+				static_cast<const byte*>
+				(dfield_get_data(&ufield->new_val))
+				- undo_rec);
 
-			ut_a(internal_offset < UNIV_PAGE_SIZE);
+			ut_a(internal_offset < srv_page_size);
 
 			trx_undo_decode_roll_ptr(node->roll_ptr,
 						 &is_insert, &rseg_id,
 						 &page_no, &offset);
 
-			rseg = trx_sys->rseg_array[rseg_id];
+			rseg = trx_sys.rseg_array[rseg_id];
 
 			ut_a(rseg != NULL);
 			ut_ad(rseg->id == rseg_id);
@@ -830,7 +830,7 @@ skip_secondaries:
 
 			mtr_sx_lock(dict_index_get_lock(index), &mtr);
 
-			mtr.set_named_space(index->space);
+			index->set_modified(mtr);
 
 			/* NOTE: we must also acquire an X-latch to the
 			root page of the tree. We will need it when we
@@ -844,7 +844,7 @@ skip_secondaries:
 			btr_root_get(index, &mtr);
 
 			block = buf_page_get(
-				page_id_t(rseg->space, page_no),
+				page_id_t(rseg->space->id, page_no),
 				univ_page_size, RW_X_LATCH, &mtr);
 
 			buf_block_dbg_add_level(block, SYNC_TRX_UNDO_PAGE);
@@ -937,7 +937,7 @@ try_again:
 		goto err_exit;
 	}
 
-	ut_ad(!dict_table_is_temporary(node->table));
+	ut_ad(!node->table->is_temporary());
 
 	if (!fil_table_accessible(node->table)) {
 		dict_table_close(node->table, FALSE, FALSE);
@@ -972,8 +972,7 @@ try_again:
 
 	clust_index = dict_table_get_first_index(node->table);
 
-	if (clust_index == NULL
-	    || dict_index_is_corrupted(clust_index)) {
+	if (!clust_index || clust_index->is_corrupted()) {
 		/* The table was corrupt in the data dictionary.
 		dict_set_corrupted() works on an index, and
 		we do not have an index to call it with. */
@@ -1031,6 +1030,7 @@ row_purge_record_func(
 	bool		purged		= true;
 
 	ut_ad(!node->found_clust);
+	ut_ad(!node->table->skip_alter_undo);
 
 	clust_index = dict_table_get_first_index(node->table);
 

@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2000, 2017, Oracle and/or its affiliates.
-   Copyright (c) 2009, 2017, MariaDB
+   Copyright (c) 2009, 2018, MariaDB Corporation
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -226,9 +226,9 @@ String *Item_func_sha2::val_str_ascii(String *str)
   const char *input_ptr;
   size_t input_len;
 
+  input_string= args[0]->val_str(str);
   str->set_charset(&my_charset_bin);
 
-  input_string= args[0]->val_str(str);
   if (input_string == NULL)
   {
     null_value= TRUE;
@@ -341,7 +341,7 @@ String *Item_aes_crypt::val_str(String *str2)
 {
   DBUG_ASSERT(fixed == 1);
   StringBuffer<80> user_key_buf;
-  String *sptr= args[0]->val_str(&str_value);
+  String *sptr= args[0]->val_str(&tmp_value);
   String *user_key=  args[1]->val_str(&user_key_buf);
   uint32 aes_length;
 
@@ -551,14 +551,14 @@ String *Item_func_decode_histogram::val_str(String *str)
       DBUG_ASSERT(0);
     }
     /* show delta with previous value */
-    int size= my_snprintf(numbuf, sizeof(numbuf),
+    size_t size= my_snprintf(numbuf, sizeof(numbuf),
                           representation_by_type[type], val - prev);
     str->append(numbuf, size);
     str->append(",");
     prev= val;
   }
   /* show delta with max */
-  int size= my_snprintf(numbuf, sizeof(numbuf),
+  size_t size= my_snprintf(numbuf, sizeof(numbuf),
                         representation_by_type[type], 1.0 - prev);
   str->append(numbuf, size);
 
@@ -569,99 +569,69 @@ String *Item_func_decode_histogram::val_str(String *str)
 
 ///////////////////////////////////////////////////////////////////////////////
 
+/*
+  Realloc the result buffer.
+  NOTE: We should be prudent in the initial allocation unit -- the
+  size of the arguments is a function of data distribution, which
+  can be any. Instead of overcommitting at the first row, we grow
+  the allocated amount by the factor of 2. This ensures that no
+  more than 25% of memory will be overcommitted on average.
+
+  @param IN/OUT str    - the result string
+  @param IN     length - new total space required in "str"
+  @retval       false  - on success
+  @retval       true   - on error
+*/
+
+bool Item_func_concat::realloc_result(String *str, uint length) const
+{
+  if (str->alloced_length() >= length)
+    return false; // Alloced space is big enough, nothing to do.
+
+  if (str->alloced_length() == 0)
+    return str->alloc(length);
+
+  /*
+    Item_func_concat::val_str() makes sure the result length does not grow
+    higher than max_allowed_packet. So "length" is limited to 1G here.
+    We can't say anything about the current value of str->alloced_length(),
+    as str was initially set by args[0]->val_str(str).
+    So multiplication by 2 can overflow, if args[0] for some reasons
+    did not limit the result to max_alloced_packet. But it's not harmful,
+    "str" will be realloced exactly to "length" bytes in case of overflow.
+  */
+  uint new_length= MY_MAX(str->alloced_length() * 2, length);
+  return str->realloc(new_length);
+}
+
+
 /**
   Concatenate args with the following premises:
   If only one arg (which is ok), return value of arg;
-  Don't reallocate val_str() if not absolute necessary.
 */
 
 String *Item_func_concat::val_str(String *str)
 {
   DBUG_ASSERT(fixed == 1);
   THD *thd= current_thd;
-  String *res,*use_as_buff;
-  uint i;
-  bool is_const= 0;
+  String *res;
 
   null_value=0;
-  if (!(res= arg_val_str(0, str, &is_const)))
-    goto null;
-  use_as_buff= &tmp_value;
-  for (i=1 ; i < arg_count ; i++)
-  {
-    if (res->length() == 0)
-    {
-      /*
-       CONCAT accumulates its result in the result of its the first
-       non-empty argument. Because of this we need is_const to be 
-       evaluated only for it.
-      */
-      if (!(res= arg_val_str(i, str, &is_const)))
-        goto null;
-    }
-    else
-    {
-      const String *res2;
-      if (!(res2=args[i]->val_str(use_as_buff)))
-        goto null;
-      if (res2->length() == 0)
-        continue;
-      if (!(res= append_value(thd, res, is_const, str, &use_as_buff, res2)))
-        goto null;
-      is_const= 0;
-    }
-  }
-  res->set_charset(collation.collation);
-  return res;
-
-null:
-  null_value=1;
-  return 0;
-}
-
-
-String *Item_func_concat_operator_oracle::val_str(String *str)
-{
-  THD *thd= current_thd;
-  DBUG_ASSERT(fixed == 1);
-  String *res, *use_as_buff;
-  uint i;
-  bool is_const= false;
-
-  null_value= 0;
-  // Search first non null argument
-  for (i= 0; i < arg_count; i++)
-  {
-    if ((res= arg_val_str(i, str, &is_const)))
-      break;
-  }
-  if (i == arg_count)
+  if (!(res= args[0]->val_str(str)))
     goto null;
 
-  use_as_buff= &tmp_value;
+  if (res != str)
+    str->copy(res->ptr(), res->length(), res->charset());
 
-  for (i++ ; i < arg_count ; i++)
+  for (uint i= 1 ; i < arg_count ; i++)
   {
-    if (res->length() == 0)
-    {
-      // See comments in Item_func_concat::val_str()
-      String *tmp;
-      if (!(tmp= arg_val_str(i, str, &is_const)))
-        continue;
-      res= tmp;
-    }
-    else
-    {
-      const String *res2;
-      if (!(res2= args[i]->val_str(use_as_buff)) || res2->length() == 0)
-        continue;
-      if (!(res= append_value(thd, res, is_const, str, &use_as_buff, res2)))
-        goto null;
-      is_const= 0;
-    }
+    if (!(res= args[i]->val_str(&tmp_value)) ||
+        append_value(thd, str, res))
+      goto null;
   }
-  res->set_charset(collation.collation);
-  return res;
+
+  str->set_charset(collation.collation);
+  return str;
 
 null:
   null_value= true;
@@ -669,115 +639,58 @@ null:
 }
 
 
-String *Item_func_concat::append_value(THD *thd,
-                                       String *res,
-                                       bool res_is_const,
-                                       String *str,
-                                       String **use_as_buff,
-                                       const String *res2)
+String *Item_func_concat_operator_oracle::val_str(String *str)
 {
-  DBUG_ASSERT(res2->length() > 0);
+  DBUG_ASSERT(fixed == 1);
+  THD *thd= current_thd;
+  String *res;
+  uint i;
 
-  if ((ulong) res->length() + (ulong) res2->length() >
+  null_value=0;
+  // Search first non null argument
+  for (i= 0; i < arg_count; i++)
+  {
+    if ((res= args[i]->val_str(str)))
+      break;
+  }
+  if (i == arg_count)
+    goto null;
+
+  if (res != str)
+    str->copy(res->ptr(), res->length(), res->charset());
+
+  for (i++ ; i < arg_count ; i++)
+  {
+    if (!(res= args[i]->val_str(&tmp_value)) || res->length() == 0)
+     continue;
+    if (append_value(thd, str, res))
+      goto null;
+  }
+
+  str->set_charset(collation.collation);
+  return str;
+
+null:
+  null_value= true;
+  return 0;
+}
+
+
+bool Item_func_concat::append_value(THD *thd, String *res, const String *app)
+{
+  uint concat_len;
+  if ((concat_len= res->length() + app->length()) >
       thd->variables.max_allowed_packet)
   {
     push_warning_printf(thd, Sql_condition::WARN_LEVEL_WARN,
                         ER_WARN_ALLOWED_PACKET_OVERFLOWED,
-                        ER_THD(thd, ER_WARN_ALLOWED_PACKET_OVERFLOWED),
-                        func_name(),
+                        ER(ER_WARN_ALLOWED_PACKET_OVERFLOWED), func_name(),
                         thd->variables.max_allowed_packet);
-    return NULL;
+    return true;
   }
-
-  uint32 concat_len= res->length() + res2->length();
-
-  if (!res_is_const && res->alloced_length() >= concat_len)
-  {                                         // Use old buffer
-    return res->append(*res2) ? NULL : res;
-  }
-
-  if (str->alloced_length() >= concat_len)
-  {
-    if (str->ptr() == res2->ptr())
-    {
-      if (str->replace(0, 0, *res))
-        return NULL;
-    }
-    else
-    {
-      if (str->copy(*res) || str->append(*res2))
-        return NULL;
-    }
-    *use_as_buff= &tmp_value;
-    return str;
-  }
-
-  if (res == &tmp_value)
-  {
-    if (res->append(*res2))                 // Must be a blob
-      return NULL;
-    return res;
-  }
-
-  if (res2 == &tmp_value)
-  {                                         // This can happend only 1 time
-    if (tmp_value.replace(0, 0, *res))
-      return NULL;
-    *use_as_buff= str;                      // Put next arg here
-    return &tmp_value;
-  }
-
-  if (tmp_value.is_alloced() && res2->ptr() >= tmp_value.ptr() &&
-      res2->ptr() <= tmp_value.ptr() + tmp_value.alloced_length())
-  {
-    /*
-      This happens really seldom:
-      In this case res2 is sub string of tmp_value.  We will
-      now work in place in tmp_value to set it to res | res2
-    */
-    /* Chop the last characters in tmp_value that isn't in res2 */
-    tmp_value.length((uint32) (res2->ptr() - tmp_value.ptr()) +
-                     res2->length());
-    /* Place res2 at start of tmp_value, remove chars before res2 */
-    if (tmp_value.replace(0,(uint32) (res2->ptr() - tmp_value.ptr()),
-                          *res))
-      return NULL;
-    *use_as_buff= str;                      // Put next arg here
-    return &tmp_value;
-  }
-
-  /*
-    Two big const strings
-    NOTE: We should be prudent in the initial allocation unit -- the
-    size of the arguments is a function of data distribution, which
-    can be any. Instead of overcommitting at the first row, we grow
-    the allocated amount by the factor of 2. This ensures that no
-    more than 25% of memory will be overcommitted on average.
-  */
-
-  if (tmp_value.alloced_length() < concat_len)
-  {
-    if (tmp_value.alloced_length() == 0)
-    {
-      if (tmp_value.alloc(concat_len))
-        return NULL;
-    }
-    else
-    {
-      uint32 new_len= tmp_value.alloced_length() > INT_MAX32 ?
-                      UINT_MAX32 - 1 :
-                      tmp_value.alloced_length() * 2;
-      set_if_bigger(new_len, concat_len);
-      if (tmp_value.realloc(new_len))
-        return NULL;
-    }
-  }
-
-  if (tmp_value.copy(*res) || tmp_value.append(*res2))
-    return NULL;
-
-  *use_as_buff= str;
-  return &tmp_value;
+  DBUG_ASSERT(!res->uses_buffer_owned_by(app));
+  DBUG_ASSERT(!app->uses_buffer_owned_by(res));
+  return realloc_result(res, concat_len) || res->append(*app);
 }
 
 
@@ -1189,7 +1102,7 @@ String *Item_func_reverse::val_str(String *str)
 #ifdef USE_MB
   if (use_mb(res->charset()))
   {
-    register uint32 l;
+    uint32 l;
     while (ptr < end)
     {
       if ((l= my_ismbchar(res->charset(),ptr,end)))
@@ -1239,7 +1152,7 @@ String *Item_func_replace::val_str_internal(String *str,
   bool alloced=0;
 #ifdef USE_MB
   const char *ptr,*end,*strend,*search,*search_end;
-  register uint32 l;
+  uint32 l;
   bool binary_cmp;
 #endif
   THD *thd= 0;
@@ -1299,7 +1212,7 @@ redo:
     {
       if (*ptr == *search)
       {
-        register char *i,*j;
+        char *i,*j;
         i=(char*) ptr+1; j=(char*) search+1;
         while (j != search_end)
           if (*i++ != *j++) goto skip;
@@ -1675,7 +1588,7 @@ String *Item_str_conv::val_str(String *str)
   null_value=0;
   if (multiply == 1)
   {
-    uint len;
+    size_t len;
     res= copy_if_not_alloced(&tmp_value, res, res->length());
     len= converter(collation.collation, (char*) res->ptr(), res->length(),
                                         (char*) res->ptr(), res->length());
@@ -1684,7 +1597,7 @@ String *Item_str_conv::val_str(String *str)
   }
   else
   {
-    uint len= res->length() * multiply;
+    size_t len= res->length() * multiply;
     tmp_value.alloc(len);
     tmp_value.set_charset(collation.collation);
     len= converter(collation.collation, (char*) res->ptr(), res->length(),
@@ -1910,14 +1823,14 @@ String *Item_func_substr_index::val_str(String *str)
     const char *search= delimiter->ptr();
     const char *search_end= search+delimiter_length;
     int32 n=0,c=count,pass;
-    register uint32 l;
+    uint32 l;
     for (pass=(count>0);pass<2;++pass)
     {
       while (ptr < end)
       {
         if (*ptr == *search)
         {
-	  register char *i,*j;
+	  char *i,*j;
 	  i=(char*) ptr+1; j=(char*) search+1;
 	  while (j != search_end)
 	    if (*i++ != *j++) goto skip;
@@ -2085,7 +1998,7 @@ String *Item_func_rtrim::val_str(String *str)
   end= ptr+res->length();
 #ifdef USE_MB
   char *p=ptr;
-  register uint32 l;
+  uint32 l;
 #endif
   if (remove_length == 1)
   {
@@ -2170,7 +2083,7 @@ String *Item_func_trim::val_str(String *str)
   if (use_mb(collation.collation))
   {
     char *p=ptr;
-    register uint32 l;
+    uint32 l;
  loop:
     while (ptr + remove_length < end)
     {
@@ -2227,6 +2140,7 @@ void Item_func_trim::print(String *str, enum_query_type query_type)
     return;
   }
   str->append(Item_func_trim::func_name());
+  str->append(func_name_ext());
   str->append('(');
   str->append(mode_name());
   str->append(' ');
@@ -2300,9 +2214,8 @@ char *Item_func_password::alloc(THD *thd, const char *password,
 String *Item_func_encrypt::val_str(String *str)
 {
   DBUG_ASSERT(fixed == 1);
-  String *res  =args[0]->val_str(str);
-
 #ifdef HAVE_CRYPT
+  String *res  =args[0]->val_str(str);
   char salt[3],*salt_ptr;
   if ((null_value=args[0]->null_value))
     return 0;
@@ -2407,13 +2320,13 @@ String *Item_func_database::val_str(String *str)
 {
   DBUG_ASSERT(fixed == 1);
   THD *thd= current_thd;
-  if (thd->db == NULL)
+  if (thd->db.str == NULL)
   {
     null_value= 1;
     return 0;
   }
   else
-    str->copy(thd->db, thd->db_length, system_charset_info);
+    str->copy(thd->db.str, thd->db.length, system_charset_info);
   null_value= 0;
   return str;
 }
@@ -2432,7 +2345,7 @@ String *Item_func_sqlerrm::val_str(String *str)
               system_charset_info);
     return str;
   }
-  str->copy(C_STRING_WITH_LEN("normal, successful completition"),
+  str->copy(STRING_WITH_LEN("normal, successful completition"),
             system_charset_info);
   return str;
 }
@@ -2949,7 +2862,7 @@ void Item_func_char::print(String *str, enum_query_type query_type)
   print_args(str, 0, query_type);
   if (collation.collation != &my_charset_bin)
   {
-    str->append(C_STRING_WITH_LEN(" using "));
+    str->append(STRING_WITH_LEN(" using "));
     str->append(collation.collation->csname);
   }
   str->append(')');
@@ -3549,27 +3462,13 @@ String *Item_func_set_collation::val_str(String *str)
 
 void Item_func_set_collation::fix_length_and_dec()
 {
-  CHARSET_INFO *set_collation;
-  const char *colname;
-  String tmp, *str= args[1]->val_str(&tmp);
-  colname= str->c_ptr();
-  if (colname == binary_keyword)
-    set_collation= get_charset_by_csname(args[0]->collation.collation->csname,
-					 MY_CS_BINSORT,MYF(0));
-  else
-  {
-    if (!(set_collation= mysqld_collation_get_by_name(colname)))  
-      return;
-  }
-
-  if (!set_collation || 
-      !my_charset_same(args[0]->collation.collation,set_collation))
+  if (!my_charset_same(args[0]->collation.collation, m_set_collation))
   {
     my_error(ER_COLLATION_CHARSET_MISMATCH, MYF(0),
-             colname, args[0]->collation.collation->csname);
+             m_set_collation->name, args[0]->collation.collation->csname);
     return;
   }
-  collation.set(set_collation, DERIVATION_EXPLICIT,
+  collation.set(m_set_collation, DERIVATION_EXPLICIT,
                 args[0]->collation.repertoire);
   max_length= args[0]->max_length;
 }
@@ -3577,22 +3476,8 @@ void Item_func_set_collation::fix_length_and_dec()
 
 bool Item_func_set_collation::eq(const Item *item, bool binary_cmp) const
 {
-  /* Assume we don't have rtti */
-  if (this == item)
-    return 1;
-  if (item->type() != FUNC_ITEM)
-    return 0;
-  Item_func *item_func=(Item_func*) item;
-  if (arg_count != item_func->argument_count() ||
-      functype() != item_func->functype())
-    return 0;
-  Item_func_set_collation *item_func_sc=(Item_func_set_collation*) item;
-  if (collation.collation != item_func_sc->collation.collation)
-    return 0;
-  for (uint i=0; i < arg_count ; i++)
-    if (!args[i]->eq(item_func_sc->args[i], binary_cmp))
-      return 0;
-  return 1;
+  return Item_func::eq(item, binary_cmp) &&
+         collation.collation == item->collation.collation;
 }
 
 
@@ -3600,9 +3485,7 @@ void Item_func_set_collation::print(String *str, enum_query_type query_type)
 {
   args[0]->print_parenthesised(str, query_type, precedence());
   str->append(STRING_WITH_LEN(" collate "));
-  DBUG_ASSERT(args[1]->basic_const_item() &&
-              args[1]->type() == Item::STRING_ITEM);
-  ((Item_string *)args[1])->print_value(str);
+  str->append(m_set_collation->name);
 }
 
 String *Item_func_charset::val_str(String *str)
@@ -3642,10 +3525,10 @@ void Item_func_weight_string::fix_length_and_dec()
   */
   if (!(max_length= result_length))
   {
-    uint char_length;
+    size_t char_length;
     char_length= ((cs->state & MY_CS_STRNXFRM_BAD_NWEIGHTS) || !nweights) ?
                  args[0]->max_char_length() : nweights * cs->levels_for_order;
-    max_length= cs->coll->strnxfrmlen(cs, char_length * cs->mbmaxlen);
+    max_length= (uint32)cs->coll->strnxfrmlen(cs, char_length * cs->mbmaxlen);
   }
   maybe_null= 1;
 }
@@ -3656,7 +3539,7 @@ String *Item_func_weight_string::val_str(String *str)
 {
   String *res;
   CHARSET_INFO *cs= args[0]->collation.collation;
-  uint tmp_length, frm_length;
+  size_t tmp_length, frm_length;
   DBUG_ASSERT(fixed == 1);
 
   if (args[0]->result_type() != STRING_RESULT ||
@@ -3670,7 +3553,7 @@ String *Item_func_weight_string::val_str(String *str)
   */
   if (!(tmp_length= result_length))
   {
-    uint char_length;
+    size_t char_length;
     if (cs->state & MY_CS_STRNXFRM_BAD_NWEIGHTS)
     {
       /*
@@ -3716,7 +3599,7 @@ String *Item_func_weight_string::val_str(String *str)
 
   frm_length= cs->coll->strnxfrm(cs,
                                  (uchar *) str->ptr(), tmp_length,
-                                 nweights ? nweights : tmp_length,
+                                 nweights ? nweights : (uint)tmp_length,
                                  (const uchar *) res->ptr(), res->length(),
                                  flags);
   DBUG_ASSERT(frm_length <= tmp_length);
@@ -5059,7 +4942,7 @@ longlong Item_dyncol_get::val_int()
     char *end= val.x.string.value.str + val.x.string.value.length, *org_end= end;
 
     num= my_strtoll10(val.x.string.value.str, &end, &error);
-    if (end != org_end || error > 0)
+    if (unlikely(end != org_end || error > 0))
     {
       push_warning_printf(thd, Sql_condition::WARN_LEVEL_WARN,
                           ER_BAD_DATA,
@@ -5344,4 +5227,24 @@ null:
   if (names)
     my_free(names);
   return NULL;
+}
+
+Item_temptable_rowid::Item_temptable_rowid(TABLE *table_arg)
+  : Item_str_func(table_arg->in_use), table(table_arg)
+{
+  max_length= table->file->ref_length;
+}
+
+void Item_temptable_rowid::fix_length_and_dec()
+{
+  used_tables_cache= table->map;
+  const_item_cache= false;
+}
+
+String *Item_temptable_rowid::val_str(String *str)
+{
+  if (!((null_value= table->null_row)))
+    table->file->position(table->record[0]);
+  str_value.set((char*)(table->file->ref), max_length, &my_charset_bin);
+  return &str_value;
 }

@@ -22,7 +22,7 @@
 
 
 /*
-   This file is basicly tis620 character sets with some extra functions
+   This file is basically tis620 character sets with some extra functions
    for tis-620 handling
 */
 
@@ -449,7 +449,7 @@ static const uchar sort_order_tis620[]=
 static size_t thai2sortable(uchar *tstr, size_t len)
 {
   uchar	*p;
-  int	tlen;
+  size_t	tlen;
   uchar	l2bias;
 
   tlen= len;
@@ -502,7 +502,7 @@ static size_t thai2sortable(uchar *tstr, size_t len)
   string
 
   NOTE:
-    We can't cut strings at end \0 as this would break comparision with
+    We can't cut strings at end \0 as this would break comparison with
     LIKE characters, where the min range is stored as end \0
 
   Arg: 2 Strings and it compare length
@@ -594,7 +594,7 @@ int my_strnncollsp_tis620_nopad(CHARSET_INFO * cs __attribute__((unused)),
   strnxfrm replacment, convert Thai string to sortable string
 
   Arg: Destination buffer, source string, dest length and source length
-  Ret: Conveted string size
+  Ret: Converted string size
 */
 
 static size_t
@@ -609,10 +609,10 @@ my_strnxfrm_tis620(CHARSET_INFO *cs,
   set_if_smaller(dstlen, nweights);
   set_if_smaller(len, dstlen); 
   len= my_strxfrm_pad_desc_and_reverse(cs, dst, dst + len, dst + dstlen,
-                                       dstlen - len, flags, 0);
+                                       (uint)(dstlen - len), flags, 0);
   if ((flags & MY_STRXFRM_PAD_TO_MAXLEN) && len < dstlen0)
   {
-    uint fill_length= dstlen0 - len;
+    size_t fill_length= dstlen0 - len;
     cs->cset->fill(cs, (char*) dst + len, fill_length, cs->pad_char);
     len= dstlen0;
   }
@@ -632,10 +632,10 @@ my_strnxfrm_tis620_nopad(CHARSET_INFO *cs,
   set_if_smaller(dstlen, nweights);
   set_if_smaller(len, dstlen);
   len= my_strxfrm_pad_desc_and_reverse_nopad(cs, dst, dst + len, dst + dstlen,
-                                             dstlen - len, flags, 0);
+                                             (uint)(dstlen - len), flags, 0);
   if ((flags & MY_STRXFRM_PAD_TO_MAXLEN) && len < dstlen0)
   {
-    uint fill_length= dstlen0 - len;
+    size_t fill_length= dstlen0 - len;
     memset(dst + len, 0x00, fill_length);
     len= dstlen0;
   }

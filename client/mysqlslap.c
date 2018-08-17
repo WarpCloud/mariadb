@@ -144,7 +144,7 @@ static unsigned long connect_flags= CLIENT_MULTI_RESULTS |
                                     CLIENT_MULTI_STATEMENTS |
                                     CLIENT_REMEMBER_OPTIONS;
 
-static int verbose, delimiter_length;
+static int verbose;
 static uint commit_rate;
 static uint detach_rate;
 const char *num_int_cols_opt;
@@ -263,7 +263,7 @@ void option_cleanup(option_string *stmt);
 void concurrency_loop(MYSQL *mysql, uint current, option_string *eptr);
 static int run_statements(MYSQL *mysql, statement *stmt);
 int slap_connect(MYSQL *mysql);
-static int run_query(MYSQL *mysql, const char *query, int len);
+static int run_query(MYSQL *mysql, const char *query, size_t len);
 
 static const char ALPHANUMERICS[]=
   "0123456789ABCDEFGHIJKLMNOPQRSTWXYZabcdefghijklmnopqrstuvwxyz";
@@ -325,11 +325,7 @@ int main(int argc, char **argv)
   MY_INIT(argv[0]);
   sf_leaking_memory=1; /* don't report memory leaks on early exits */
 
-  if (load_defaults("my",load_default_groups,&argc,&argv))
-  {
-    my_end(0);
-    exit(1);
-  }
+  load_defaults_or_exit("my", load_default_groups, &argc, &argv);
   defaults_argv=argv;
   if (get_options(&argc,&argv))
   {
@@ -342,9 +338,6 @@ int main(int argc, char **argv)
   /* Seed the random number generator if we will be using it. */
   if (auto_generate_sql)
     srandom((uint)time(NULL));
-
-  /* globals? Yes, so we only have to run strlen once */
-  delimiter_length= strlen(delimiter);
 
   if (argc > 2)
   {
@@ -1552,18 +1545,18 @@ get_options(int *argc,char ***argv)
 }
 
 
-static int run_query(MYSQL *mysql, const char *query, int len)
+static int run_query(MYSQL *mysql, const char *query, size_t len)
 {
   if (opt_only_print)
   {
-    printf("%.*s;\n", len, query);
+    printf("%.*s;\n", (int)len, query);
     return 0;
   }
 
   if (verbose >= 3)
-    printf("%.*s;\n", len, query);
+    printf("%.*s;\n", (int)len, query);
 
-  return mysql_real_query(mysql, query, len);
+  return mysql_real_query(mysql, query, (ulong)len);
 }
 
 
@@ -2131,7 +2124,7 @@ parse_delimiter(const char *script, statement **stmt, char delm)
   char *ptr= (char *)script;
   statement **sptr= stmt;
   statement *tmp;
-  uint length= strlen(script);
+  size_t length= strlen(script);
   uint count= 0; /* We know that there is always one */
 
   for (tmp= *sptr= (statement *)my_malloc(sizeof(statement),

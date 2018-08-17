@@ -394,6 +394,9 @@ public:
   sp_pcontext *parent_context() const
   { return m_parent; }
 
+  sp_pcontext *child_context(uint i) const
+  { return i < m_children.elements() ? m_children.at(i) : NULL; }
+
   /// Calculate and return the number of handlers to pop between the given
   /// context and this one.
   ///
@@ -673,7 +676,7 @@ public:
   { return m_cursor_offset; }
 
   uint frame_cursor_count() const
-  { return m_cursors.elements(); }
+  { return (uint)m_cursors.elements(); }
 
   uint max_cursor_index() const
   { return m_max_cursor_index + (uint)m_cursors.elements(); }

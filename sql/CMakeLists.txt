@@ -1,5 +1,5 @@
 # Copyright (c) 2006, 2014, Oracle and/or its affiliates.
-# Copyright (c) 2010, 2016, MariaDB Corporation
+# Copyright (c) 2010, 2018, MariaDB Corporation
 # 
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -110,7 +110,7 @@ SET (SQL_SOURCE
                debug_sync.cc
                sql_repl.cc sql_select.cc sql_show.cc sql_state.c
                group_by_handler.cc
-               sql_statistics.cc sql_string.cc 
+               sql_statistics.cc sql_string.cc lex_string.h
                sql_table.cc sql_test.cc sql_trigger.cc sql_udf.cc sql_union.cc
                sql_update.cc sql_view.cc strfunc.cc table.cc thr_malloc.cc 
                sql_time.cc tztime.cc unireg.cc item_xmlfunc.cc 
@@ -143,6 +143,7 @@ SET (SQL_SOURCE
                sql_type.cc
                item_windowfunc.cc sql_window.cc
 	       sql_cte.cc
+               item_vers.cc
                sql_sequence.cc sql_sequence.h ha_sequence.h
                sql_tvc.cc sql_tvc.h
                opt_split.cc
@@ -152,7 +153,7 @@ SET (SQL_SOURCE
                ${CMAKE_CURRENT_BINARY_DIR}/sql_builtin.cc
                ${GEN_SOURCES}
                ${MYSYS_LIBWRAP_SOURCE}
-			   )
+)
   
 IF (CMAKE_SYSTEM_NAME MATCHES "Linux" OR
     CMAKE_SYSTEM_NAME MATCHES "Windows" OR
@@ -468,12 +469,13 @@ IF(WIN32)
   ADD_CUSTOM_COMMAND(OUTPUT    
     ${my_bootstrap_sql}
     COMMAND ${CMAKE_COMMAND} -E chdir ${CMAKE_SOURCE_DIR}/scripts
-    cmd /c copy mysql_system_tables.sql+mysql_system_tables_data.sql+fill_help_tables.sql+mysql_performance_tables.sql ${native_outfile}
+    cmd /c copy mysql_system_tables.sql+mysql_system_tables_data.sql+fill_help_tables.sql+mysql_performance_tables.sql+mysql_test_db.sql ${native_outfile}
     DEPENDS
     ${CMAKE_SOURCE_DIR}/scripts/mysql_system_tables.sql
     ${CMAKE_SOURCE_DIR}/scripts/mysql_system_tables_data.sql
     ${CMAKE_SOURCE_DIR}/scripts/fill_help_tables.sql
     ${CMAKE_SOURCE_DIR}/scripts/mysql_performance_tables.sql
+    ${CMAKE_SOURCE_DIR}/scripts/mysql_test_db.sql
   )
 
   ADD_CUSTOM_COMMAND(

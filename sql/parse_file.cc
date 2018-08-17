@@ -483,8 +483,7 @@ frm_error:
     my_error(ER_FPARSER_BAD_HEADER, MYF(0), file_name->str);
     DBUG_RETURN(0);
   }
-  else
-    DBUG_RETURN(parser); // upper level have to check parser->ok()
+  DBUG_RETURN(parser); // upper level have to check parser->ok()
 }
 
 
@@ -760,12 +759,12 @@ File_parser::parse(uchar* base, MEM_ROOT *mem_root,
     {
       File_option *parameter= parameters+first_param,
 	*parameters_end= parameters+required;
-      int len= 0;
+      size_t len= 0;
       for (; parameter < parameters_end; parameter++)
       {
 	len= parameter->name.length;
 	// check length
-	if (len < (end-ptr) && ptr[len] != '=')
+	if (len < (size_t)(end-ptr) && ptr[len] != '=')
 	  continue;
 	// check keyword
 	if (memcmp(parameter->name.str, ptr, len) == 0)

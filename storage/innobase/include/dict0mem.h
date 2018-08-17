@@ -2,7 +2,7 @@
 
 Copyright (c) 1996, 2017, Oracle and/or its affiliates. All Rights Reserved.
 Copyright (c) 2012, Facebook Inc.
-Copyright (c) 2013, 2017, MariaDB Corporation.
+Copyright (c) 2013, 2018, MariaDB Corporation.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -49,7 +49,6 @@ Created 1/8/1996 Heikki Tuuri
 #include "os0once.h"
 #include "ut0new.h"
 #include "fil0fil.h"
-#include <my_crypt.h>
 #include "fil0crypt.h"
 #include <set>
 #include <algorithm>
@@ -110,7 +109,7 @@ are described in fsp0fsp.h. */
 /** dict_table_t::flags bit 0 is equal to 0 if the row format = Redundant */
 #define DICT_TF_REDUNDANT		0	/*!< Redundant row format. */
 /** dict_table_t::flags bit 0 is equal to 1 if the row format = Compact */
-#define DICT_TF_COMPACT			1	/*!< Compact row format. */
+#define DICT_TF_COMPACT			1U	/*!< Compact row format. */
 
 /** This bitmask is used in SYS_TABLES.N_COLS to set and test whether
 the Compact page format is used, i.e ROW_FORMAT != REDUNDANT */
@@ -298,7 +297,7 @@ result in recursive cascading calls. This defines the maximum number of
 such cascading deletes/updates allowed. When exceeded, the delete from
 parent table will fail, and user has to drop excessive foreign constraint
 before proceeds. */
-#define FK_MAX_CASCADE_DEL		255
+#define FK_MAX_CASCADE_DEL		15
 
 /**********************************************************************//**
 Creates a table memory object.
@@ -307,22 +306,13 @@ dict_table_t*
 dict_mem_table_create(
 /*==================*/
 	const char*	name,		/*!< in: table name */
-	ulint		space,		/*!< in: space where the clustered index
-					of the table is placed */
+	fil_space_t*	space,		/*!< in: tablespace */
 	ulint		n_cols,		/*!< in: total number of columns
 					including virtual and non-virtual
 					columns */
 	ulint		n_v_cols,	/*!< in: number of virtual columns */
 	ulint		flags,		/*!< in: table flags */
 	ulint		flags2);	/*!< in: table flags2 */
-/**********************************************************************//**
-Determines if a table belongs to a system database
-@return */
-UNIV_INTERN
-bool
-dict_mem_table_is_system(
-/*==================*/
-	char	*name);		/*!< in: table name */
 /****************************************************************//**
 Free a table memory object. */
 void
@@ -406,11 +396,7 @@ dict_mem_fill_index_struct(
 /*=======================*/
 	dict_index_t*	index,		/*!< out: index to be filled */
 	mem_heap_t*	heap,		/*!< in: memory heap */
-	const char*	table_name,	/*!< in: table name */
 	const char*	index_name,	/*!< in: index name */
-	ulint		space,		/*!< in: space where the index tree is
-					placed, ignored if the index is of
-					the clustered type */
 	ulint		type,		/*!< in: DICT_UNIQUE,
 					DICT_CLUSTERED, ... ORed */
 	ulint		n_fields);	/*!< in: number of fields */
@@ -420,11 +406,8 @@ Creates an index memory object.
 dict_index_t*
 dict_mem_index_create(
 /*==================*/
-	const char*	table_name,	/*!< in: table name */
+	dict_table_t*	table,		/*!< in: table */
 	const char*	index_name,	/*!< in: index name */
-	ulint		space,		/*!< in: space where the index tree is
-					placed, ignored if the index is of
-					the clustered type */
 	ulint		type,		/*!< in: DICT_UNIQUE,
 					DICT_CLUSTERED, ... ORed */
 	ulint		n_fields);	/*!< in: number of fields */
@@ -561,36 +544,6 @@ private:
 	const char*	m_name;
 };
 
-/** Table name wrapper for pretty-printing */
-struct table_name_t
-{
-	/** The name in internal representation */
-	char*	m_name;
-
-	/** @return the end of the schema name */
-	const char* dbend() const
-	{
-		const char* sep = strchr(m_name, '/');
-		ut_ad(sep);
-		return sep;
-	}
-
-	/** @return the length of the schema name, in bytes */
-	size_t dblen() const { return dbend() - m_name; }
-
-	/** Determine the filename-safe encoded table name.
-	@return	the filename-safe encoded table name */
-	const char* basename() const { return dbend() + 1; }
-
-	/** The start of the table basename suffix for partitioned tables */
-	static const char part_suffix[4];
-
-	/** Determine the partition or subpartition name suffix.
-	@return the partition name
-	@retval	NULL	if the table is not partitioned */
-	const char* part() const { return strstr(basename(), part_suffix); }
-};
-
 /** Data structure for a column in a table */
 struct dict_col_t{
 	/*----------------------*/
@@ -617,11 +570,10 @@ struct dict_col_t{
 					the string, MySQL uses 1 or 2
 					bytes to store the string length) */
 
-	unsigned	mbminmaxlen:5;	/*!< minimum and maximum length of a
-					character, in bytes;
-					DATA_MBMINMAXLEN(mbminlen,mbmaxlen);
-					mbminlen=DATA_MBMINLEN(mbminmaxlen);
-					mbmaxlen=DATA_MBMINLEN(mbminmaxlen) */
+	unsigned	mbminlen:3;	/*!< minimum length of a
+					character, in bytes */
+	unsigned	mbmaxlen:3;	/*!< maximum length of a
+					character, in bytes */
 	/*----------------------*/
 	/* End of definitions copied from dtype_t */
 	/* @} */
@@ -652,6 +604,27 @@ struct dict_col_t{
 	bool is_virtual() const { return prtype & DATA_VIRTUAL; }
 	/** @return whether NULL is an allowed value for this column */
 	bool is_nullable() const { return !(prtype & DATA_NOT_NULL); }
+
+	/** @return whether table of this system field is TRX_ID-based */
+	bool vers_native() const
+	{
+		ut_ad(vers_sys_start() || vers_sys_end());
+		ut_ad(mtype == DATA_INT || mtype == DATA_FIXBINARY);
+		return mtype == DATA_INT;
+	}
+	/** @return whether this is system versioned */
+	bool is_versioned() const { return !(~prtype & DATA_VERSIONED); }
+	/** @return whether this is the system version start */
+	bool vers_sys_start() const
+	{
+		return (prtype & DATA_VERSIONED) == DATA_VERS_START;
+	}
+	/** @return whether this is the system version end */
+	bool vers_sys_end() const
+	{
+		return (prtype & DATA_VERSIONED) == DATA_VERS_END;
+	}
+
 	/** @return whether this is an instantly-added column */
 	bool is_instant() const
 	{
@@ -877,10 +850,7 @@ struct dict_index_t{
 	index_id_t	id;	/*!< id of the index */
 	mem_heap_t*	heap;	/*!< memory heap */
 	id_name_t	name;	/*!< index name */
-	const char*	table_name;/*!< table name */
 	dict_table_t*	table;	/*!< back pointer to table */
-	unsigned	space:32;
-				/*!< space where the index tree is placed */
 	unsigned	page:32;/*!< index tree root page number */
 	unsigned	merge_threshold:6;
 				/*!< In the pessimistic delete, if the page
@@ -896,8 +866,8 @@ struct dict_index_t{
 				in a clustered index record, if the fields
 				before it are known to be of a fixed size,
 				0 otherwise */
-#if (1<<MAX_KEY_LENGTH_BITS) < MAX_KEY_LENGTH
-# error (1<<MAX_KEY_LENGTH_BITS) < MAX_KEY_LENGTH
+#if (1<<MAX_KEY_LENGTH_BITS) < HA_MAX_KEY_LENGTH
+# error (1<<MAX_KEY_LENGTH_BITS) < HA_MAX_KEY_LENGTH
 #endif
 	unsigned	n_user_defined_cols:10;
 				/*!< number of columns the user defined to
@@ -1054,6 +1024,10 @@ struct dict_index_t{
 		uncommitted = !committed;
 	}
 
+	/** Notify that the index pages are going to be modified.
+	@param[in,out]	mtr	mini-transaction */
+	inline void set_modified(mtr_t& mtr) const;
+
 	/** @return whether this index is readable
 	@retval	true	normally
 	@retval	false	if this is a single-table tablespace
@@ -1064,21 +1038,26 @@ struct dict_index_t{
 	/** @return whether instant ADD COLUMN is in effect */
 	inline bool is_instant() const;
 
-	/** @return whether the index is the clustered index */
-	bool is_clust() const { return type & DICT_CLUSTERED; }
+	/** @return whether the index is the primary key index
+	(not the clustered index of the change buffer) */
+	bool is_primary() const
+	{
+		return DICT_CLUSTERED == (type & (DICT_CLUSTERED | DICT_IBUF));
+	}
+
+	/** @return whether the index is corrupted */
+	inline bool is_corrupted() const;
 
 	/** Determine how many fields of a given prefix can be set NULL.
 	@param[in]	n_prefix	number of fields in the prefix
 	@return	number of fields 0..n_prefix-1 that can be set NULL */
 	unsigned get_n_nullable(ulint n_prefix) const
 	{
-		DBUG_ASSERT(is_instant());
 		DBUG_ASSERT(n_prefix > 0);
 		DBUG_ASSERT(n_prefix <= n_fields);
 		unsigned n = n_nullable;
 		for (; n_prefix < n_fields; n_prefix++) {
 			const dict_col_t* col = fields[n_prefix].col;
-			DBUG_ASSERT(is_dummy || col->is_instant());
 			DBUG_ASSERT(!col->is_virtual());
 			n -= col->is_nullable();
 		}
@@ -1091,7 +1070,7 @@ struct dict_index_t{
 	@param[out]	len	value length (in bytes), or UNIV_SQL_NULL
 	@return	default value
 	@retval	NULL	if the default value is SQL NULL (len=UNIV_SQL_NULL) */
-	const byte* instant_field_value(uint n, ulint* len) const
+	const byte* instant_field_value(ulint n, ulint* len) const
 	{
 		DBUG_ASSERT(is_instant() || id == DICT_INDEXES_ID);
 		DBUG_ASSERT(n + (id == DICT_INDEXES_ID) >= n_core_fields);
@@ -1107,7 +1086,7 @@ struct dict_index_t{
 	Protected by index root page x-latch or table X-lock. */
 	void remove_instant()
 	{
-		DBUG_ASSERT(is_clust());
+		DBUG_ASSERT(is_primary());
 		if (!is_instant()) {
 			return;
 		}
@@ -1115,8 +1094,22 @@ struct dict_index_t{
 			fields[i].col->remove_instant();
 		}
 		n_core_fields = n_fields;
-		n_core_null_bytes = UT_BITS_IN_BYTES(n_nullable);
+		n_core_null_bytes = UT_BITS_IN_BYTES(unsigned(n_nullable));
 	}
+
+	/** Check if record in clustered index is historical row.
+	@param[in]	rec	clustered row
+	@param[in]	offsets	offsets
+	@return true if row is historical */
+	bool
+	vers_history_row(const rec_t* rec, const ulint* offsets);
+
+	/** Check if record in secondary index is historical row.
+	@param[in]	rec	record in a secondary index
+	@param[out]	history_row true if row is historical
+	@return true on error */
+	bool
+	vers_history_row(const rec_t* rec, bool &history_row);
 };
 
 /** The status of online index creation */
@@ -1461,7 +1454,7 @@ struct dict_table_t {
 	/** @return whether the table supports transactions */
 	bool no_rollback() const
 	{
-		return !(~flags & DICT_TF_MASK_NO_ROLLBACK);
+		return !(~unsigned(flags) & DICT_TF_MASK_NO_ROLLBACK);
         }
 	/** @return whether this is a temporary table */
 	bool is_temporary() const
@@ -1476,6 +1469,7 @@ struct dict_table_t {
 			page cannot be read or decrypted */
 	bool is_readable() const
 	{
+		ut_ad(file_unreadable || space);
 		return(UNIV_LIKELY(!file_unreadable));
 	}
 
@@ -1512,6 +1506,29 @@ struct dict_table_t {
 	/** Add the table definition to the data dictionary cache */
 	void add_to_cache();
 
+	bool versioned() const { return vers_start || vers_end; }
+	bool versioned_by_id() const
+	{
+		return vers_start && cols[vers_start].mtype == DATA_INT;
+	}
+
+	void inc_fk_checks()
+	{
+#ifdef UNIV_DEBUG
+		lint fk_checks= (lint)
+#endif
+		my_atomic_addlint(&n_foreign_key_checks_running, 1);
+		ut_ad(fk_checks >= 0);
+	}
+	void dec_fk_checks()
+	{
+#ifdef UNIV_DEBUG
+		lint fk_checks= (lint)
+#endif
+		my_atomic_addlint(&n_foreign_key_checks_running, ulint(-1));
+		ut_ad(fk_checks > 0);
+	}
+
 	/** Id of the table. */
 	table_id_t				id;
 
@@ -1532,8 +1549,10 @@ struct dict_table_t {
 	/** NULL or the directory path specified by DATA DIRECTORY. */
 	char*					data_dir_path;
 
-	/** Space where the clustered index of the table is placed. */
-	uint32_t				space;
+	/** The tablespace of the table */
+	fil_space_t*				space;
+	/** Tablespace ID */
+	ulint					space_id;
 
 	/** Stores information about:
 	1 row format (redundant or compact),
@@ -1555,6 +1574,13 @@ struct dict_table_t {
 	7 whether the aux FTS tables names are in hex.
 	Use DICT_TF2_FLAG_IS_SET() to parse this flag. */
 	unsigned				flags2:DICT_TF2_BITS;
+
+	/** TRUE if the table is an intermediate table during copy alter
+	operation or a partition/subpartition which is required for copying
+	data and skip the undo log for insertion of row in the table.
+	This variable will be set and unset during extra(), or during the
+	process of altering partitions */
+	unsigned                                skip_alter_undo:1;
 
 	/*!< whether this is in a single-table tablespace and the .ibd
 	file is missing or page decryption failed and page is corrupted */
@@ -1625,7 +1651,10 @@ struct dict_table_t {
 
 	/** Virtual column names */
 	const char*				v_col_names;
-
+	unsigned	vers_start:10;
+				/*!< System Versioning: row start col index */
+	unsigned	vers_end:10;
+				/*!< System Versioning: row end col index */
 	bool		is_system_db;
 				/*!< True if the table belongs to a system
 				database (mysql, information_schema or
@@ -1842,7 +1871,7 @@ struct dict_table_t {
 	ulong					n_waiting_or_granted_auto_inc_locks;
 
 	/** The transaction that currently holds the the AUTOINC lock on this
-	table. Protected by lock_sys->mutex. */
+	table. Protected by lock_sys.mutex. */
 	const trx_t*				autoinc_trx;
 
 	/* @} */
@@ -1857,7 +1886,7 @@ struct dict_table_t {
 
 	/** Count of the number of record locks on this table. We use this to
 	determine whether we can evict the table from the dictionary cache.
-	It is protected by lock_sys->mutex. */
+	It is protected by lock_sys.mutex. */
 	ulint					n_rec_locks;
 
 #ifndef DBUG_ASSERT_EXISTS
@@ -1869,7 +1898,7 @@ private:
 	ulint					n_ref_count;
 
 public:
-	/** List of locks on the table. Protected by lock_sys->mutex. */
+	/** List of locks on the table. Protected by lock_sys.mutex. */
 	table_lock_list_t			locks;
 
 	/** Timestamp of the last modification of this table. */
@@ -1887,10 +1916,12 @@ public:
 	dict_vcol_templ_t*			vc_templ;
 };
 
-inline bool dict_index_t::is_readable() const
+inline void dict_index_t::set_modified(mtr_t& mtr) const
 {
-	return(UNIV_LIKELY(!table->file_unreadable));
+	mtr.set_named_space(table->space);
 }
+
+inline bool dict_index_t::is_readable() const { return table->is_readable(); }
 
 inline bool dict_index_t::is_instant() const
 {
@@ -1901,6 +1932,13 @@ inline bool dict_index_t::is_instant() const
 	ut_ad(n_core_fields == n_fields || table->supports_instant());
 	ut_ad(n_core_fields == n_fields || !table->is_temporary());
 	return(n_core_fields != n_fields);
+}
+
+inline bool dict_index_t::is_corrupted() const
+{
+	return UNIV_UNLIKELY(online_status >= ONLINE_INDEX_ABORTED
+			     || (type & DICT_CORRUPT)
+			     || (table && table->corrupted));
 }
 
 /*******************************************************************//**

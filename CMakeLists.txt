@@ -49,9 +49,9 @@ ENDIF()
 SET(CMAKE_BUILD_TYPE "RelWithDebInfo" CACHE STRING
    "Choose the type of build, options are: None(CMAKE_CXX_FLAGS or CMAKE_C_FLAGS used) Debug Release RelWithDebInfo MinSizeRel")
 
-# MAX_INDEXES - Set the maximum number of indexes per table, default 64U
+# MAX_INDEXES - Set the maximum number of indexes per table, default 64
 IF (NOT MAX_INDEXES)
-  SET(MAX_INDEXES 64U)
+  SET(MAX_INDEXES 64)
 ENDIF(NOT MAX_INDEXES)
 
 IF (${MAX_INDEXES} GREATER 256)
@@ -129,6 +129,9 @@ IF(DEFINED ENV{CPPFLAGS})
   ADD_DEFINITIONS($ENV{CPPFLAGS})
 ENDIF()
 
+# NUMA
+SET(WITH_NUMA "AUTO" CACHE STRING "Build with non-uniform memory access, allowing --innodb-numa-interleave. Options are ON|OFF|AUTO. ON = enabled (requires NUMA library), OFF = disabled, AUTO = enabled if NUMA library found.")
+
 SET(MYSQL_MAINTAINER_MODE "AUTO" CACHE STRING "MySQL maintainer-specific development environment. Options are: ON OFF AUTO.")
 
 # Packaging
@@ -162,6 +165,7 @@ INCLUDE(plugin)
 INCLUDE(install_macros)
 INCLUDE(systemd)
 INCLUDE(mysql_add_executable)
+INCLUDE(compile_flags)
 INCLUDE(crc32-vpmsum)
 
 # Handle options
@@ -182,7 +186,8 @@ OPTION(NOT_FOR_DISTRIBUTION "Allow linking with GPLv2-incompatible system librar
 INCLUDE(check_compiler_flag)
 
 OPTION(WITH_ASAN "Enable address sanitizer" OFF)
-IF (WITH_ASAN)
+
+IF (WITH_ASAN AND NOT MSVC)
   # gcc 4.8.1 and new versions of clang
   MY_CHECK_AND_SET_COMPILER_FLAG("-fsanitize=address -fPIC"
     DEBUG RELWITHDEBINFO)
@@ -246,12 +251,6 @@ MY_CHECK_AND_SET_COMPILER_FLAG(-ggdb3 DEBUG)
 OPTION(ENABLED_LOCAL_INFILE
  "If we should should enable LOAD DATA LOCAL by default" ${IF_WIN})
 
-OPTION(WITH_INNODB_DISALLOW_WRITES "InnoDB freeze writes patch from Google" ${WITH_WSREP})
-IF (WITH_INNODB_DISALLOW_WRITES)
-  SET(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DWITH_INNODB_DISALLOW_WRITES")
-  SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DWITH_INNODB_DISALLOW_WRITES")
-ENDIF()
-
 # Set DBUG_OFF and other optional release-only flags for non-debug project types
 FOREACH(BUILD_TYPE RELEASE RELWITHDEBINFO MINSIZEREL)
   FOREACH(LANG C CXX)
@@ -265,7 +264,7 @@ ENDFOREACH()
 
 # Add safemutex for debug configurations, except on Windows
 # (safemutex has never worked on Windows)
-IF(NOT WIN32 AND NOT WITH_INNODB_MEMCACHED)
+IF(NOT WIN32)
   FOREACH(LANG C CXX)
       SET(CMAKE_${LANG}_FLAGS_DEBUG "${CMAKE_${LANG}_FLAGS_DEBUG} -DSAFE_MUTEX")
   ENDFOREACH()
