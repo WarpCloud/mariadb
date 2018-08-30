@@ -854,6 +854,12 @@ ha_federatedx::ha_federatedx(handlerton *hton,
   pk_num = -1;
   bzero(&pk_set, sizeof(pk_set));
   field_type = FIELD_TYPE_UNKNOWN;
+  table_status_init = false;
+  table_status_init_time = 0;
+  records_at_init_time = 2;
+  insert_records_since_init = 0;
+  delete_records_since_init = 0;
+  update_records_since_init = 0;
 }
 
 
@@ -2562,6 +2568,9 @@ int ha_federatedx::write_row(uchar *buf)
         && bulk_insert_size >= bulk_insert_max_size)) && bulk_insert.length)
     {
       error= io->query(bulk_insert.str, bulk_insert.length, SCAN_MODE_OLTP, NULL);
+      if(error == 0) {
+        insert_records_since_init += bulk_insert_size;
+      }
       bulk_insert.length= 0;
       bulk_insert_size = 0;
     }
@@ -2589,6 +2598,9 @@ int ha_federatedx::write_row(uchar *buf)
   else
   {
     error= io->query(values_string.ptr(), values_string.length(), SCAN_MODE_OLTP, NULL);
+    if(error == 0) {
+      insert_records_since_init++;
+    }
   }
   
   if (error)
@@ -2679,6 +2691,9 @@ int ha_federatedx::end_bulk_insert()
     else
     if (table->next_number_field)
       update_auto_increment();
+    if(error == 0) {
+      insert_records_since_init += bulk_insert_size;
+    }
   }
 
   dynstr_free(&bulk_insert);
@@ -3055,6 +3070,8 @@ int ha_federatedx::update_row(const uchar *old_data, const uchar *new_data)
       DBUG_RETURN(stash_remote_error());
     }
   }
+
+  update_records_since_init += 1;
   DBUG_RETURN(0);
 }
 
@@ -3165,6 +3182,10 @@ int ha_federatedx::delete_row(const uchar *buf)
   }
   stats.deleted+= (ha_rows) io->affected_rows();
   stats.records-= (ha_rows) io->affected_rows();
+  if(stats.records < 2) {
+    stats.records = 2;
+  }
+  delete_records_since_init += (ha_rows) io->affected_rows();
   DBUG_PRINT("info",
              ("rows deleted %ld  rows deleted for all time %ld",
               (long) io->affected_rows(), (long) stats.deleted));
@@ -4700,6 +4721,29 @@ void ha_federatedx::init_pk_info() {
   }
 }
 
+bool ha_federatedx::need_init_table_status(THD *thd) {
+  // case 1. table status is not init yet or stats.records <= 1
+  if(!table_status_init || stats.records <= 1) {
+    return true;
+  }
+  // case 2. the row changes
+  ha_rows small_table_threshold = thd->variables.fedx_small_table_threshold;
+  ha_rows reinit_table_status_threshold = thd->variables.fedx_reinit_table_status_threshold;
+  if (records_at_init_time > small_table_threshold) {
+    ha_rows delta = insert_records_since_init + update_records_since_init
+                    + delete_records_since_init;
+
+    if(delta * 100 > records_at_init_time * reinit_table_status_threshold) {
+      return true;
+    }
+  }
+  // case 3. re-init table status every 2 day
+  if(thd->start_time - table_status_init_time >= 3600*24) {
+    return true;
+  }
+  return false;
+}
+
 int ha_federatedx::info(uint flag)
 {
   uint error_code;
@@ -4741,33 +4785,52 @@ int ha_federatedx::info(uint flag)
       stats.block_size= 4096;
 
     max_query_size = (*iop)->max_query_size();
-    if ((*iop)->table_metadata(&stats, share->table_name,
-                               (uint)share->table_name_length, flag))
-      goto error;
-    records_per_shard = stats.records;
 
-    if (!strcasecmp((*iop)->get_scheme(), "vitess") && share->s->shard_num > 0) {
-      ha_rows records_mode = thd->variables.fedx_vitess_table_records_mode;
-      ha_rows records_factor = thd->variables.fedx_vitess_table_records_factor;
-      if (records_mode == 0) {
-        //do nothing
-      } else if (records_mode == 1) {
-        stats.records = stats.records * share->s->shard_num;
-      } else if (records_mode == 2) {
-        stats.records = stats.records * records_factor;
+    if(need_init_table_status(thd)) {
+
+      //1. reset flags
+      table_status_init = true;
+      table_status_init_time = thd->start_time;
+      records_at_init_time = 2;
+      insert_records_since_init = 0;
+      delete_records_since_init = 0;
+      update_records_since_init = 0;
+      // once table status is updated, the index cardinality should be refreshed
+      index_cardinality_init = false;
+
+      // 2. init table status info
+      if ((*iop)->table_metadata(&stats, share->table_name,
+                                 (uint)share->table_name_length, flag))
+        goto error;
+      //todo should update records_per_shard when stats.records changes
+      records_per_shard = stats.records;
+
+      if (!strcasecmp((*iop)->get_scheme(), "vitess") && share->s->shard_num > 0) {
+        ha_rows records_mode = thd->variables.fedx_vitess_table_records_mode;
+        ha_rows records_factor = thd->variables.fedx_vitess_table_records_factor;
+        if (records_mode == 0) {
+          //do nothing
+        } else if (records_mode == 1) {
+          stats.records = stats.records * share->s->shard_num;
+        } else if (records_mode == 2) {
+          stats.records = stats.records * records_factor;
+        }
       }
+
+      //3. update flags
+      table_status_init = true;
+      table_status_init_time = thd->start_time;
+      records_at_init_time = stats.records;
     }
 
-    if (flag & HA_STATUS_INIT_FEDX_INFO) {
-      if (!index_cardinality_init) {
-        if ((error_code = init_index_cardinality(*iop))) {
-          goto error;
-        }
-        if (index_cardinality_init && optimizer_flag(thd, OPTIMIZER_SWITCH_FEDX_INIT_REC_PER_KEY)
-                && optimizer_flag(thd, OPTIMIZER_SWITCH_FEDX_CBO_WITH_ACTUAL_RECORDS)) {
-          //set up cardinality info in st_key
-          init_rec_per_key();
-        }
+    if (!index_cardinality_init) {
+      if ((error_code = init_index_cardinality(*iop))) {
+        goto error;
+      }
+      if (index_cardinality_init && optimizer_flag(thd, OPTIMIZER_SWITCH_FEDX_INIT_REC_PER_KEY)
+              && optimizer_flag(thd, OPTIMIZER_SWITCH_FEDX_CBO_WITH_ACTUAL_RECORDS)) {
+        //set up cardinality info in st_key
+        init_rec_per_key();
       }
     }
 
