@@ -4744,6 +4744,21 @@ bool ha_federatedx::need_init_table_status(THD *thd) {
   return false;
 }
 
+uint ha_federatedx::init_index_info(federatedx_io *io, THD *thd) {
+  uint error_code = 0;
+  if (!index_cardinality_init) {
+    if ((error_code = init_index_cardinality(io))) {
+      return error_code;
+    }
+    if (index_cardinality_init && optimizer_flag(thd, OPTIMIZER_SWITCH_FEDX_INIT_REC_PER_KEY)
+        && optimizer_flag(thd, OPTIMIZER_SWITCH_FEDX_CBO_WITH_ACTUAL_RECORDS)) {
+      //set up cardinality info in st_key
+      init_rec_per_key();
+    }
+  }
+  return error_code;
+}
+
 int ha_federatedx::info(uint flag)
 {
   uint error_code;
@@ -4802,7 +4817,6 @@ int ha_federatedx::info(uint flag)
       if ((*iop)->table_metadata(&stats, share->table_name,
                                  (uint)share->table_name_length, flag))
         goto error;
-      //todo should update records_per_shard when stats.records changes
       records_per_shard = stats.records;
 
       if (!strcasecmp((*iop)->get_scheme(), "vitess") && share->s->shard_num > 0) {
@@ -4821,17 +4835,13 @@ int ha_federatedx::info(uint flag)
       table_status_init = true;
       table_status_init_time = thd->start_time;
       records_at_init_time = stats.records;
+
+      //4. init index info
+      init_index_info(*iop, thd);
     }
 
-    if (!index_cardinality_init) {
-      if ((error_code = init_index_cardinality(*iop))) {
-        goto error;
-      }
-      if (index_cardinality_init && optimizer_flag(thd, OPTIMIZER_SWITCH_FEDX_INIT_REC_PER_KEY)
-              && optimizer_flag(thd, OPTIMIZER_SWITCH_FEDX_CBO_WITH_ACTUAL_RECORDS)) {
-        //set up cardinality info in st_key
-        init_rec_per_key();
-      }
+    if (flag & HA_STATUS_INIT_FEDX_INFO) {
+      init_index_info(*iop, thd);
     }
 
     if (pk_num < 0) {

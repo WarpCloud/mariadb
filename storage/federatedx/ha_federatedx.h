@@ -555,6 +555,7 @@ public:
   void init_pk_info();
   virtual void mark_read_columns_needed_for_update_delete(MY_BITMAP *read_map, MY_BITMAP *write_map);
   bool need_init_table_status(THD *thd);
+  uint init_index_info(federatedx_io *io, THD *thd);
 };
 
 extern const char ident_quote_char;              // Character for quoting
