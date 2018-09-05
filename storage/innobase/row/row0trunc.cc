@@ -1,7 +1,7 @@
 /*****************************************************************************
 
 Copyright (c) 2013, 2017, Oracle and/or its affiliates. All Rights Reserved.
-Copyright (c) 2017, MariaDB Corporation.
+Copyright (c) 2017, 2018, MariaDB Corporation.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -24,19 +24,19 @@ TRUNCATE implementation
 Created 2013-04-12 Sunny Bains
 *******************************************************/
 
-#include "row0mysql.h"
+#include "row0trunc.h"
+#include "btr0sea.h"
 #include "pars0pars.h"
 #include "dict0crea.h"
-#include "dict0boot.h"
 #include "dict0stats.h"
 #include "dict0stats_bg.h"
 #include "lock0lock.h"
 #include "fts0fts.h"
 #include "fsp0sysspace.h"
-#include "srv0start.h"
-#include "row0trunc.h"
+#include "ibuf0ibuf.h"
 #include "os0file.h"
-#include <vector>
+#include "que0que.h"
+#include "trx0undo.h"
 
 /* FIXME: For temporary tables, use a simple approach of btr_free()
 and btr_create() of each index tree. */
@@ -96,7 +96,7 @@ public:
 		for (;;) {
 
 			if (!btr_pcur_is_on_user_rec(&m_pcur)
-			    || !callback.match(&m_mtr, &m_pcur)) {
+			    || !callback.match(&m_pcur)) {
 
 				/* The end of of the index has been reached. */
 				err = DB_END_OF_INDEX;
@@ -195,10 +195,9 @@ public:
 	}
 
 	/**
-	@param mtr		mini-transaction covering the iteration
 	@param pcur		persistent cursor used for iteration
 	@return true if the table id column matches. */
-	bool match(mtr_t* mtr, btr_pcur_t* pcur) const
+	bool match(btr_pcur_t* pcur) const
 	{
 		ulint		len;
 		const byte*	field;
@@ -295,14 +294,12 @@ public:
 
 		snprintf(m_log_file_name + log_file_name_len,
 			 log_file_name_buf_sz - log_file_name_len,
-			 "%s%lu_%lu_%s",
+			 "%s" ULINTPF "_" IB_ID_FMT "_%s",
 			 TruncateLogger::s_log_prefix,
-			 (ulong) m_table->space,
-			 (ulong) m_table->id,
+			 m_table->space_id, m_table->id,
 			 TruncateLogger::s_log_ext);
 
 		return(DB_SUCCESS);
-
 	}
 
 	/**
@@ -354,8 +351,8 @@ public:
 		}
 
 
-		ulint	sz = UNIV_PAGE_SIZE;
-		void*	buf = ut_zalloc_nokey(sz + UNIV_PAGE_SIZE);
+		ulint	sz = srv_page_size;
+		void*	buf = ut_zalloc_nokey(sz + srv_page_size);
 		if (buf == 0) {
 			os_file_close(handle);
 			return(DB_OUT_OF_MEMORY);
@@ -363,7 +360,7 @@ public:
 
 		/* Align the memory for file i/o if we might have O_DIRECT set*/
 		byte*	log_buf = static_cast<byte*>(
-			ut_align(buf, UNIV_PAGE_SIZE));
+			ut_align(buf, srv_page_size));
 
 		lsn_t	lsn = log_get_lsn();
 
@@ -375,7 +372,7 @@ public:
 			which is currently 0. */
 			err = m_truncate.write(
 				log_buf + 4, log_buf + sz - 4,
-				m_table->space, m_table->name.m_name,
+				m_table->space_id, m_table->name.m_name,
 				m_flags, m_table->flags, lsn);
 
 			DBUG_EXECUTE_IF("ib_err_trunc_oom_logging",
@@ -385,7 +382,7 @@ public:
 				ut_ad(err == DB_FAIL);
 				ut_free(buf);
 				sz *= 2;
-				buf = ut_zalloc_nokey(sz + UNIV_PAGE_SIZE);
+				buf = ut_zalloc_nokey(sz + srv_page_size);
 				DBUG_EXECUTE_IF("ib_err_trunc_oom_logging",
 						ut_free(buf);
 						buf = 0;);
@@ -394,7 +391,7 @@ public:
 					return(DB_OUT_OF_MEMORY);
 				}
 				log_buf = static_cast<byte*>(
-					ut_align(buf, UNIV_PAGE_SIZE));
+					ut_align(buf, srv_page_size));
 			}
 
 		} while (err != DB_SUCCESS);
@@ -438,7 +435,7 @@ public:
 		- If checkpoint happens post truncate and crash happens post
 		  this point then neither MLOG_TRUNCATE nor REDO record
 		  from action before truncate are accessible. */
-		if (!is_system_tablespace(m_table->space)) {
+		if (!is_system_tablespace(m_table->space_id)) {
 			mtr_t	mtr;
 			byte*	log_ptr;
 
@@ -446,7 +443,7 @@ public:
 
 			log_ptr = mlog_open(&mtr, 11 + 8);
 			log_ptr = mlog_write_initial_log_record_low(
-				MLOG_TRUNCATE, m_table->space, 0,
+				MLOG_TRUNCATE, m_table->space_id, 0,
 				log_ptr, &mtr);
 
 			mach_write_to_8(log_ptr, lsn);
@@ -666,8 +663,8 @@ TruncateLogParser::parse(
 		return(DB_IO_ERROR);
 	}
 
-	ulint	sz = UNIV_PAGE_SIZE;
-	void*	buf = ut_zalloc_nokey(sz + UNIV_PAGE_SIZE);
+	ulint	sz = srv_page_size;
+	void*	buf = ut_zalloc_nokey(sz + srv_page_size);
 	if (buf == 0) {
 		os_file_close(handle);
 		return(DB_OUT_OF_MEMORY);
@@ -676,7 +673,7 @@ TruncateLogParser::parse(
 	IORequest	request(IORequest::READ);
 
 	/* Align the memory for file i/o if we might have O_DIRECT set*/
-	byte*	log_buf = static_cast<byte*>(ut_align(buf, UNIV_PAGE_SIZE));
+	byte*	log_buf = static_cast<byte*>(ut_align(buf, srv_page_size));
 
 	do {
 		err = os_file_read(request, handle, log_buf, 0, sz);
@@ -716,7 +713,7 @@ TruncateLogParser::parse(
 
 			sz *= 2;
 
-			buf = ut_zalloc_nokey(sz + UNIV_PAGE_SIZE);
+			buf = ut_zalloc_nokey(sz + srv_page_size);
 
 			if (buf == 0) {
 				os_file_close(handle);
@@ -727,7 +724,7 @@ TruncateLogParser::parse(
 			}
 
 			log_buf = static_cast<byte*>(
-				ut_align(buf, UNIV_PAGE_SIZE));
+				ut_align(buf, srv_page_size));
 		}
 	} while (err != DB_SUCCESS);
 
@@ -868,15 +865,13 @@ public:
 	/**
 	Look for table-id in SYS_XXXX tables without loading the table.
 
-	@param mtr	mini-transaction covering the read
 	@param pcur	persistent cursor used for reading
-	@return DB_SUCCESS or error code */
-	dberr_t operator()(mtr_t* mtr, btr_pcur_t* pcur);
-
-private:
-	// Disably copying
-	TableLocator(const TableLocator&);
-	TableLocator& operator=(const TableLocator&);
+	@return DB_SUCCESS */
+	dberr_t operator()(mtr_t*, btr_pcur_t*)
+	{
+		m_table_found = true;
+		return(DB_SUCCESS);
+	}
 
 private:
 	/** Set to true if table is present */
@@ -884,11 +879,10 @@ private:
 };
 
 /**
-@param mtr	mini-transaction covering the read
 @param pcur	persistent cursor used for reading
 @return DB_SUCCESS or error code */
 dberr_t
-TruncateLogger::operator()(mtr_t* mtr, btr_pcur_t* pcur)
+TruncateLogger::operator()(mtr_t*, btr_pcur_t* pcur)
 {
 	ulint			len;
 	const byte*		field;
@@ -983,8 +977,7 @@ DropIndex::operator()(mtr_t* mtr, btr_pcur_t* pcur) const
 	}
 #endif /* UNIV_DEBUG */
 
-	DBUG_EXECUTE_IF("ib_err_trunc_drop_index",
-			freed = false;);
+	DBUG_EXECUTE_IF("ib_err_trunc_drop_index", return DB_ERROR;);
 
 	if (freed) {
 
@@ -1001,16 +994,8 @@ DropIndex::operator()(mtr_t* mtr, btr_pcur_t* pcur) const
 
 		btr_pcur_restore_position(BTR_MODIFY_LEAF, pcur, mtr);
 	} else {
-		/* Check if the .ibd file is missing. */
-		bool	found;
-
-		fil_space_get_page_size(m_table->space, &found);
-
-		DBUG_EXECUTE_IF("ib_err_trunc_drop_index",
-				found = false;);
-
-		if (!found) {
-			return(DB_ERROR);
+		if (!m_table->space) {
+			return DB_ERROR;
 		}
 	}
 
@@ -1069,8 +1054,7 @@ CreateIndex::operator()(mtr_t* mtr, btr_pcur_t* pcur) const
 	}
 #endif /* UNIV_DEBUG */
 
-	DBUG_EXECUTE_IF("ib_err_trunc_create_index",
-			root_page_no = FIL_NULL;);
+	DBUG_EXECUTE_IF("ib_err_trunc_create_index", return DB_ERROR;);
 
 	if (root_page_no != FIL_NULL) {
 
@@ -1092,30 +1076,10 @@ CreateIndex::operator()(mtr_t* mtr, btr_pcur_t* pcur) const
 		btr_pcur_restore_position(BTR_MODIFY_LEAF, pcur, mtr);
 
 	} else {
-		bool	found;
-		fil_space_get_page_size(m_table->space, &found);
-
-		DBUG_EXECUTE_IF("ib_err_trunc_create_index",
-				found = false;);
-
-		if (!found) {
+		if (!m_table->space) {
 			return(DB_ERROR);
 		}
 	}
-
-	return(DB_SUCCESS);
-}
-
-/**
-Look for table-id in SYS_XXXX tables without loading the table.
-
-@param mtr	mini-transaction covering the read
-@param pcur	persistent cursor used for reading
-@return DB_SUCCESS */
-dberr_t
-TableLocator::operator()(mtr_t* mtr, btr_pcur_t* pcur)
-{
-	m_table_found = true;
 
 	return(DB_SUCCESS);
 }
@@ -1144,6 +1108,7 @@ row_truncate_rollback(
 	bool		corrupted,
 	bool		unlock_index)
 {
+	ut_ad(!table->is_temporary());
 	if (unlock_index) {
 		dict_table_x_unlock_indexes(table);
 	}
@@ -1154,7 +1119,7 @@ row_truncate_rollback(
 
 	trx->error_state = DB_SUCCESS;
 
-	if (corrupted && !dict_table_is_temporary(table)) {
+	if (corrupted) {
 
 		/* Cleanup action to ensure we don't left over stale entries
 		if we are marking table as corrupted. This will ensure
@@ -1190,21 +1155,6 @@ row_truncate_rollback(
 
 			trx_commit_for_mysql(trx);
 		}
-
-	} else if (corrupted && dict_table_is_temporary(table)) {
-
-		dict_table_x_lock_indexes(table);
-
-		for (dict_index_t* index = UT_LIST_GET_FIRST(table->indexes);
-		     index != NULL;
-		     index = UT_LIST_GET_NEXT(indexes, index)) {
-
-			dict_drop_index_tree_in_mem(index, index->page);
-
-			index->page = FIL_NULL;
-		}
-
-		dict_table_x_unlock_indexes(table);
 	}
 
 	table->corrupted = corrupted;
@@ -1235,7 +1185,7 @@ row_truncate_complete(
 
 	DEBUG_SYNC_C("ib_trunc_table_trunc_completing");
 
-	if (!dict_table_is_temporary(table)) {
+	if (!table->is_temporary()) {
 
 		DBUG_EXECUTE_IF("ib_trunc_crash_before_log_removal",
 				log_buffer_flush_to_disk();
@@ -1256,19 +1206,23 @@ row_truncate_complete(
 
 	/* If non-temp file-per-table tablespace... */
 	if (is_file_per_table
-	    && !dict_table_is_temporary(table)
+	    && !table->is_temporary()
 	    && fsp_flags != ULINT_UNDEFINED) {
 
 		/* This function will reset back the stop_new_ops
 		and is_being_truncated so that fil-ops can re-start. */
 		dberr_t err2 = truncate_t::truncate(
-			table->space,
+			table->space_id,
 			table->data_dir_path,
 			table->name.m_name, fsp_flags, false);
 
 		if (err2 != DB_SUCCESS) {
 			return(err2);
 		}
+	}
+
+	if (err == DB_SUCCESS) {
+		dict_stats_update(table, DICT_STATS_EMPTY_TABLE);
 	}
 
 	trx->op_info = "";
@@ -1319,10 +1273,7 @@ row_truncate_fts(
 
 	fts_table.data_dir_path = table->data_dir_path;
 
-	dberr_t		err;
-
-	err = fts_create_common_tables(
-		trx, &fts_table, table->name.m_name, TRUE);
+	dberr_t err = fts_create_common_tables(trx, &fts_table, true);
 
 	for (ulint i = 0;
 	     i < ib_vector_size(table->fts->indexes) && err == DB_SUCCESS;
@@ -1333,8 +1284,7 @@ row_truncate_fts(
 		fts_index = static_cast<dict_index_t*>(
 			ib_vector_getp(table->fts->indexes, i));
 
-		err = fts_create_index_tables_low(
-			trx, fts_index, table->name.m_name, new_id);
+		err = fts_create_index_tables(trx, fts_index, new_id);
 	}
 
 	DBUG_EXECUTE_IF("ib_err_trunc_during_fts_trunc",
@@ -1434,7 +1384,7 @@ row_truncate_update_sys_tables_during_fix_up(
 	ibool			reserve_dict_mutex,
 	bool			mark_index_corrupted)
 {
-	trx_t*		trx = trx_allocate_for_background();
+	trx_t*		trx = trx_create();
 
 	trx_set_dict_operation(trx, TRX_DICT_OP_TABLE);
 
@@ -1491,7 +1441,7 @@ row_truncate_update_sys_tables_during_fix_up(
 	}
 
 	trx_commit_for_mysql(trx);
-	trx_free_for_background(trx);
+	trx_free(trx);
 
 	return(err);
 }
@@ -1516,7 +1466,7 @@ row_truncate_update_system_tables(
 {
 	dberr_t		err	= DB_SUCCESS;
 
-	ut_a(!dict_table_is_temporary(table));
+	ut_a(!table->is_temporary());
 
 	err = row_truncate_update_table_id(table->id, new_id, FALSE, trx);
 
@@ -1569,37 +1519,6 @@ row_truncate_update_system_tables(
 }
 
 /**
-Prepare for the truncate process. On success all of the table's indexes will
-be locked in X mode.
-@param table		table to truncate
-@param flags		tablespace flags
-@return	error code or DB_SUCCESS */
-static MY_ATTRIBUTE((warn_unused_result))
-dberr_t
-row_truncate_prepare(dict_table_t* table, ulint* flags)
-{
-	ut_ad(!dict_table_is_temporary(table));
-	ut_ad(dict_table_is_file_per_table(table));
-
-	*flags = fil_space_get_flags(table->space);
-
-	ut_ad(!dict_table_is_temporary(table));
-
-	dict_get_and_save_data_dir_path(table, true);
-
-	if (*flags != ULINT_UNDEFINED) {
-
-		dberr_t	err = fil_prepare_for_truncate(table->space);
-
-		if (err != DB_SUCCESS) {
-			return(err);
-		}
-	}
-
-	return(DB_SUCCESS);
-}
-
-/**
 Do foreign key checks before starting TRUNCATE.
 @param table		table being truncated
 @param trx		transaction covering the truncate
@@ -1647,19 +1566,7 @@ row_truncate_foreign_key_checks(
 		return(DB_ERROR);
 	}
 
-	/* TODO: could we replace the counter n_foreign_key_checks_running
-	with lock checks on the table? Acquire here an exclusive lock on the
-	table, and rewrite lock0lock.cc and the lock wait in srv0srv.cc so that
-	they can cope with the table having been truncated here? Foreign key
-	checks take an IS or IX lock on the table. */
-
-	if (table->n_foreign_key_checks_running > 0) {
-		ib::warn() << "Cannot truncate table " << table->name
-			<< " because there is a foreign key check running on"
-			" it.";
-
-		return(DB_ERROR);
-	}
+	ut_ad(!table->n_foreign_key_checks_running);
 
 	return(DB_SUCCESS);
 }
@@ -1673,12 +1580,12 @@ dberr_t
 row_truncate_sanity_checks(
 	const dict_table_t* table)
 {
-	if (dict_table_is_discarded(table)) {
+	if (!table->space) {
 
 		return(DB_TABLESPACE_DELETED);
 
 	} else if (!table->is_readable()) {
-		if (fil_space_get(table->space) == NULL) {
+		if (!table->space) {
 			return(DB_TABLESPACE_NOT_FOUND);
 
 		} else {
@@ -1690,6 +1597,59 @@ row_truncate_sanity_checks(
 	}
 
 	return(DB_SUCCESS);
+}
+
+/** Reinitialize the original tablespace header with the same space id
+for single tablespace
+@param[in]      table		table belongs to tablespace
+@param[in]      size            size in blocks
+@param[in]      trx             Transaction covering truncate */
+static void
+fil_reinit_space_header_for_table(
+	dict_table_t*	table,
+	ulint		size,
+	trx_t*		trx)
+{
+	fil_space_t* space = table->space;
+	ut_a(!is_system_tablespace(space->id));
+	ut_ad(space->id == table->space_id);
+
+	/* Invalidate in the buffer pool all pages belonging
+	to the tablespace. The buffer pool scan may take long
+	time to complete, therefore we release dict_sys->mutex
+	and the dict operation lock during the scan and aquire
+	it again after the buffer pool scan.*/
+
+	/* Release the lock on the indexes too. So that
+	they won't violate the latch ordering. */
+	dict_table_x_unlock_indexes(table);
+	row_mysql_unlock_data_dictionary(trx);
+
+	/* Lock the search latch in shared mode to prevent user
+	from disabling AHI during the scan */
+	btr_search_s_lock_all();
+	DEBUG_SYNC_C("buffer_pool_scan");
+	buf_LRU_flush_or_remove_pages(space->id, NULL);
+	btr_search_s_unlock_all();
+
+	row_mysql_lock_data_dictionary(trx);
+
+	dict_table_x_lock_indexes(table);
+
+	/* Remove all insert buffer entries for the tablespace */
+	ibuf_delete_for_discarded_space(space->id);
+
+	mtr_t	mtr;
+
+	mtr.start();
+	mtr.set_named_space(space);
+	mtr_x_lock(&space->latch, &mtr);
+
+	ut_ad(UT_LIST_GET_LEN(space->chain) == 1);
+	space->size = UT_LIST_GET_FIRST(space->chain)->size = size;
+	fsp_header_init(space, size, &mtr);
+
+	mtr.commit();
 }
 
 /**
@@ -1704,19 +1664,14 @@ row_truncate_table_for_mysql(
 {
 	bool	is_file_per_table = dict_table_is_file_per_table(table);
 	dberr_t		err;
-#ifdef UNIV_DEBUG
-	ulint		old_space = table->space;
-#endif /* UNIV_DEBUG */
 	TruncateLogger*	logger = NULL;
+	ut_d(const fil_space_t* old_space = table->space);
 
 	/* Understanding the truncate flow.
 
 	Step-1: Perform intiial sanity check to ensure table can be truncated.
 	This would include check for tablespace discard status, ibd file
 	missing, etc ....
-
-	Step-2: Start transaction (only for non-temp table as temp-table don't
-	modify any data on disk doesn't need transaction object).
 
 	Step-3: Validate ownership of needed locks (Exclusive lock).
 	Ownership will also ensure there is no active SQL queries, INSERT,
@@ -1798,11 +1753,8 @@ row_truncate_table_for_mysql(
 
 	}
 
-	/* Step-2: Start transaction (only for non-temp table as temp-table
-	don't modify any data on disk doesn't need transaction object). */
-	if (!dict_table_is_temporary(table)) {
-		/* Avoid transaction overhead for temporary table DDL. */
-		trx_start_for_ddl(trx, TRX_DICT_OP_TABLE);
+	if (!table->is_temporary()) {
+		trx_set_dict_operation(trx, TRX_DICT_OP_TABLE);
 	}
 
 	/* Step-3: Validate ownership of needed locks (Exclusive lock).
@@ -1828,18 +1780,16 @@ row_truncate_table_for_mysql(
 				table, trx, fsp_flags, logger, err));
 	}
 
-	/* Remove all locks except the table-level X lock. */
-	lock_remove_all_on_table(table, FALSE);
 	trx->table_id = table->id;
 	trx_set_dict_operation(trx, TRX_DICT_OP_TABLE);
 
 	/* Step-6: Truncate operation can be rolled back in case of error
 	till some point. Associate rollback segment to record undo log. */
-	if (!dict_table_is_temporary(table)) {
-		mutex_enter(&trx->undo_mutex);
-		err = trx_undo_assign_undo(trx, trx->rsegs.m_redo.rseg,
-					   &trx->rsegs.m_redo.undo);
-		mutex_exit(&trx->undo_mutex);
+	if (!table->is_temporary()) {
+		mtr_t mtr;
+		mtr.start();
+		trx_undo_assign(trx, &err, &mtr);
+		mtr.commit();
 
 		DBUG_EXECUTE_IF("ib_err_trunc_assigning_undo_log",
 				err = DB_ERROR;);
@@ -1878,11 +1828,19 @@ row_truncate_table_for_mysql(
 	we need to use index locks to sync up */
 	dict_table_x_lock_indexes(table);
 
-	if (!dict_table_is_temporary(table)) {
+	if (!table->is_temporary()) {
+		fsp_flags = table->space
+			? table->space->flags
+			: ULINT_UNDEFINED;
 
 		if (is_file_per_table) {
+			ut_ad(!table->is_temporary());
+			ut_ad(dict_table_is_file_per_table(table));
 
-			err = row_truncate_prepare(table, &fsp_flags);
+			dict_get_and_save_data_dir_path(table, true);
+			err = table->space
+				? fil_prepare_for_truncate(table->space_id)
+				: DB_TABLESPACE_NOT_FOUND;
 
 			DBUG_EXECUTE_IF("ib_err_trunc_preparing_for_truncate",
 					err = DB_ERROR;);
@@ -1896,8 +1854,6 @@ row_truncate_table_for_mysql(
 					table, trx, fsp_flags, logger, err));
 			}
 		} else {
-			fsp_flags = fil_space_get_flags(table->space);
-
 			DBUG_EXECUTE_IF("ib_err_trunc_preparing_for_truncate",
 					fsp_flags = ULINT_UNDEFINED;);
 
@@ -1969,28 +1925,55 @@ row_truncate_table_for_mysql(
 		dict_table_get_first_index(table)->remove_instant();
 	} else {
 		ut_ad(!table->is_instant());
-		/* For temporary tables we don't have entries in SYSTEM TABLES*/
-		ut_ad(fsp_is_system_temporary(table->space));
+		ut_ad(table->space == fil_system.temp_space);
+		bool fail = false;
 		for (dict_index_t* index = UT_LIST_GET_FIRST(table->indexes);
 		     index != NULL;
 		     index = UT_LIST_GET_NEXT(indexes, index)) {
-
-			err = dict_truncate_index_tree_in_mem(index);
-
-			if (err != DB_SUCCESS) {
-				row_truncate_rollback(
-					table, trx, new_id, has_internal_doc_id,
-					no_redo, true, true);
-				return(row_truncate_complete(
-					table, trx, fsp_flags, logger, err));
+			if (index->page != FIL_NULL) {
+				btr_free(page_id_t(SRV_TMP_SPACE_ID,
+						   index->page),
+					 univ_page_size);
 			}
 
-			DBUG_EXECUTE_IF(
-				"ib_trunc_crash_during_drop_index_temp_table",
-				log_buffer_flush_to_disk();
-				os_thread_sleep(2000000);
-				DBUG_SUICIDE(););
+			mtr_t mtr;
+			mtr.start();
+			mtr.set_log_mode(MTR_LOG_NO_REDO);
+			index->page = btr_create(
+				index->type, table->space, index->id, index,
+				NULL, &mtr);
+			DBUG_EXECUTE_IF("ib_err_trunc_temp_recreate_index",
+					index->page = FIL_NULL;);
+			mtr.commit();
+			if (index->page == FIL_NULL) {
+				fail = true;
+				break;
+			}
 		}
+		if (fail) {
+			for (dict_index_t* index = UT_LIST_GET_FIRST(
+				     table->indexes);
+			     index != NULL;
+			     index = UT_LIST_GET_NEXT(indexes, index)) {
+				if (index->page != FIL_NULL) {
+					btr_free(page_id_t(SRV_TMP_SPACE_ID,
+							   index->page),
+						 univ_page_size);
+					index->page = FIL_NULL;
+				}
+			}
+		}
+
+		table->corrupted = fail;
+		if (fail) {
+			return row_truncate_complete(
+				table, trx, fsp_flags, logger, DB_ERROR);
+		}
+
+		DBUG_EXECUTE_IF(
+			"ib_trunc_crash_during_drop_index_temp_table",
+			log_buffer_flush_to_disk();
+			DBUG_SUICIDE(););
 	}
 
 	if (is_file_per_table && fsp_flags != ULINT_UNDEFINED) {
@@ -2025,7 +2008,7 @@ row_truncate_table_for_mysql(
 			DBUG_SUICIDE(););
 
 	/* Step-10: Re-create new indexes. */
-	if (!dict_table_is_temporary(table)) {
+	if (!table->is_temporary()) {
 
 		CreateIndex	createIndex(table, no_redo);
 
@@ -2065,7 +2048,7 @@ row_truncate_table_for_mysql(
 	on-disk (INNODB_SYS_TABLES). INNODB_SYS_INDEXES also needs to
 	be updated to reflect updated root-page-no of new index created
 	and updated table-id. */
-	if (dict_table_is_temporary(table)) {
+	if (table->is_temporary()) {
 
 		dict_table_change_id_in_cache(table, new_id);
 		err = DB_SUCCESS;
@@ -2098,22 +2081,232 @@ row_truncate_table_for_mysql(
 	dict_table_autoinc_unlock(table);
 
 	if (trx_is_started(trx)) {
-		char	errstr[1024];
-		if (dict_stats_drop_table(table->name.m_name, errstr,
-					  sizeof errstr, trx) != DB_SUCCESS) {
-			ib::warn() << "Deleting persistent "
-				"statistics for table " << table->name
-				   << " failed: " << errstr;
-		}
 
 		trx_commit_for_mysql(trx);
-
-		dict_stats_empty_table(table);
 	}
 
 	ut_ad(!table->is_instant());
 
 	return(row_truncate_complete(table, trx, fsp_flags, logger, err));
+}
+
+/********************************************************//**
+Recreates table indexes by applying
+TRUNCATE log record during recovery.
+@return DB_SUCCESS or error code */
+static
+dberr_t
+fil_recreate_table(
+/*===============*/
+	ulint		format_flags,	/*!< in: page format */
+	const char*	name,		/*!< in: table name */
+	truncate_t&	truncate)	/*!< in: The information of
+					TRUNCATE log record */
+{
+	ut_ad(!truncate_t::s_fix_up_active);
+	truncate_t::s_fix_up_active = true;
+
+	/* Step-1: Scan for active indexes from REDO logs and drop
+	all the indexes using low level function that take root_page_no
+	and space-id. */
+	truncate.drop_indexes(fil_system.sys_space);
+
+	/* Step-2: Scan for active indexes and re-create them. */
+	dberr_t err = truncate.create_indexes(
+		name, fil_system.sys_space, format_flags);
+	if (err != DB_SUCCESS) {
+		ib::info() << "Recovery failed for TRUNCATE TABLE '"
+			<< name << "' within the system tablespace";
+	}
+
+	truncate_t::s_fix_up_active = false;
+
+	return(err);
+}
+
+/********************************************************//**
+Recreates the tablespace and table indexes by applying
+TRUNCATE log record during recovery.
+@return DB_SUCCESS or error code */
+static
+dberr_t
+fil_recreate_tablespace(
+/*====================*/
+	ulint		space_id,	/*!< in: space id */
+	ulint		format_flags,	/*!< in: page format */
+	ulint		flags,		/*!< in: tablespace flags */
+	const char*	name,		/*!< in: table name */
+	truncate_t&	truncate,	/*!< in: The information of
+					TRUNCATE log record */
+	lsn_t		recv_lsn)	/*!< in: the end LSN of
+						the log record */
+{
+	dberr_t		err = DB_SUCCESS;
+	mtr_t		mtr;
+
+	ut_ad(!truncate_t::s_fix_up_active);
+	truncate_t::s_fix_up_active = true;
+
+	/* Step-1: Invalidate buffer pool pages belonging to the tablespace
+	to re-create. */
+	buf_LRU_flush_or_remove_pages(space_id, NULL);
+
+	/* Remove all insert buffer entries for the tablespace */
+	ibuf_delete_for_discarded_space(space_id);
+
+	/* Step-2: truncate tablespace (reset the size back to original or
+	default size) of tablespace. */
+	err = truncate.truncate(
+		space_id, truncate.get_dir_path(), name, flags, true);
+
+	if (err != DB_SUCCESS) {
+
+		ib::info() << "Cannot access .ibd file for table '"
+			<< name << "' with tablespace " << space_id
+			<< " while truncating";
+		return(DB_ERROR);
+	}
+
+	fil_space_t* space = fil_space_acquire(space_id);
+	if (!space) {
+		ib::info() << "Missing .ibd file for table '" << name
+			<< "' with tablespace " << space_id;
+		return(DB_ERROR);
+	}
+
+	const page_size_t page_size(space->flags);
+
+	/* Step-3: Initialize Header. */
+	if (page_size.is_compressed()) {
+		byte*	buf;
+		page_t*	page;
+
+		buf = static_cast<byte*>(
+			ut_zalloc_nokey(3U << srv_page_size_shift));
+
+		/* Align the memory for file i/o */
+		page = static_cast<byte*>(ut_align(buf, srv_page_size));
+
+		flags |= FSP_FLAGS_PAGE_SSIZE();
+
+		fsp_header_init_fields(page, space_id, flags);
+
+		mach_write_to_4(
+			page + FIL_PAGE_ARCH_LOG_NO_OR_SPACE_ID, space_id);
+
+		page_zip_des_t  page_zip;
+		page_zip_set_size(&page_zip, page_size.physical());
+		page_zip.data = page + srv_page_size;
+
+#ifdef UNIV_DEBUG
+		page_zip.m_start =
+#endif /* UNIV_DEBUG */
+		page_zip.m_end = page_zip.m_nonempty = page_zip.n_blobs = 0;
+		buf_flush_init_for_writing(NULL, page, &page_zip, 0);
+
+		err = fil_io(IORequestWrite, true, page_id_t(space_id, 0),
+			     page_size, 0, page_size.physical(), page_zip.data,
+			     NULL);
+
+		ut_free(buf);
+
+		if (err != DB_SUCCESS) {
+			ib::info() << "Failed to clean header of the"
+				" table '" << name << "' with tablespace "
+				<< space_id;
+			goto func_exit;
+		}
+	}
+
+	mtr_start(&mtr);
+	/* Don't log the operation while fixing up table truncate operation
+	as crash at this level can still be sustained with recovery restarting
+	from last checkpoint. */
+	mtr_set_log_mode(&mtr, MTR_LOG_NO_REDO);
+
+	/* Initialize the first extent descriptor page and
+	the second bitmap page for the new tablespace. */
+	fsp_header_init(space, FIL_IBD_FILE_INITIAL_SIZE, &mtr);
+	mtr_commit(&mtr);
+
+	/* Step-4: Re-Create Indexes to newly re-created tablespace.
+	This operation will restore tablespace back to what it was
+	when it was created during CREATE TABLE. */
+	err = truncate.create_indexes(name, space, format_flags);
+	if (err != DB_SUCCESS) {
+		goto func_exit;
+	}
+
+	/* Step-5: Write new created pages into ibd file handle and
+	flush it to disk for the tablespace, in case i/o-handler thread
+	deletes the bitmap page from buffer. */
+	mtr_start(&mtr);
+
+	mtr_set_log_mode(&mtr, MTR_LOG_NO_REDO);
+
+	for (ulint page_no = 0;
+	     page_no < UT_LIST_GET_FIRST(space->chain)->size; ++page_no) {
+
+		const page_id_t	cur_page_id(space_id, page_no);
+
+		buf_block_t*	block = buf_page_get(cur_page_id, page_size,
+						     RW_X_LATCH, &mtr);
+
+		byte*	page = buf_block_get_frame(block);
+
+		if (!FSP_FLAGS_GET_ZIP_SSIZE(flags)) {
+			ut_ad(!page_size.is_compressed());
+
+			buf_flush_init_for_writing(
+				block, page, NULL, recv_lsn);
+
+			err = fil_io(IORequestWrite, true, cur_page_id,
+				     page_size, 0, srv_page_size, page, NULL);
+		} else {
+			ut_ad(page_size.is_compressed());
+
+			/* We don't want to rewrite empty pages. */
+
+			if (fil_page_get_type(page) != 0) {
+				page_zip_des_t*  page_zip =
+					buf_block_get_page_zip(block);
+
+				buf_flush_init_for_writing(
+					block, page, page_zip, recv_lsn);
+
+				err = fil_io(IORequestWrite, true,
+					     cur_page_id,
+					     page_size, 0,
+					     page_size.physical(),
+					     page_zip->data, NULL);
+			} else {
+#ifdef UNIV_DEBUG
+				const byte*	data = block->page.zip.data;
+
+				/* Make sure that the page is really empty */
+				for (ulint i = 0;
+				     i < page_size.physical();
+				     ++i) {
+
+					ut_a(data[i] == 0);
+				}
+#endif /* UNIV_DEBUG */
+			}
+		}
+
+		if (err != DB_SUCCESS) {
+			ib::info() << "Cannot write page " << page_no
+				<< " into a .ibd file for table '"
+				<< name << "' with tablespace " << space_id;
+		}
+	}
+
+	mtr_commit(&mtr);
+
+	truncate_t::s_fix_up_active = false;
+func_exit:
+	space->release();
+	return(err);
 }
 
 /**
@@ -2138,9 +2331,7 @@ truncate_t::fixup_tables_in_system_tablespace()
 				"residing in the system tablespace.";
 
 			err = fil_recreate_table(
-				(*it)->m_space_id,
 				(*it)->m_format_flags,
-				(*it)->m_tablespace_flags,
 				(*it)->m_tablename,
 				**it);
 
@@ -2199,23 +2390,22 @@ truncate_t::fixup_tables_in_non_system_tablespace()
 			"residing in file-per-table tablespace with "
 			"id (" << (*it)->m_space_id << ")";
 
-		if (!fil_space_get((*it)->m_space_id)) {
+		fil_space_t* space = fil_space_get((*it)->m_space_id);
 
+		if (!space) {
 			/* Create the database directory for name,
 			if it does not exist yet */
 			fil_create_directory_for_tablename(
 				(*it)->m_tablename);
 
-			err = fil_ibd_create(
-				(*it)->m_space_id,
-				(*it)->m_tablename,
-				(*it)->m_dir_path,
-				(*it)->m_tablespace_flags,
-				FIL_IBD_FILE_INITIAL_SIZE,
-				(*it)->m_encryption,
-				(*it)->m_key_id);
-
-			if (err != DB_SUCCESS) {
+			space = fil_ibd_create((*it)->m_space_id,
+					       (*it)->m_tablename,
+					       (*it)->m_dir_path,
+					       (*it)->m_tablespace_flags,
+					       FIL_IBD_FILE_INITIAL_SIZE,
+					       (*it)->m_encryption,
+					       (*it)->m_key_id, &err);
+			if (!space) {
 				/* If checkpoint is not yet done
 				and table is dropped and then we might
 				still have REDO entries for this table
@@ -2228,8 +2418,6 @@ truncate_t::fixup_tables_in_non_system_tablespace()
 				break;
 			}
 		}
-
-		ut_ad(fil_space_get((*it)->m_space_id));
 
 		err = fil_recreate_tablespace(
 			(*it)->m_space_id,
@@ -2410,7 +2598,7 @@ truncate_t::update_root_page_no(
 
 		pars_info_add_ull_literal(
 			info, "index_id",
-			(mark_index_corrupted ? -1 : it->m_id));
+			(mark_index_corrupted ? IB_ID_MAX : it->m_id));
 
 		err = que_eval_sql(
 			info,
@@ -2706,8 +2894,7 @@ truncate_t::index_t::set(
 /** Create an index for a table.
 @param[in]	table_name		table name, for which to create
 the index
-@param[in]	space_id		space id where we have to
-create the index
+@param[in]	space			tablespace
 @param[in]	page_size		page size of the .ibd file
 @param[in]	index_type		type of index to truncate
 @param[in]	index_id		id of index to truncate
@@ -2715,18 +2902,17 @@ create the index
 @param[in,out]	mtr			mini-transaction covering the
 create index
 @return root page no or FIL_NULL on failure */
-ulint
+inline ulint
 truncate_t::create_index(
 	const char*		table_name,
-	ulint			space_id,
-	const page_size_t&	page_size,
+	fil_space_t*		space,
 	ulint			index_type,
 	index_id_t		index_id,
 	const btr_create_t&	btr_redo_create_info,
 	mtr_t*			mtr) const
 {
 	ulint	root_page_no = btr_create(
-		index_type, space_id, page_size, index_id,
+		index_type, space, index_id,
 		NULL, &btr_redo_create_info, mtr);
 
 	if (root_page_no == FIL_NULL) {
@@ -2735,7 +2921,7 @@ truncate_t::create_index(
 			<< srv_force_recovery << ". Continuing crash recovery"
 			" even though we failed to create index " << index_id
 			<< " for compressed table '" << table_name << "' with"
-			" tablespace " << space_id << " during recovery";
+			" file " << space->chain.start->name;
 	}
 
 	return(root_page_no);
@@ -2743,30 +2929,27 @@ truncate_t::create_index(
 
 /** Check if index has been modified since TRUNCATE log snapshot
 was recorded.
-@param space_id		space_id where table/indexes resides.
-@param root_page_no	root page of index that needs to be verified.
+@param[in]	space		tablespace
+@param[in]	root_page_no	index root page number
 @return true if modified else false */
-
+inline
 bool
 truncate_t::is_index_modified_since_logged(
-	ulint		space_id,
-	ulint		root_page_no) const
+	const fil_space_t*	space,
+	ulint			root_page_no) const
 {
-	mtr_t			mtr;
-	bool			found;
-	const page_size_t&	page_size = fil_space_get_page_size(space_id,
-								    &found);
-	dberr_t			err = DB_SUCCESS;
-
-	ut_ad(found);
+	dberr_t	err;
+	mtr_t	mtr;
 
 	mtr_start(&mtr);
 
 	/* Root page could be in free state if truncate crashed after drop_index
 	and page was not allocated for any other object. */
 	buf_block_t* block= buf_page_get_gen(
-		page_id_t(space_id, root_page_no), page_size, RW_X_LATCH, NULL,
+		page_id_t(space->id, root_page_no), page_size_t(space->flags),
+		RW_X_LATCH, NULL,
 		BUF_GET_POSSIBLY_FREED, __FILE__, __LINE__, &mtr, &err);
+	if (!block) return true;
 
 	page_t* root = buf_block_get_frame(block);
 
@@ -2790,31 +2973,21 @@ truncate_t::is_index_modified_since_logged(
 }
 
 /** Drop indexes for a table.
-@param space_id		space_id where table/indexes resides. */
-
-void
-truncate_t::drop_indexes(
-	ulint		space_id) const
+@param[in,out] space		tablespace */
+void truncate_t::drop_indexes(fil_space_t* space) const
 {
 	mtr_t           mtr;
-	ulint		root_page_no = FIL_NULL;
 
 	indexes_t::const_iterator       end = m_indexes.end();
+	const page_size_t page_size(space->flags);
 
 	for (indexes_t::const_iterator it = m_indexes.begin();
 	     it != end;
 	     ++it) {
 
-		root_page_no = it->m_root_page_no;
+		ulint root_page_no = it->m_root_page_no;
 
-		bool			found;
-		const page_size_t&	page_size
-			= fil_space_get_page_size(space_id, &found);
-
-		ut_ad(found);
-
-		if (is_index_modified_since_logged(
-			space_id, root_page_no)) {
+		if (is_index_modified_since_logged(space, root_page_no)) {
 			/* Page has been modified since TRUNCATE log snapshot
 			was recorded so not safe to drop the index. */
 			continue;
@@ -2822,14 +2995,14 @@ truncate_t::drop_indexes(
 
 		mtr_start(&mtr);
 
-		if (space_id != TRX_SYS_SPACE) {
+		if (space->id != TRX_SYS_SPACE) {
 			/* Do not log changes for single-table
 			tablespaces, we are in recovery mode. */
 			mtr_set_log_mode(&mtr, MTR_LOG_NO_REDO);
 		}
 
 		if (root_page_no != FIL_NULL) {
-			const page_id_t	root_page_id(space_id, root_page_no);
+			const page_id_t	root_page_id(space->id, root_page_no);
 
 			btr_free_if_exists(
 				root_page_id, page_size, it->m_id, &mtr);
@@ -2845,24 +3018,20 @@ truncate_t::drop_indexes(
 
 /** Create the indexes for a table
 @param[in]	table_name	table name, for which to create the indexes
-@param[in]	space_id	space id where we have to create the indexes
-@param[in]	page_size	page size of the .ibd file
-@param[in]	flags		tablespace flags
+@param[in,out]	space		tablespace
 @param[in]	format_flags	page format flags
 @return DB_SUCCESS or error code. */
-dberr_t
+inline dberr_t
 truncate_t::create_indexes(
 	const char*		table_name,
-	ulint			space_id,
-	const page_size_t&	page_size,
-	ulint			flags,
+	fil_space_t*		space,
 	ulint			format_flags)
 {
 	mtr_t           mtr;
 
 	mtr_start(&mtr);
 
-	if (space_id != TRX_SYS_SPACE) {
+	if (space->id != TRX_SYS_SPACE) {
 		/* Do not log changes for single-table tablespaces, we
 		are in recovery mode. */
 		mtr_set_log_mode(&mtr, MTR_LOG_NO_REDO);
@@ -2879,12 +3048,12 @@ truncate_t::create_indexes(
 	     ++it) {
 
 		btr_create_t    btr_redo_create_info(
-			FSP_FLAGS_GET_ZIP_SSIZE(flags)
+			FSP_FLAGS_GET_ZIP_SSIZE(space->flags)
 			? &it->m_fields[0] : NULL);
 
 		btr_redo_create_info.format_flags = format_flags;
 
-		if (FSP_FLAGS_GET_ZIP_SSIZE(flags)) {
+		if (FSP_FLAGS_GET_ZIP_SSIZE(space->flags)) {
 
 			btr_redo_create_info.n_fields = it->m_n_fields;
 			/* Skip the NUL appended field */
@@ -2894,7 +3063,7 @@ truncate_t::create_indexes(
 		}
 
 		root_page_no = create_index(
-			table_name, space_id, page_size, it->m_type, it->m_id,
+			table_name, space, it->m_type, it->m_id,
 			btr_redo_create_info, &mtr);
 
 		if (root_page_no == FIL_NULL) {

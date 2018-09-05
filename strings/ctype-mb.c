@@ -528,12 +528,12 @@ uint my_instr_mb(CHARSET_INFO *cs,
         if (nmatch)
         {
           match[0].beg= 0;
-          match[0].end= (size_t) (b-b0);
+          match[0].end= (uint) (b-b0);
           match[0].mb_len= res;
           if (nmatch > 1)
           {
             match[1].beg= match[0].end;
-            match[1].end= match[0].end+s_length;
+            match[1].end= (uint)(match[0].end+s_length);
             match[1].mb_len= 0;	/* Not computed */
           }
         }
@@ -739,7 +739,7 @@ static void pad_max_char(CHARSET_INFO *cs, char *str, char *end)
   {
     if ((str + buflen) <= end)
     {
-      /* Enough space for the characer */
+      /* Enough space for the character */
       memcpy(str, buf, buflen);
       str+= buflen;
     }

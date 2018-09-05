@@ -33,7 +33,7 @@ fi
 # Look up distro-version specific stuff
 #
 # Always keep the actual packaging as up-to-date as possible following the latest
-# Debian policy and targetting Debian Sid. Then case-by-case run in autobake-deb.sh
+# Debian policy and targeting Debian Sid. Then case-by-case run in autobake-deb.sh
 # tests for backwards compatibility and strip away parts on older builders.
 
 # If iproute2 is not available (before Debian Jessie and Ubuntu Trusty)
@@ -75,18 +75,49 @@ fi
 
 # Convert gcc version to numberical value. Format is Mmmpp where M is Major
 # version, mm is minor version and p is patch.
-GCCVERSION=$(gcc -dumpversion | sed -e 's/\.\([0-9][0-9]\)/\1/g' -e 's/\.\([0-9]\)/0\1/g' -e 's/^[0-9]\{3,4\}$/&00/')
+# -dumpfullversion & -dumpversion to make it uniform across old and new (>=7)
+GCCVERSION=$(gcc -dumpfullversion -dumpversion | sed -e 's/\.\([0-9][0-9]\)/\1/g' \
+                                                     -e 's/\.\([0-9]\)/0\1/g'     \
+						     -e 's/^[0-9]\{3,4\}$/&00/')
 # Don't build rocksdb package if gcc version is less than 4.8 or we are running on
 # x86 32 bit.
 if [[ $GCCVERSION -lt 40800 ]] || [[ $(arch) =~ i[346]86 ]] || [[ $TRAVIS ]]
 then
-  sed '/Package: mariadb-plugin-rocksdb/,+13d' -i debian/control
-fi
-if [[ $GCCVERSION -lt 40800 ]] || [[ $TRAVIS ]]
-then
-  sed '/Package: mariadb-plugin-aws-key-management-10.3/,+15d' -i debian/control
+  sed '/Package: mariadb-plugin-rocksdb/,+14d' -i debian/control
 fi
 
+# AWS SDK requires c++11 -capable compiler.
+# Minimal supported versions are g++ 4.8 and clang 3.3.
+# AWS SDK also requires the build machine to have network access and git, so
+# it cannot be part of the base version included in Linux distros, but a pure
+# custom built plugin.
+if [[ $GCCVERSION -gt 40800 ]] && [[ ! $TRAVIS ]] && ping -c 1 github.com
+then
+  cat <<EOF >> debian/control
+
+Package: mariadb-plugin-aws-key-management
+Architecture: any
+Breaks: mariadb-aws-key-management-10.1,
+        mariadb-aws-key-management-10.2
+Replaces: mariadb-aws-key-management-10.1,
+          mariadb-aws-key-management-10.2
+Depends: libcurl3,
+         mariadb-server-10.3,
+         \${misc:Depends},
+         \${shlibs:Depends}
+Description: Amazon Web Service Key Management Service Plugin for MariaDB
+ This encryption key management plugin gives an interface to the Amazon Web
+ Services Key Management Service for managing encryption keys used for MariaDB
+ data-at-rest encryption.
+EOF
+fi
+
+# Mroonga, TokuDB never built on Travis CI anyway, see build flags above
+if [[ $TRAVIS ]]
+then
+  sed -i -e "/Package: mariadb-plugin-tokudb/,+17d" debian/control
+  sed -i -e "/Package: mariadb-plugin-mroonga/,+16d" debian/control
+fi
 
 # Adjust changelog, add new version
 echo "Incrementing changelog and starting build scripts"
@@ -97,17 +128,26 @@ UPSTREAM="${MYSQL_VERSION_MAJOR}.${MYSQL_VERSION_MINOR}.${MYSQL_VERSION_PATCH}${
 PATCHLEVEL="+maria"
 LOGSTRING="MariaDB build"
 CODENAME="$(lsb_release -sc)"
+EPOCH="1:"
 
-dch -b -D ${CODENAME} -v "${UPSTREAM}${PATCHLEVEL}~${CODENAME}" "Automatic build with ${LOGSTRING}."
+dch -b -D ${CODENAME} -v "${EPOCH}${UPSTREAM}${PATCHLEVEL}~${CODENAME}" "Automatic build with ${LOGSTRING}."
 
-echo "Creating package version ${UPSTREAM}${PATCHLEVEL}~${CODENAME} ... "
+echo "Creating package version ${EPOCH}${UPSTREAM}${PATCHLEVEL}~${CODENAME} ... "
+
+# On Travis CI, use -b to build binary only packages as there is no need to
+# waste time on generating the source package.
+if [[ $TRAVIS ]]
+then
+  BUILDPACKAGE_FLAGS="-b"
+fi
 
 # Build the package
 # Pass -I so that .git and other unnecessary temporary and source control files
 # will be ignored by dpkg-source when creating the tar.gz source package.
-# Use -b to build binary only packages as there is no need to waste time on
-# generating the source package.
-fakeroot dpkg-buildpackage -us -uc -I -b
+fakeroot dpkg-buildpackage -us -uc -I $BUILDPACKAGE_FLAGS
+
+# If the step above fails due to missing dependencies, you can manually run
+#   sudo mk-build-deps debian/control -r -i
 
 # Don't log package contents on Travis-CI to save time and log size
 if [[ ! $TRAVIS ]]

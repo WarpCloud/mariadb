@@ -159,8 +159,7 @@ static int make_tempfile(char *filename, const char *ext)
 {
   int fd= 0;
 
-  if ((fd=create_temp_file(filename, NullS, ext, O_CREAT | O_WRONLY,
-         MYF(MY_WME))) < 0)
+  if ((fd= create_temp_file(filename, NullS, ext, 0, MYF(MY_WME))) < 0)
   {
     fprintf(stderr, "ERROR: Cannot generate temporary file. Error code: %d.\n",
             fd);
@@ -262,7 +261,7 @@ static char *convert_path(const char *argument)
   /* Convert / to \\ to make Windows paths */
   char *winfilename= my_strdup(argument, MYF(MY_FAE));
   char *pos, *end;
-  int length= strlen(argument);
+  size_t length= strlen(argument);
 
   for (pos= winfilename, end= pos+length ; pos < end ; pos++)
   {
@@ -365,6 +364,12 @@ static int get_default_values()
     }
     /* Now open the file and read the defaults we want. */
     file= fopen(defaults_file, "r");
+    if (file == NULL)
+    {
+      fprintf(stderr, "ERROR: failed to open file %s: %s.\n", defaults_file,
+              strerror(errno));
+      goto exit;
+    }
     while (fgets(line, FN_REFLEN, file) != NULL)
     {
       char *value= 0;
@@ -712,11 +717,11 @@ static int check_options(int argc, char **argv, char *operation)
   
   /* Form prefix strings for the options. */
   const char *basedir_prefix = "--basedir=";
-  int basedir_len= strlen(basedir_prefix);
+  size_t basedir_len= strlen(basedir_prefix);
   const char *datadir_prefix = "--datadir=";
-  int datadir_len= strlen(datadir_prefix);
+  size_t datadir_len= strlen(datadir_prefix);
   const char *plugin_dir_prefix = "--plugin_dir=";
-  int plugin_dir_len= strlen(plugin_dir_prefix);
+  size_t plugin_dir_len= strlen(plugin_dir_prefix);
 
   strcpy(plugin_name, "");
   for (i = 0; i < argc && num_found < 5; i++)

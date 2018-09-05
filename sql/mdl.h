@@ -21,8 +21,6 @@
 #include <mysql_com.h>
 #include <lf.h>
 
-#include <algorithm>
-
 class THD;
 
 class MDL_context;
@@ -301,6 +299,7 @@ public:
                             TABLE,
                             FUNCTION,
                             PROCEDURE,
+                            PACKAGE_BODY,
                             TRIGGER,
                             EVENT,
                             COMMIT,
@@ -373,8 +372,7 @@ public:
       character set is utf-8, we can safely assume that no
       character starts with a zero byte.
     */
-    using std::min;
-    return memcmp(m_ptr, rhs->m_ptr, min(m_length, rhs->m_length));
+    return memcmp(m_ptr, rhs->m_ptr, MY_MIN(m_length, rhs->m_length));
   }
 
   MDL_key(const MDL_key *rhs)
@@ -458,7 +456,7 @@ public:
 
   static void *operator new(size_t size, MEM_ROOT *mem_root) throw ()
   { return alloc_root(mem_root, size); }
-  static void operator delete(void *ptr, MEM_ROOT *mem_root) {}
+  static void operator delete(void *, MEM_ROOT *) {}
 
   void init(MDL_key::enum_mdl_namespace namespace_arg,
             const char *db_arg, const char *name_arg,
@@ -499,7 +497,7 @@ public:
     is mandatory. Can only be used before the request has been
     granted.
   */
-  MDL_request& operator=(const MDL_request &rhs)
+  MDL_request& operator=(const MDL_request &)
   {
     ticket= NULL;
     /* Do nothing, in particular, don't try to copy the key. */

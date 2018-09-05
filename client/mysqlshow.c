@@ -72,8 +72,7 @@ int main(int argc, char **argv)
   static char **defaults_argv;
   MY_INIT(argv[0]);
   sf_leaking_memory=1; /* don't report memory leaks on early exits */
-  if (load_defaults("my",load_default_groups,&argc,&argv))
-    exit(1);
+  load_defaults_or_exit("my", load_default_groups, &argc, &argv);
   defaults_argv=argv;
 
   get_options(&argc,&argv);
@@ -661,7 +660,7 @@ static int
 list_table_status(MYSQL *mysql,const char *db,const char *wild)
 {
   char query[NAME_LEN + 100];
-  int len;
+  size_t len;
   MYSQL_RES *result;
   MYSQL_ROW row;
 
@@ -908,7 +907,7 @@ static void print_res_header(MYSQL_RES *result)
 
 static void print_res_top(MYSQL_RES *result)
 {
-  uint i,length;
+  size_t i,length;
   MYSQL_FIELD *field;
 
   putchar('+');
@@ -916,7 +915,7 @@ static void print_res_top(MYSQL_RES *result)
   while((field = mysql_fetch_field(result)))
   {
     if ((length= strlen(field->name)) > field->max_length)
-      field->max_length=length;
+      field->max_length=(ulong)length;
     else
       length=field->max_length;
     for (i=length+2 ; i--> 0 ; )

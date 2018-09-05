@@ -33,7 +33,6 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
 #include "common.h"
 #include "read_filt.h"
 #include "xtrabackup.h"
-#include "xb0xb.h"
 
 /* Size of read buffer in pages (640 pages = 10M for 16K sized pages) */
 #define XB_FIL_CUR_PAGES 640
@@ -89,7 +88,7 @@ xb_fil_node_close_file(
 {
 	ibool	ret;
 
-	mutex_enter(&fil_system->mutex);
+	mutex_enter(&fil_system.mutex);
 
 	ut_ad(node);
 	ut_a(node->n_pending == 0);
@@ -98,7 +97,7 @@ xb_fil_node_close_file(
 
 	if (!node->is_open()) {
 
-		mutex_exit(&fil_system->mutex);
+		mutex_exit(&fil_system.mutex);
 
 		return;
 	}
@@ -108,20 +107,20 @@ xb_fil_node_close_file(
 
 	node->handle = OS_FILE_CLOSED;
 
-	ut_a(fil_system->n_open > 0);
-	fil_system->n_open--;
+	ut_a(fil_system.n_open > 0);
+	fil_system.n_open--;
 	fil_n_file_opened--;
 
 	if (node->space->purpose == FIL_TYPE_TABLESPACE &&
 	    fil_is_user_tablespace_id(node->space->id)) {
 
-		ut_a(UT_LIST_GET_LEN(fil_system->LRU) > 0);
+		ut_a(UT_LIST_GET_LEN(fil_system.LRU) > 0);
 
 		/* The node is in the LRU list, remove it */
-		UT_LIST_REMOVE(fil_system->LRU, node);
+		UT_LIST_REMOVE(fil_system.LRU, node);
 	}
 
-	mutex_exit(&fil_system->mutex);
+	mutex_exit(&fil_system.mutex);
 }
 
 /************************************************************************
@@ -175,19 +174,19 @@ xb_fil_cur_open(
 
 			return(XB_FIL_CUR_ERROR);
 		}
-		mutex_enter(&fil_system->mutex);
+		mutex_enter(&fil_system.mutex);
 
-		fil_system->n_open++;
+		fil_system.n_open++;
 		fil_n_file_opened++;
 
 		if (node->space->purpose == FIL_TYPE_TABLESPACE &&
 		    fil_is_user_tablespace_id(node->space->id)) {
 
 			/* Put the node to the LRU list */
-			UT_LIST_ADD_FIRST(fil_system->LRU, node);
+			UT_LIST_ADD_FIRST(fil_system.LRU, node);
 		}
 
-		mutex_exit(&fil_system->mutex);
+		mutex_exit(&fil_system.mutex);
 	}
 
 	ut_ad(node->is_open());
@@ -218,9 +217,9 @@ xb_fil_cur_open(
 	/* Allocate read buffer */
 	cursor->buf_size = XB_FIL_CUR_PAGES * page_size.physical();
 	cursor->orig_buf = static_cast<byte *>
-		(malloc(cursor->buf_size + UNIV_PAGE_SIZE));
+		(malloc(cursor->buf_size + srv_page_size));
 	cursor->buf = static_cast<byte *>
-		(ut_align(cursor->orig_buf, UNIV_PAGE_SIZE));
+		(ut_align(cursor->orig_buf, srv_page_size));
 
 	cursor->buf_read = 0;
 	cursor->buf_npages = 0;
@@ -258,7 +257,7 @@ xb_fil_cur_read(
 	ib_int64_t		offset;
 	ib_int64_t		to_read;
 	const ulint		page_size = cursor->page_size.physical();
-	xb_ad(!cursor->is_system() || page_size == UNIV_PAGE_SIZE);
+	xb_ad(!cursor->is_system() || page_size == srv_page_size);
 
 	cursor->read_filter->get_next_batch(&cursor->read_filter_ctxt,
 					    &offset, &to_read);
@@ -307,9 +306,9 @@ read_retry:
 	cursor->buf_offset = offset;
 	cursor->buf_page_no = (ulint)(offset / cursor->page_size.physical());
 
-	FilSpace space(cursor->space_id);
+	fil_space_t* space = fil_space_get(cursor->space_id);
 
-	if (!space()) {
+	if (!space) {
 		return(XB_FIL_CUR_ERROR);
 	}
 

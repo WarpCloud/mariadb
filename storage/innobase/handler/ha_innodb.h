@@ -1,7 +1,7 @@
 /*****************************************************************************
 
 Copyright (c) 2000, 2017, Oracle and/or its affiliates. All Rights Reserved.
-Copyright (c) 2013, 2017, MariaDB Corporation.
+Copyright (c) 2013, 2018, MariaDB Corporation.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -132,8 +132,6 @@ public:
 
 	double read_time(uint index, uint ranges, ha_rows rows);
 
-	longlong get_memory_buffer_size() const;
-
 	int delete_all_rows();
 
 	int write_row(uchar * buf);
@@ -187,12 +185,6 @@ public:
 	void ft_end();
 
 	FT_INFO* ft_init_ext(uint flags, uint inx, String* key);
-
-	FT_INFO* ft_init_ext_with_hints(
-		uint			inx,
-		String*			key,
-		void*			hints);
-		//Ft_hints*		hints);
 
 	int ft_read(uchar* buf);
 
@@ -306,12 +298,24 @@ public:
 	by ALTER TABLE and holding data used during in-place alter.
 
 	@retval HA_ALTER_INPLACE_NOT_SUPPORTED Not supported
-	@retval HA_ALTER_INPLACE_NO_LOCK Supported
-	@retval HA_ALTER_INPLACE_SHARED_LOCK_AFTER_PREPARE
-		Supported, but requires lock during main phase and
-		exclusive lock during prepare phase.
-	@retval HA_ALTER_INPLACE_NO_LOCK_AFTER_PREPARE
-		Supported, prepare phase requires exclusive lock.  */
+	@retval HA_ALTER_INPLACE_INSTANT
+	MDL_EXCLUSIVE is needed for executing prepare_inplace_alter_table()
+	and commit_inplace_alter_table(). inplace_alter_table()
+	will not be called.
+	@retval HA_ALTER_INPLACE_COPY_NO_LOCK
+	MDL_EXCLUSIVE in prepare_inplace_alter_table(), which can be downgraded
+	to LOCK=NONE for rebuilding the table in inplace_alter_table()
+	@retval HA_ALTER_INPLACE_COPY_LOCK
+	MDL_EXCLUSIVE in prepare_inplace_alter_table(), which can be downgraded
+	to LOCK=SHARED for rebuilding the table in inplace_alter_table()
+	@retval HA_ALTER_INPLACE_NOCOPY_NO_LOCK
+	MDL_EXCLUSIVE in prepare_inplace_alter_table(), which can be downgraded
+	to LOCK=NONE for inplace_alter_table() which will not rebuild the table
+	@retval HA_ALTER_INPLACE_NOCOPY_LOCK
+	MDL_EXCLUSIVE in prepare_inplace_alter_table(), which can be downgraded
+	to LOCK=SHARED for inplace_alter_table() which will not rebuild
+	the table. */
+
 	enum_alter_inplace_result check_if_supported_inplace_alter(
 		TABLE*			altered_table,
 		Alter_inplace_info*	ha_alter_info);
@@ -515,9 +519,6 @@ protected:
 	ROW_SEL_EXACT_PREFIX, or undefined */
 	uint			m_last_match_mode;
 
-	/** number of write_row() calls */
-	uint			m_num_write_row;
-
         /** If mysql has locked with external_lock() */
         bool                    m_mysql_has_locked;
 };
@@ -691,7 +692,7 @@ public:
 	:m_thd(thd),
 	m_form(form),
 	m_create_info(create_info),
-	m_table_name(table_name),
+	m_table_name(table_name), m_table(NULL),
 	m_remote_path(remote_path),
 	m_innodb_file_per_table(srv_file_per_table)
 	{}
@@ -801,6 +802,8 @@ private:
 
 	/** Table name */
 	char*		m_table_name;
+	/** Table */
+	dict_table_t*	m_table;
 
 	/** Remote path (DATA DIRECTORY) or zero length-string */
 	char*		m_remote_path;
@@ -913,24 +916,6 @@ innodb_base_col_setup_for_stored(
 #define normalize_table_name(norm_name, name)           \
 	create_table_info_t::normalize_table_name_low(norm_name, name, FALSE)
 #endif /* _WIN32 */
-
-/** Obtain the InnoDB transaction of a MySQL thread.
-@param[in,out]	thd	MySQL thread handler.
-@return reference to transaction pointer */
-trx_t*& thd_to_trx(THD*	thd);
-
-/** Converts an InnoDB error code to a MySQL error code.
-Also tells to MySQL about a possible transaction rollback inside InnoDB caused
-by a lock wait timeout or a deadlock.
-@param[in]	error	InnoDB error code.
-@param[in]	flags	InnoDB table flags or 0.
-@param[in]	thd	MySQL thread or NULL.
-@return MySQL error code */
-int
-convert_error_code_to_mysql(
-	dberr_t	error,
-	ulint	flags,
-	THD*	thd);
 
 /** Converts a search mode flag understood by MySQL to a flag understood
 by InnoDB.

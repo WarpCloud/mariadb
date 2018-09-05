@@ -482,6 +482,7 @@ select previous value for t1;
 previous value for t1
 1
 CREATE TEMPORARY SEQUENCE t1 start with 100 minvalue 100 maxvalue 200 increment by 1 cache 10 engine=innodb;
+START TRANSACTION WITH CONSISTENT SNAPSHOT;
 select previous value for t1;
 previous value for t1
 NULL
@@ -633,3 +634,13 @@ create temporary table s (i int);
 drop temporary sequence s;
 ERROR 42S02: Unknown SEQUENCE: 'test.s'
 drop table s;
+#
+# MDEV-15115 Assertion failure in CREATE SEQUENCE...ROW_FORMAT=REDUNDANT
+#
+CREATE SEQUENCE seq1 ENGINE=InnoDB ROW_FORMAT=REDUNDANT;
+SELECT * FROM INFORMATION_SCHEMA.INNODB_SYS_TABLES WHERE NAME='test/seq1';
+TABLE_ID	NAME	FLAG	N_COLS	SPACE	ROW_FORMAT	ZIP_PAGE_SIZE	SPACE_TYPE
+#	test/seq1	12288	11	#	Redundant	0	Single
+DROP SEQUENCE seq1;
+CREATE TEMPORARY SEQUENCE seq1 ENGINE=InnoDB ROW_FORMAT=REDUNDANT;
+DROP TEMPORARY SEQUENCE seq1;

@@ -2,7 +2,7 @@
 
 Copyright (c) 1995, 2017, Oracle and/or its affiliates. All Rights Reserved.
 Copyright (c) 2009, Percona Inc.
-Copyright (c) 2013, 2017, MariaDB Corporation.
+Copyright (c) 2013, 2018, MariaDB Corporation.
 
 Portions of this file contain modifications contributed and copyrighted
 by Percona Inc.. Those modifications are
@@ -107,8 +107,9 @@ static ulint	os_innodb_umask = S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP;
 #else
 /** Umask for creating files */
 static ulint	os_innodb_umask	= 0;
-static HANDLE	completion_port;
-static HANDLE	read_completion_port;
+static HANDLE	data_completion_port;
+static HANDLE	log_completion_port;
+
 static DWORD	fls_sync_io  = FLS_OUT_OF_INDEXES;
 #define IOCP_SHUTDOWN_KEY (ULONG_PTR)-1
 #endif /* _WIN32 */
@@ -443,11 +444,17 @@ public:
 #endif /* LINUX_NATIVE_AIO */
 
 #ifdef WIN_ASYNC_IO
-	
+	HANDLE m_completion_port;
 	/** Wake up all AIO threads in Windows native aio */
 	static void wake_at_shutdown() {
-		PostQueuedCompletionStatus(completion_port, 0, IOCP_SHUTDOWN_KEY, NULL);
-		PostQueuedCompletionStatus(read_completion_port, 0, IOCP_SHUTDOWN_KEY, NULL);
+		AIO *all_arrays[] = {s_reads, s_writes, s_log, s_ibuf };
+		for (size_t i = 0; i < array_elements(all_arrays); i++) {
+			AIO *a = all_arrays[i];
+			if (a) {
+				PostQueuedCompletionStatus(a->m_completion_port, 0,
+					IOCP_SHUTDOWN_KEY, 0);
+			}
+		}
 	}
 #endif /* WIN_ASYNC_IO */
 
@@ -691,38 +698,56 @@ bool	os_has_said_disk_full;
 /** Default Zip compression level */
 extern uint page_zip_level;
 
-#if DATA_TRX_ID_LEN > 6
-#error "COMPRESSION_ALGORITHM will not fit"
-#endif /* DATA_TRX_ID_LEN */
-
 /** Validates the consistency of the aio system.
 @return true if ok */
 static
 bool
 os_aio_validate();
 
+/** Handle errors for file operations.
+@param[in]	name		name of a file or NULL
+@param[in]	operation	operation
+@param[in]	should_abort	whether to abort on an unknown error
+@param[in]	on_error_silent	whether to suppress reports of non-fatal errors
+@return true if we should retry the operation */
+static MY_ATTRIBUTE((warn_unused_result))
+bool
+os_file_handle_error_cond_exit(
+	const char*	name,
+	const char*	operation,
+	bool		should_abort,
+	bool		on_error_silent);
+
 /** Does error handling when a file operation fails.
-@param[in]	name		File name or NULL
-@param[in]	operation	Name of operation e.g., "read", "write"
+@param[in]	name		name of a file or NULL
+@param[in]	operation	operation name that failed
 @return true if we should retry the operation */
 static
 bool
 os_file_handle_error(
 	const char*	name,
-	const char*	operation);
+	const char*	operation)
+{
+	/* Exit in case of unknown error */
+	return(os_file_handle_error_cond_exit(name, operation, true, false));
+}
 
-/**
-Does error handling when a file operation fails.
-@param[in]	name		File name or NULL
-@param[in]	operation	Name of operation e.g., "read", "write"
-@param[in]	silent	if true then don't print any message to the log.
+/** Does error handling when a file operation fails.
+@param[in]	name		name of a file or NULL
+@param[in]	operation	operation name that failed
+@param[in]	on_error_silent	if true then don't print any message to the log.
 @return true if we should retry the operation */
 static
 bool
 os_file_handle_error_no_exit(
 	const char*	name,
 	const char*	operation,
-	bool		silent);
+	bool		on_error_silent)
+{
+	/* Don't exit in case of unknown error */
+	return(os_file_handle_error_cond_exit(
+			name, operation, false, on_error_silent));
+}
 
 /** Does simulated AIO. This function should be called by an i/o-handler
 thread.
@@ -814,7 +839,8 @@ os_file_get_block_size(
 #ifdef _WIN32
 
 	fblock_size = 0;
-
+	BOOL result = false;
+	size_t len = 0;
 	// Open volume for this file, find out it "physical bytes per sector"
 
 	HANDLE volume_handle = INVALID_HANDLE_VALUE;
@@ -825,7 +851,7 @@ os_file_get_block_size(
 		goto end;
 	}
 
-	size_t len = strlen(volume);
+	len = strlen(volume);
 	if (volume[len - 1] == '\\') {
 		// Trim trailing backslash from volume name.
 		volume[len - 1] = 0;
@@ -836,8 +862,10 @@ os_file_get_block_size(
 		0, OPEN_EXISTING, 0, 0);
 
 	if (volume_handle == INVALID_HANDLE_VALUE) {
-		os_file_handle_error_no_exit(volume,
-			"CreateFile()", FALSE);
+		if (GetLastError() != ERROR_ACCESS_DENIED) {
+			os_file_handle_error_no_exit(volume,
+				"CreateFile()", FALSE);
+		}
 		goto end;
 	}
 
@@ -849,7 +877,7 @@ os_file_get_block_size(
 	storage_query.PropertyId = StorageAccessAlignmentProperty;
 	storage_query.QueryType  = PropertyStandardQuery;
 
-	BOOL result = os_win32_device_io_control(volume_handle,
+	result = os_win32_device_io_control(volume_handle,
 		IOCTL_STORAGE_QUERY_PROPERTY,
 		&storage_query,
 		sizeof(storage_query),
@@ -859,16 +887,7 @@ os_file_get_block_size(
 
 	if (!result) {
 		DWORD err = GetLastError();
-		if (err == ERROR_INVALID_FUNCTION || err == ERROR_NOT_SUPPORTED) {
-			// Don't report error, it is driver's fault, not ours or users.
-			// We handle this with fallback. Report wit info message, just once.
-			static bool write_info = true;
-			if (write_info) {
-				ib::info() << "DeviceIoControl(IOCTL_STORAGE_QUERY_PROPERTY)"
-					<< " unsupported on volume " << volume;
-				write_info = false;
-			}
-		} else {
+		if (err != ERROR_INVALID_FUNCTION && err != ERROR_NOT_SUPPORTED) {
 				os_file_handle_error_no_exit(volume,
 					"DeviceIoControl(IOCTL_STORAGE_QUERY_PROPERTY)", FALSE);
 		}
@@ -1008,7 +1027,7 @@ AIOHandler::post_io_processing(Slot* slot)
 	ut_ad(slot->is_reserved);
 
 	/* Total bytes read so far */
-	ulint	n_bytes = (slot->ptr - slot->buf) + slot->n_bytes;
+	ulint	n_bytes = ulint(slot->ptr - slot->buf) + slot->n_bytes;
 
 	return(n_bytes == slot->original_len ? DB_SUCCESS : DB_FAIL);
 }
@@ -1214,22 +1233,32 @@ AIO::release_with_mutex(Slot* slot)
 	release();
 }
 
-/** Creates a temporary file.  This function is like tmpfile(3), but
-the temporary file is created in the given parameter path. If the path
-is NULL then it will create the file in the MySQL server configuration
+/** Create a temporary file. This function is like tmpfile(3), but
+the temporary file is created in the in the mysql server configuration
 parameter (--tmpdir).
-@param[in]	path	location for creating temporary file
-@@return temporary file handle, or NULL on error */
+@return temporary file handle, or NULL on error */
 FILE*
-os_file_create_tmpfile(
-	const char*	path)
+os_file_create_tmpfile()
 {
 	FILE*	file	= NULL;
 	WAIT_ALLOW_WRITES();
-	int	fd	= innobase_mysql_tmpfile(path);
+	os_file_t	fd	= innobase_mysql_tmpfile(NULL);
 
-	if (fd >= 0) {
+	if (fd != OS_FILE_CLOSED) {
+#ifdef _WIN32
+		int crt_fd = _open_osfhandle((intptr_t)HANDLE(fd), 0);
+		if (crt_fd != -1) {
+			file = fdopen(crt_fd, "w+b");
+			if (!file) {
+				close(crt_fd);
+			}
+		}
+#else
 		file = fdopen(fd, "w+b");
+		if (!file) {
+			close(fd);
+		}
+#endif
 	}
 
 	if (file == NULL) {
@@ -1237,10 +1266,6 @@ os_file_create_tmpfile(
 		ib::error()
 			<< "Unable to create temporary file; errno: "
 			<< errno;
-
-		if (fd >= 0) {
-			close(fd);
-		}
 	}
 
 	return(file);
@@ -1298,7 +1323,7 @@ os_file_make_new_pathname(
 	/* Find the offset of the last slash. We will strip off the
 	old basename.ibd which starts after that slash. */
 	last_slash = strrchr((char*) old_path, OS_PATH_SEPARATOR);
-	dir_len = last_slash ? last_slash - old_path : strlen(old_path);
+	dir_len = last_slash ? ulint(last_slash - old_path) : strlen(old_path);
 
 	/* allocate a new path and move the old directory path to it. */
 	new_path_len = dir_len + strlen(base_name) + sizeof "/.ibd";
@@ -1445,7 +1470,7 @@ os_file_get_parent_dir(
 
 	/* Non-trivial directory component */
 
-	return(mem_strdupl(path, last_slash - path));
+	return(mem_strdupl(path, ulint(last_slash - path)));
 }
 #ifdef UNIV_ENABLE_UNIT_TEST_GET_PARENT_DIR
 
@@ -2255,7 +2280,7 @@ AIO::is_linux_native_aio_supported()
 
 		strcpy(name + dirnamelen, "ib_logfile0");
 
-		fd = open(name, O_RDONLY);
+		fd = open(name, O_RDONLY | O_CLOEXEC);
 
 		if (fd == -1) {
 
@@ -2272,23 +2297,23 @@ AIO::is_linux_native_aio_supported()
 
 	memset(&io_event, 0x0, sizeof(io_event));
 
-	byte*	buf = static_cast<byte*>(ut_malloc_nokey(UNIV_PAGE_SIZE * 2));
-	byte*	ptr = static_cast<byte*>(ut_align(buf, UNIV_PAGE_SIZE));
+	byte*	buf = static_cast<byte*>(ut_malloc_nokey(srv_page_size * 2));
+	byte*	ptr = static_cast<byte*>(ut_align(buf, srv_page_size));
 
 	struct iocb	iocb;
 
 	/* Suppress valgrind warning. */
-	memset(buf, 0x00, UNIV_PAGE_SIZE * 2);
+	memset(buf, 0x00, srv_page_size * 2);
 	memset(&iocb, 0x0, sizeof(iocb));
 
 	struct iocb*	p_iocb = &iocb;
 
 	if (!srv_read_only_mode) {
 
-		io_prep_pwrite(p_iocb, fd, ptr, UNIV_PAGE_SIZE, 0);
+		io_prep_pwrite(p_iocb, fd, ptr, srv_page_size, 0);
 
 	} else {
-		ut_a(UNIV_PAGE_SIZE >= 512);
+		ut_a(srv_page_size >= 512);
 		io_prep_pread(p_iocb, fd, ptr, 512, 0);
 	}
 
@@ -3259,7 +3284,7 @@ os_file_get_size(
 		/* st_blocks is in 512 byte sized blocks */
 		file_size.m_alloc_size = s.st_blocks * 512;
 	} else {
-		file_size.m_total_size = ~0;
+		file_size.m_total_size = ~0U;
 		file_size.m_alloc_size = (os_offset_t) errno;
 	}
 
@@ -3400,16 +3425,6 @@ static void __stdcall win_free_syncio_event(void *data) {
 
 
 /*
-Initialize tls index.for event handle used for synchronized IO on files that
-might be opened with FILE_FLAG_OVERLAPPED.
-*/
-static void win_init_syncio_event() {
-	fls_sync_io = FlsAlloc(win_free_syncio_event);
-	ut_a(fls_sync_io != FLS_OUT_OF_INDEXES);
-}
-
-
-/*
 Retrieve per-thread event for doing synchronous io on asyncronously opened files
 */
 static HANDLE win_get_syncio_event()
@@ -3498,15 +3513,11 @@ SyncFileIO::execute(Slot* slot)
 struct WinIoInit
 {
 	WinIoInit() {
-		completion_port = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, 0);
-		read_completion_port = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, 0);	ut_a(completion_port && read_completion_port);
 		fls_sync_io = FlsAlloc(win_free_syncio_event);
 		ut_a(fls_sync_io != FLS_OUT_OF_INDEXES);
 	}
 
 	~WinIoInit() {
-		CloseHandle(completion_port);
-		CloseHandle(read_completion_port);
 		FlsFree(fls_sync_io);
 	}
 };
@@ -3514,46 +3525,6 @@ struct WinIoInit
 /* Ensures proper initialization and shutdown */
 static WinIoInit win_io_init;
 
-/** Check if the file system supports sparse files.
-@param[in]	 name		File name
-@return true if the file system supports sparse files */
-static
-bool
-os_is_sparse_file_supported_win32(const char* filename)
-{
-	char	volname[MAX_PATH];
-	BOOL	result = GetVolumePathName(filename, volname, MAX_PATH);
-
-	if (!result) {
-
-		ib::error()
-			<< "os_is_sparse_file_supported: "
-			<< "Failed to get the volume path name for: "
-			<< filename
-			<< "- OS error number " << GetLastError();
-
-		return(false);
-	}
-
-	DWORD	flags;
-
-	result = GetVolumeInformation(
-		volname, NULL, MAX_PATH, NULL, NULL,
-		&flags, NULL, MAX_PATH);
-
-
-	if (!result) {
-		ib::error()
-			<< "os_is_sparse_file_supported: "
-			<< "Failed to get the volume info for: "
-			<< volname
-			<< "- OS error number " << GetLastError();
-
-		return(false);
-	}
-
-	return(flags & FILE_SUPPORTS_SPARSE_FILES) ? true : false;
-}
 
 /** Free storage space associated with a section of the file.
 @param[in]	fh		Open file handle
@@ -3850,7 +3821,7 @@ os_file_create_simple_func(
 		ib::info()
 			<< "Read only mode set. Unable to"
 			" open file '" << name << "' in RW mode, "
-			<< "trying RO mode", name;
+			<< "trying RO mode";
 
 		access = GENERIC_READ;
 
@@ -4278,11 +4249,17 @@ os_file_create_func(
 			*success = true;
 
 			if (srv_use_native_aio && ((attributes & FILE_FLAG_OVERLAPPED) != 0)) {
-				/* Bind the file handle to completion port */
-				ut_a(CreateIoCompletionPort(file, completion_port, 0, 0));
+				/* Bind the file handle to completion port. Completion port
+				might not be created yet, in some stages of backup, but
+				must always be there for the server.*/
+				HANDLE port =(type == OS_LOG_FILE)?
+					log_completion_port : data_completion_port;
+				ut_a(port || srv_operation != SRV_OPERATION_NORMAL);
+				if (port) {
+					ut_a(CreateIoCompletionPort(file, port, 0, 0));
+				}
 			}
 		}
-
 	} while (retry);
 
 	return(file);
@@ -4545,7 +4522,7 @@ bool
 os_file_close_func(
 	os_file_t	file)
 {
-	ut_a(file > 0);
+	ut_a(file);
 
 	if (CloseHandle(file)) {
 		return(true);
@@ -4866,7 +4843,7 @@ os_file_io(
 	os_offset_t	offset,
 	dberr_t*	err)
 {
-	ulint		original_n = n;
+	ssize_t		original_n = ssize_t(n);
 	IORequest	type = in_type;
 	ssize_t		bytes_returned = 0;
 
@@ -4881,7 +4858,7 @@ os_file_io(
 
 			break;
 
-		} else if ((ulint) n_bytes + bytes_returned == n) {
+		} else if (n_bytes + bytes_returned == ssize_t(n)) {
 
 			bytes_returned += n_bytes;
 
@@ -4900,9 +4877,9 @@ os_file_io(
 
 		/* Handle partial read/write. */
 
-		ut_ad((ulint) n_bytes + bytes_returned < n);
+		ut_ad(ulint(n_bytes + bytes_returned) < n);
 
-		bytes_returned += (ulint) n_bytes;
+		bytes_returned += n_bytes;
 
 		if (!type.is_partial_io_warning_disabled()) {
 
@@ -4994,7 +4971,7 @@ os_file_write_func(
 	if ((ulint) n_bytes != n && !os_has_said_disk_full) {
 
 		ib::error()
-			<< "Write to file " << name << "failed at offset "
+			<< "Write to file " << name << " failed at offset "
 			<< offset << ", " << n
 			<< " bytes should have been written,"
 			" only " << n_bytes << " were written."
@@ -5077,52 +5054,31 @@ os_file_read_page(
 	ut_ad(type.validate());
 	ut_ad(n > 0);
 
-	for (;;) {
-		ssize_t	n_bytes;
+	ssize_t	n_bytes = os_file_pread(type, file, buf, n, offset, &err);
 
-		n_bytes = os_file_pread(type, file, buf, n, offset, &err);
-
-		if (o != NULL) {
-			*o = n_bytes;
-		}
-
-		if (err != DB_SUCCESS && !exit_on_err) {
-
-			return(err);
-
-		} else if ((ulint) n_bytes == n) {
-			return(DB_SUCCESS);
-		}
-
-		ib::error() << "Tried to read " << n
-			<< " bytes at offset " << offset
-			<< ", but was only able to read " << n_bytes;
-
-		if (exit_on_err) {
-
-			if (!os_file_handle_error(NULL, "read")) {
-				/* Hard error */
-				break;
-			}
-
-		} else if (!os_file_handle_error_no_exit(NULL, "read", false)) {
-
-			/* Hard error */
-			break;
-		}
-
-		if (n_bytes > 0 && (ulint) n_bytes < n) {
-			n -= (ulint) n_bytes;
-			offset += (ulint) n_bytes;
-			buf = reinterpret_cast<uchar*>(buf) + (ulint) n_bytes;
-		}
+	if (o) {
+		*o = n_bytes;
 	}
 
-	ib::fatal()
-		<< "Cannot read from file. OS error number "
-		<< errno << ".";
+	if (ulint(n_bytes) == n || (err != DB_SUCCESS && !exit_on_err)) {
+		return err;
+	}
 
-	return(err);
+	ib::error() << "Tried to read " << n << " bytes at offset "
+		    << offset << ", but was only able to read " << n_bytes;
+
+	if (!os_file_handle_error_cond_exit(
+		    NULL, "read", exit_on_err, false)) {
+		ib::fatal()
+			<< "Cannot read from file. OS error number "
+			<< errno << ".";
+	}
+
+	if (err == DB_SUCCESS) {
+		err = DB_IO_ERROR;
+	}
+
+	return err;
 }
 
 /** Retrieves the last error number if an error occurs in a file io function.
@@ -5228,37 +5184,6 @@ os_file_handle_error_cond_exit(
 	return(false);
 }
 
-/** Does error handling when a file operation fails.
-@param[in]	name		name of a file or NULL
-@param[in]	operation	operation name that failed
-@return true if we should retry the operation */
-static
-bool
-os_file_handle_error(
-	const char*	name,
-	const char*	operation)
-{
-	/* Exit in case of unknown error */
-	return(os_file_handle_error_cond_exit(name, operation, true, false));
-}
-
-/** Does error handling when a file operation fails.
-@param[in]	name		name of a file or NULL
-@param[in]	operation	operation name that failed
-@param[in]	on_error_silent	if true then don't print any message to the log.
-@return true if we should retry the operation */
-static
-bool
-os_file_handle_error_no_exit(
-	const char*	name,
-	const char*	operation,
-	bool		on_error_silent)
-{
-	/* Don't exit in case of unknown error */
-	return(os_file_handle_error_cond_exit(
-			name, operation, false, on_error_silent));
-}
-
 #ifndef _WIN32
 /** Tries to disable OS caching on an opened file descriptor.
 @param[in]	fd		file descriptor to alter
@@ -5278,7 +5203,7 @@ os_file_set_nocache(
 
 		ib::error()
 			<< "Failed to set DIRECTIO_ON on file "
-			<< file_name << ": " << operation_name
+			<< file_name << "; " << operation_name << ": "
 			<< strerror(errno_save) << ","
 			" continuing anyway.";
 	}
@@ -5292,9 +5217,9 @@ os_file_set_nocache(
 # ifdef UNIV_LINUX
 				ib::warn()
 					<< "Failed to set O_DIRECT on file"
-					<< file_name << ";" << operation_name
+					<< file_name << "; " << operation_name
 					<< ": " << strerror(errno_save) << ", "
-					<< "ccontinuing anyway. O_DIRECT is "
+					"continuing anyway. O_DIRECT is "
 					"known to result in 'Invalid argument' "
 					"on Linux on tmpfs, "
 					"see MySQL Bug#26662.";
@@ -5310,7 +5235,7 @@ short_warning:
 				<< "Failed to set O_DIRECT on file "
 				<< file_name << "; " << operation_name
 				<< " : " << strerror(errno_save)
-				<< " continuing anyway.";
+				<< ", continuing anyway.";
 		}
 	}
 #endif /* defined(UNIV_SOLARIS) && defined(DIRECTIO_ON) */
@@ -5398,18 +5323,16 @@ fallback:
 #endif /* _WIN32*/
 
 	/* Write up to 1 megabyte at a time. */
-	ulint	buf_size = ut_min(
-		static_cast<ulint>(64),
-		static_cast<ulint>(size / UNIV_PAGE_SIZE));
-
-	buf_size *= UNIV_PAGE_SIZE;
+	ulint	buf_size = ut_min(ulint(64),
+				  ulint(size >> srv_page_size_shift))
+		<< srv_page_size_shift;
 
 	/* Align the buffer for possible raw i/o */
 	byte*	buf2;
 
-	buf2 = static_cast<byte*>(ut_malloc_nokey(buf_size + UNIV_PAGE_SIZE));
+	buf2 = static_cast<byte*>(ut_malloc_nokey(buf_size + srv_page_size));
 
-	byte*	buf = static_cast<byte*>(ut_align(buf2, UNIV_PAGE_SIZE));
+	byte*	buf = static_cast<byte*>(ut_align(buf2, srv_page_size));
 
 	/* Write buffer full of zeros */
 	memset(buf, 0, buf_size);
@@ -5632,7 +5555,7 @@ os_is_sparse_file_supported(os_file_t fh)
 
 	/* We don't know the FS block size, use the sector size. The FS
 	will do the magic. */
-	err = os_file_punch_hole_posix(fh, 0, UNIV_PAGE_SIZE);
+	err = os_file_punch_hole_posix(fh, 0, srv_page_size);
 
 	return(err == DB_SUCCESS);
 #endif /* _WIN32 */
@@ -5735,6 +5658,15 @@ os_aio_handler(
 	return(err);
 }
 
+#ifdef WIN_ASYNC_IO
+static HANDLE new_completion_port()
+{
+	HANDLE h = CreateIoCompletionPort(INVALID_HANDLE_VALUE, 0, 0, 0);
+	ut_a(h);
+	return h;
+}
+#endif
+
 /** Constructor
 @param[in]	id		The latch ID
 @param[in]	n		Number of AIO slots
@@ -5751,6 +5683,9 @@ AIO::AIO(
 	,m_aio_ctx(),
 	m_events(m_slots.size())
 # endif /* LINUX_NATIVE_AIO */
+#ifdef WIN_ASYNC_IO
+	,m_completion_port(new_completion_port())
+#endif
 {
 	ut_a(n > 0);
 	ut_a(m_n_segments > 0);
@@ -5917,6 +5852,9 @@ AIO::~AIO()
 		ut_free(m_aio_ctx);
 	}
 #endif /* LINUX_NATIVE_AIO */
+#if defined(WIN_ASYNC_IO)
+	CloseHandle(m_completion_port);
+#endif
 
 	m_slots.clear();
 }
@@ -6002,6 +5940,12 @@ AIO::start(
 	if (s_writes == NULL) {
 		return(false);
 	}
+
+#ifdef WIN_ASYNC_IO
+	data_completion_port = s_writes->m_completion_port;
+	log_completion_port =
+		s_log ? s_log->m_completion_port : data_completion_port;
+#endif
 
 	n_segments += n_writers;
 
@@ -6222,7 +6166,7 @@ AIO::reserve_slot(
 	doing simulated AIO */
 	ulint		local_seg;
 
-	local_seg = (offset >> (UNIV_PAGE_SIZE_SHIFT + 6)) % m_n_segments;
+	local_seg = (offset >> (srv_page_size_shift + 6)) % m_n_segments;
 
 	for (;;) {
 
@@ -6490,8 +6434,7 @@ therefore no other thread is allowed to do the freeing!
 @param[out]	type		OS_FILE_WRITE or ..._READ
 @return DB_SUCCESS or error code */
 
-#define READ_SEGMENT(s) (s < srv_n_read_io_threads)
-#define WRITE_SEGMENT(s) !READ_SEGMENT(s)
+
 
 static
 dberr_t
@@ -6514,8 +6457,11 @@ os_aio_windows_handler(
 	we do not have to acquire the protecting mutex yet */
 
 	ut_ad(os_aio_validate_skip());
+	AIO *my_array;
+	AIO::get_array_and_local_segment(&my_array, segment);
 
-	HANDLE port = READ_SEGMENT(segment) ? read_completion_port : completion_port;
+	HANDLE port = my_array->m_completion_port;
+	ut_ad(port);
 	for (;;) {
 		DWORD len;
 		ret = GetQueuedCompletionStatus(port, &len, &key,
@@ -6537,25 +6483,26 @@ os_aio_windows_handler(
 		}
 
 		slot->n_bytes= len;
+		ut_a(slot->array);
+		HANDLE slot_port = slot->array->m_completion_port;
+		if (slot_port != port) {
+			/* there are no redirections between data and log */
+			ut_ad(port == data_completion_port);
+			ut_ad(slot_port != log_completion_port);
 
-		if (WRITE_SEGMENT(segment) && slot->type.is_read()) {
 			/*
-			Redirect read completions  to the dedicated completion port
-			and thread. We need to split read and write threads. If we do not
-			do that, and just allow all io threads process all IO, it is possible
-			to get stuck in a deadlock in buffer pool code,
+			Redirect completions  to the dedicated completion port
+			and threads.
 
-			Currently, the problem is solved this way - "write io" threads
-			always get all completion notifications, from both async reads and
-			writes. Write completion is handled in the same thread that gets it.
-			Read completion is forwarded via PostQueueCompletionStatus())
-			to the second completion port dedicated solely to reads. One of the
-			"read io" threads waiting on this port will finally handle the IO.
+			"Write array" threads receive write,read and ibuf
+			notifications, read and ibuf completions are redirected.
 
-			Forwarding IO completion this way costs a context switch , and this
-			seems tolerable  since asynchronous reads are by far less frequent.
+			Forwarding IO completion this way costs a context switch,
+			and this seems tolerable  since asynchronous reads are by
+			far less frequent.
 			*/
-			ut_a(PostQueuedCompletionStatus(read_completion_port, len, key, &slot->control));
+			ut_a(PostQueuedCompletionStatus(slot_port,
+				len, key, &slot->control));
 		}
 		else {
 			break;
@@ -6616,7 +6563,6 @@ os_aio_windows_handler(
 		err = AIOHandler::post_io_processing(slot);
 	}
 
-	ut_a(slot->array);
 	slot->array->release_with_mutex(slot);
 
 	if (srv_shutdown_state == SRV_SHUTDOWN_EXIT_THREADS
@@ -6901,10 +6847,10 @@ public:
 			}
 
 			m_ptr = static_cast<byte*>(
-				ut_malloc_nokey(len + UNIV_PAGE_SIZE));
+				ut_malloc_nokey(len + srv_page_size));
 
 			m_buf = static_cast<byte*>(
-				ut_align(m_ptr, UNIV_PAGE_SIZE));
+				ut_align(m_ptr, srv_page_size));
 
 		} else {
 			len = first_slot()->len;

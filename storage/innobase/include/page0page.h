@@ -1,6 +1,6 @@
 /*****************************************************************************
 Copyright (c) 1994, 2016, Oracle and/or its affiliates. All Rights Reserved.
-Copyright (c) 2013, 2017, MariaDB Corporation.
+Copyright (c) 2013, 2018, MariaDB Corporation.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -158,9 +158,9 @@ Otherwise written as 0. @see PAGE_ROOT_AUTO_INC */
 /*-----------------------------*/
 
 /* Heap numbers */
-#define PAGE_HEAP_NO_INFIMUM	0	/* page infimum */
-#define PAGE_HEAP_NO_SUPREMUM	1	/* page supremum */
-#define PAGE_HEAP_NO_USER_LOW	2	/* first user record in
+#define PAGE_HEAP_NO_INFIMUM	0U	/* page infimum */
+#define PAGE_HEAP_NO_SUPREMUM	1U	/* page supremum */
+#define PAGE_HEAP_NO_USER_LOW	2U	/* first user record in
 					creation (insertion) order,
 					not necessarily collation order;
 					this record may have been deleted */
@@ -210,7 +210,7 @@ inline
 page_t*
 page_align(const void* ptr)
 {
-	return(static_cast<page_t*>(ut_align_down(ptr, UNIV_PAGE_SIZE)));
+	return(static_cast<page_t*>(ut_align_down(ptr, srv_page_size)));
 }
 
 /** Gets the byte offset within a page frame.
@@ -221,7 +221,7 @@ inline
 ulint
 page_offset(const void*	ptr)
 {
-	return(ut_align_offset(ptr, UNIV_PAGE_SIZE));
+	return(ut_align_offset(ptr, srv_page_size));
 }
 
 /** Determine whether an index page is not in ROW_FORMAT=REDUNDANT.
@@ -335,7 +335,7 @@ page_rec_is_user_rec_low(ulint offset)
 	compile_time_assert(PAGE_NEW_SUPREMUM < PAGE_OLD_SUPREMUM_END);
 	compile_time_assert(PAGE_OLD_SUPREMUM < PAGE_NEW_SUPREMUM_END);
 	ut_ad(offset >= PAGE_NEW_INFIMUM);
-	ut_ad(offset <= UNIV_PAGE_SIZE - PAGE_EMPTY_DIR_START);
+	ut_ad(offset <= srv_page_size - PAGE_EMPTY_DIR_START);
 
 	return(offset != PAGE_NEW_SUPREMUM
 	       && offset != PAGE_NEW_INFIMUM
@@ -351,7 +351,7 @@ bool
 page_rec_is_supremum_low(ulint offset)
 {
 	ut_ad(offset >= PAGE_NEW_INFIMUM);
-	ut_ad(offset <= UNIV_PAGE_SIZE - PAGE_EMPTY_DIR_START);
+	ut_ad(offset <= srv_page_size - PAGE_EMPTY_DIR_START);
 	return(offset == PAGE_NEW_SUPREMUM || offset == PAGE_OLD_SUPREMUM);
 }
 
@@ -363,7 +363,7 @@ bool
 page_rec_is_infimum_low(ulint offset)
 {
 	ut_ad(offset >= PAGE_NEW_INFIMUM);
-	ut_ad(offset <= UNIV_PAGE_SIZE - PAGE_EMPTY_DIR_START);
+	ut_ad(offset <= srv_page_size - PAGE_EMPTY_DIR_START);
 	return(offset == PAGE_NEW_INFIMUM || offset == PAGE_OLD_INFIMUM);
 }
 
@@ -663,7 +663,7 @@ page_dir_get_nth_slot(
 	ulint		n);	/*!< in: position */
 #else /* UNIV_DEBUG */
 # define page_dir_get_nth_slot(page, n)			\
-	((page) + (UNIV_PAGE_SIZE - PAGE_DIR		\
+	((page) + (srv_page_size - PAGE_DIR		\
 		   - (n + 1) * PAGE_DIR_SLOT_SIZE))
 #endif /* UNIV_DEBUG */
 /**************************************************************//**
@@ -733,14 +733,52 @@ ulint
 page_rec_get_heap_no(
 /*=================*/
 	const rec_t*	rec);	/*!< in: the physical record */
+/** Determine whether a page has any siblings.
+@param[in]	page	page frame
+@return true if the page has any siblings */
+inline
+bool
+page_has_siblings(const page_t* page)
+{
+	compile_time_assert(!(FIL_PAGE_PREV % 8));
+	compile_time_assert(FIL_PAGE_NEXT == FIL_PAGE_PREV + 4);
+	compile_time_assert(FIL_NULL == 0xffffffff);
+	return *reinterpret_cast<const uint64_t*>(page + FIL_PAGE_PREV)
+		!= ~uint64_t(0);
+}
+
 /** Determine whether a page is an index root page.
 @param[in]	page	page frame
 @return true if the page is a root page of an index */
-UNIV_INLINE
+inline
 bool
-page_is_root(
-	const page_t*	page)
-	MY_ATTRIBUTE((warn_unused_result));
+page_is_root(const page_t* page)
+{
+	return fil_page_index_page_check(page) && !page_has_siblings(page);
+}
+
+/** Determine whether a page has a predecessor.
+@param[in]	page	page frame
+@return true if the page has a predecessor */
+inline
+bool
+page_has_prev(const page_t* page)
+{
+	return *reinterpret_cast<const uint32_t*>(page + FIL_PAGE_PREV)
+		!= FIL_NULL;
+}
+
+/** Determine whether a page has a successor.
+@param[in]	page	page frame
+@return true if the page has a successor */
+inline
+bool
+page_has_next(const page_t* page)
+{
+	return *reinterpret_cast<const uint32_t*>(page + FIL_PAGE_NEXT)
+		!= FIL_NULL;
+}
+
 /************************************************************//**
 Gets the pointer to the next record on the page.
 @return pointer to next record */

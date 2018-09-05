@@ -178,7 +178,7 @@
 
 /*
   The macros below are borrowed from include/linux/compiler.h in the
-  Linux kernel. Use them to indicate the likelyhood of the truthfulness
+  Linux kernel. Use them to indicate the likelihood of the truthfulness
   of a condition. This serves two purposes - newer versions of gcc will be
   able to optimize for branch predication, which could yield siginficant
   performance gains in frequently executed sections of the code, and the
@@ -188,15 +188,6 @@
 #if !defined(__GNUC__) || (__GNUC__ == 2 && __GNUC_MINOR__ < 96)
 #define __builtin_expect(x, expected_value) (x)
 #endif
-
-/**
-  The semantics of builtin_expect() are that
-  1) its two arguments are long
-  2) it's likely that they are ==
-  Those of our likely(x) are that x can be bool/int/longlong/pointer.
-*/
-#define likely(x)	__builtin_expect(((x) != 0),1)
-#define unlikely(x)	__builtin_expect(((x) != 0),0)
 
 /* Fix problem with S_ISLNK() on Linux */
 #if defined(TARGET_OS_LINUX) || defined(__GLIBC__)
@@ -384,6 +375,36 @@ C_MODE_END
 #include <crypt.h>
 #endif
 
+/* Add checking if we are using likely/unlikely wrong */
+#ifdef CHECK_UNLIKELY
+C_MODE_START
+extern void init_my_likely(), end_my_likely(FILE *);
+extern int my_likely_ok(const char *file_name, uint line);
+extern int my_likely_fail(const char *file_name, uint line);
+C_MODE_END
+
+#define likely(A) ((A) ? (my_likely_ok(__FILE__, __LINE__),1) : (my_likely_fail(__FILE__, __LINE__), 0))
+#define unlikely(A) ((A) ? (my_likely_fail(__FILE__, __LINE__),1) : (my_likely_ok(__FILE__, __LINE__), 0))
+/*
+  These macros should be used when the check fails often when running benchmarks but
+  we know for sure that the check is correct in a production environment
+*/
+#define checked_likely(A) (A)
+#define checked_unlikely(A) (A)
+#else
+/**
+  The semantics of builtin_expect() are that
+  1) its two arguments are long
+  2) it's likely that they are ==
+  Those of our likely(x) are that x can be bool/int/longlong/pointer.
+*/
+
+#define likely(x)	__builtin_expect(((x) != 0),1)
+#define unlikely(x)	__builtin_expect(((x) != 0),0)
+#define checked_likely(x) likely(x)
+#define checked_unlikely(x) unlikely(x)
+#endif /* CHECK_UNLIKELY */
+
 /*
   A lot of our programs uses asserts, so better to always include it
   This also fixes a problem when people uses DBUG_ASSERT without including
@@ -460,7 +481,7 @@ extern "C" int madvise(void *addr, size_t len, int behav);
 #define UNINIT_VAR(x) x
 #endif
 
-/* This is only to be used when reseting variables in a class constructor */
+/* This is only to be used when resetting variables in a class constructor */
 #if defined(_lint) || defined(FORCE_INIT_OF_VARS)
 #define LINT_INIT(x) x= 0
 #else
@@ -527,7 +548,7 @@ typedef SOCKET my_socket;
 typedef int	my_socket;	/* File descriptor for sockets */
 #define INVALID_SOCKET -1
 #endif
-/* Type for fuctions that handles signals */
+/* Type for functions that handles signals */
 #define sig_handler RETSIGTYPE
 C_MODE_START
 #ifdef HAVE_SIGHANDLER_T
@@ -553,7 +574,7 @@ C_MODE_START
 typedef int	(*qsort_cmp)(const void *,const void *);
 typedef int	(*qsort_cmp2)(void*, const void *,const void *);
 C_MODE_END
-#define qsort_t RETQSORTTYPE	/* Broken GCC cant handle typedef !!!! */
+#define qsort_t RETQSORTTYPE	/* Broken GCC can't handle typedef !!!! */
 #ifdef HAVE_SYS_SOCKET_H
 #include <sys/socket.h>
 #endif
@@ -579,8 +600,8 @@ typedef SOCKET_SIZE_TYPE size_socket;
 #endif
 #endif /* O_SHARE */
 
-#ifndef O_TEMPORARY
-#define O_TEMPORARY	0
+#ifndef O_SEQUENTIAL
+#define O_SEQUENTIAL	0
 #endif
 #ifndef O_SHORT_LIVED
 #define O_SHORT_LIVED	0
@@ -590,6 +611,11 @@ typedef SOCKET_SIZE_TYPE size_socket;
 #endif
 #ifndef O_CLOEXEC
 #define O_CLOEXEC       0
+#endif
+#ifdef __GLIBC__
+#define STR_O_CLOEXEC "e"
+#else
+#define STR_O_CLOEXEC ""
 #endif
 #ifndef SOCK_CLOEXEC
 #define SOCK_CLOEXEC    0
@@ -705,7 +731,7 @@ typedef SOCKET_SIZE_TYPE size_socket;
 #define closesocket(A)	close(A)
 #endif
 
-#if (_MSC_VER)
+#if defined(_MSC_VER)
 #if !defined(_WIN64)
 inline double my_ulonglong2double(unsigned long long value)
 {
@@ -857,7 +883,7 @@ static inline double log2(double x)
 
 /*
   Max size that must be added to a so that we know Size to make
-  adressable obj.
+  addressable obj.
 */
 #if SIZEOF_CHARP == 4
 typedef long		my_ptrdiff_t;
@@ -869,7 +895,7 @@ typedef long long	my_ptrdiff_t;
 #define MY_ALIGN_DOWN(A,L) ((A) & ~((L) - 1))
 #define ALIGN_SIZE(A)	MY_ALIGN((A),sizeof(double))
 #define ALIGN_MAX_UNIT  (sizeof(double))
-/* Size to make adressable obj. */
+/* Size to make addressable obj. */
 #define ALIGN_PTR(A, t) ((t*) MY_ALIGN((A), sizeof(double)))
 #define ADD_TO_PTR(ptr,size,type) (type) ((uchar*) (ptr)+size)
 #define PTR_BYTE_DIFF(A,B) (my_ptrdiff_t) ((uchar*) (A) - (uchar*) (B))
@@ -1100,11 +1126,19 @@ static inline char *dlerror(void)
 #ifndef HAVE_DLERROR
 #define dlerror() ""
 #endif
+#ifndef HAVE_DLADDR
+#define dladdr(A, B) 0
+/* Dummy definition in case we're missing dladdr() */
+typedef struct { const char *dli_fname, dli_fbase; } Dl_info;
+#endif
 #else
 #define dlerror() "No support for dynamic loading (static build?)"
 #define dlopen(A,B) 0
 #define dlsym(A,B) 0
 #define dlclose(A) 0
+#define dladdr(A, B) 0
+/* Dummy definition in case we're missing dladdr() */
+typedef struct { const char *dli_fname, dli_fbase; } Dl_info;
 #endif
 
 /*
@@ -1153,7 +1187,7 @@ static inline char *dlerror(void)
 
 /* Provide __func__ macro definition for platforms that miss it. */
 #if !defined (__func__)
-#if __STDC_VERSION__ < 199901L
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ < 199901L
 #  if __GNUC__ >= 2
 #    define __func__ __FUNCTION__
 #  else
@@ -1245,7 +1279,7 @@ static inline double rint(double x)
   CMake using getconf
 */
 #if !defined(CPU_LEVEL1_DCACHE_LINESIZE) || CPU_LEVEL1_DCACHE_LINESIZE == 0
-  #if CPU_LEVEL1_DCACHE_LINESIZE == 0
+  #if defined(CPU_LEVEL1_DCACHE_LINESIZE) && CPU_LEVEL1_DCACHE_LINESIZE == 0
     #undef CPU_LEVEL1_DCACHE_LINESIZE
   #endif
 
@@ -1266,5 +1300,4 @@ static inline double rint(double x)
 #else
 #define NOT_FIXED_DEC           FLOATING_POINT_DECIMALS
 #endif
-
 #endif /* my_global_h */

@@ -460,6 +460,7 @@ static TABLE *tc_acquire_table(THD *thd, TDC_element *element)
 void tc_release_table(TABLE *table)
 {
   uint32 i= table->instance;
+  DBUG_ENTER("tc_release_table");
   DBUG_ASSERT(table->in_use);
   DBUG_ASSERT(table->file);
 
@@ -478,6 +479,7 @@ void tc_release_table(TABLE *table)
     tc[i].free_tables.push_back(table);
     mysql_mutex_unlock(&tc[i].LOCK_table_cache);
   }
+  DBUG_VOID_RETURN;
 }
 
 
@@ -587,17 +589,17 @@ static void lf_alloc_destructor(uchar *arg)
 }
 
 
-static void tdc_hash_initializer(LF_HASH *hash __attribute__((unused)),
+static void tdc_hash_initializer(LF_HASH *,
                                  TDC_element *element, LEX_STRING *key)
 {
   memcpy(element->m_key, key->str, key->length);
-  element->m_key_length= key->length;
+  element->m_key_length= (uint)key->length;
   tdc_assert_clean_share(element);
 }
 
 
 static uchar *tdc_hash_key(const TDC_element *element, size_t *length,
-                           my_bool not_used __attribute__((unused)))
+                           my_bool)
 {
   *length= element->m_key_length;
   return (uchar*) element->m_key;
@@ -745,7 +747,7 @@ TDC_element *tdc_lock_share(THD *thd, const char *db, const char *table_name)
   char key[MAX_DBKEY_LENGTH];
 
   DBUG_ENTER("tdc_lock_share");
-  if (fix_thd_pins(thd))
+  if (unlikely(fix_thd_pins(thd)))
     DBUG_RETURN((TDC_element*) MY_ERRPTR);
 
   element= (TDC_element *) lf_hash_search(&tdc_hash, thd->tdc_hash_pins,
@@ -754,7 +756,7 @@ TDC_element *tdc_lock_share(THD *thd, const char *db, const char *table_name)
   if (element)
   {
     mysql_mutex_lock(&element->LOCK_table_share);
-    if (!element->share || element->share->error)
+    if (unlikely(!element->share || element->share->error))
     {
       mysql_mutex_unlock(&element->LOCK_table_share);
       element= 0;
@@ -827,7 +829,7 @@ retry:
     lf_hash_search_unpin(thd->tdc_hash_pins);
     DBUG_ASSERT(element);
 
-    if (!(share= alloc_table_share(tl->db, tl->table_name, key, key_length)))
+    if (!(share= alloc_table_share(tl->db.str, tl->table_name.str, key, key_length)))
     {
       lf_hash_delete(&tdc_hash, thd->tdc_hash_pins, key, key_length);
       DBUG_RETURN(0);
@@ -836,7 +838,7 @@ retry:
     /* note that tdc_acquire_share() *always* uses discovery */
     open_table_def(thd, share, flags | GTS_USE_DISCOVERY);
 
-    if (share->error)
+    if (checked_unlikely(share->error))
     {
       free_table_share(share);
       lf_hash_delete(&tdc_hash, thd->tdc_hash_pins, key, key_length);
@@ -892,7 +894,7 @@ retry:
      We found an existing table definition. Return it if we didn't get
      an error when reading the table definition from file.
   */
-  if (share->error)
+  if (unlikely(share->error))
   {
     open_table_error(share, share->error, share->open_errno);
     goto err;
@@ -1301,7 +1303,8 @@ int tdc_iterate(THD *thd, my_hash_walk_action action, void *argument,
 
   if (no_dups)
   {
-    init_alloc_root(&no_dups_argument.root, 4096, 4096, MYF(alloc_flags));
+    init_alloc_root(&no_dups_argument.root, "no_dups", 4096, 4096,
+                    MYF(alloc_flags));
     my_hash_init(&no_dups_argument.hash, &my_charset_bin, tdc_records(), 0, 0,
                  eliminate_duplicates_get_key, 0, hash_flags);
     no_dups_argument.action= action;

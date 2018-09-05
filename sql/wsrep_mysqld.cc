@@ -142,7 +142,7 @@ ulong  wsrep_running_threads = 0; // # of currently running wsrep threads
 ulong  my_bind_addr;
 
 #ifdef HAVE_PSI_INTERFACE
-PSI_mutex_key key_LOCK_wsrep_rollback, key_LOCK_wsrep_thd,
+PSI_mutex_key key_LOCK_wsrep_rollback,
   key_LOCK_wsrep_replaying, key_LOCK_wsrep_ready, key_LOCK_wsrep_sst,
   key_LOCK_wsrep_sst_thread, key_LOCK_wsrep_sst_init,
   key_LOCK_wsrep_slave_threads, key_LOCK_wsrep_desync,
@@ -162,7 +162,6 @@ static PSI_mutex_info wsrep_mutexes[]=
   { &key_LOCK_wsrep_sst_init, "LOCK_wsrep_sst_init", PSI_FLAG_GLOBAL},
   { &key_LOCK_wsrep_sst, "LOCK_wsrep_sst", PSI_FLAG_GLOBAL},
   { &key_LOCK_wsrep_rollback, "LOCK_wsrep_rollback", PSI_FLAG_GLOBAL},
-  { &key_LOCK_wsrep_thd, "THD::LOCK_wsrep_thd", 0},
   { &key_LOCK_wsrep_replaying, "LOCK_wsrep_replaying", PSI_FLAG_GLOBAL},
   { &key_LOCK_wsrep_slave_threads, "LOCK_wsrep_slave_threads", PSI_FLAG_GLOBAL},
   { &key_LOCK_wsrep_desync, "LOCK_wsrep_desync", PSI_FLAG_GLOBAL},
@@ -394,7 +393,7 @@ wsrep_view_handler_cb (void*                    app_ctx,
     if (!wsrep_before_SE())
     {
         WSREP_DEBUG("[debug]: closing client connections for PRIM");
-        wsrep_close_client_connections(TRUE);
+        wsrep_close_client_connections(FALSE);
     }
 
     ssize_t const req_len= wsrep_sst_prepare (sst_req);
@@ -1176,7 +1175,7 @@ static bool wsrep_prepare_keys_for_isolation(THD*              thd,
     }
     ka->keys[ka->keys_len].key_parts_num= 2;
     ++ka->keys_len;
-    if (!wsrep_prepare_key_for_isolation(table->db, table->table_name,
+    if (!wsrep_prepare_key_for_isolation(table->db.str, table->table_name.str,
                                          (wsrep_buf_t*)ka->keys[ka->keys_len - 1].key_parts,
                                          &ka->keys[ka->keys_len - 1].key_parts_num))
     {
@@ -1318,7 +1317,7 @@ static int wsrep_alter_event_query(THD *thd, uchar** buf, size_t* buf_len)
   if (wsrep_alter_query_string(thd, &log_query))
   {
     WSREP_WARN("events alter string failed: schema: %s, query: %s",
-               (thd->db ? thd->db : "(null)"), thd->query());
+               thd->get_db(), thd->query());
     return 1;
   }
   return wsrep_to_buf_helper(thd, log_query.ptr(), log_query.length(), buf, buf_len);
@@ -1334,10 +1333,10 @@ create_view_query(THD *thd, uchar** buf, size_t* buf_len)
     TABLE_LIST *views = first_table;
     LEX_USER *definer;
     String buff;
-    const LEX_STRING command[3]=
-      {{ C_STRING_WITH_LEN("CREATE ") },
-       { C_STRING_WITH_LEN("ALTER ") },
-       { C_STRING_WITH_LEN("CREATE OR REPLACE ") }};
+    const LEX_CSTRING command[3]=
+      {{ STRING_WITH_LEN("CREATE ") },
+       { STRING_WITH_LEN("ALTER ") },
+       { STRING_WITH_LEN("CREATE OR REPLACE ") }};
 
     buff.append(&command[thd->lex->create_view->mode]);
 
@@ -1370,25 +1369,23 @@ create_view_query(THD *thd, uchar** buf, size_t* buf_len)
     view_store_options(thd, views, &buff);
     buff.append(STRING_WITH_LEN("VIEW "));
     /* Test if user supplied a db (ie: we did not use thd->db) */
-    if (views->db && views->db[0] &&
-        (thd->db == NULL || strcmp(views->db, thd->db)))
+    if (views->db.str && views->db.str[0] &&
+        (thd->db.str == NULL || cmp(&views->db, &thd->db)))
     {
-      append_identifier(thd, &buff, views->db,
-                        views->db_length);
+      append_identifier(thd, &buff, &views->db);
       buff.append('.');
     }
-    append_identifier(thd, &buff, views->table_name,
-                      views->table_name_length);
+    append_identifier(thd, &buff, &views->table_name);
     if (lex->view_list.elements)
     {
-      List_iterator_fast<LEX_STRING> names(lex->view_list);
-      LEX_STRING *name;
+      List_iterator_fast<LEX_CSTRING> names(lex->view_list);
+      LEX_CSTRING *name;
       int i;
 
       for (i= 0; (name= names++); i++)
       {
         buff.append(i ? ", " : "(");
-        append_identifier(thd, &buff, name->str, name->length);
+        append_identifier(thd, &buff, name);
       }
       buff.append(')');
     }
@@ -1474,7 +1471,7 @@ static bool wsrep_can_run_in_toi(THD *thd, const char *db, const char *table,
     {
       for (TABLE_LIST* table= first_table; table; table= table->next_global)
       {
-        if (!thd->find_temporary_table(table->db, table->table_name))
+        if (!thd->find_temporary_table(table->db.str, table->table_name.str))
         {
           return true;
         }
@@ -1558,7 +1555,7 @@ static int wsrep_TOI_begin(THD *thd, const char *db_, const char *table_,
     WSREP_WARN("TO isolation failed for: %d, schema: %s, sql: %s. Check wsrep "
                "connection state and retry the query.",
                ret,
-               (thd->db ? thd->db : "(null)"),
+               thd->get_db(),
                (thd->query()) ? thd->query() : "void");
     my_message(ER_LOCK_DEADLOCK, "WSREP replication failed. Check "
                "your wsrep connection state and retry the query.", MYF(0));
@@ -1594,7 +1591,7 @@ static void wsrep_TOI_end(THD *thd) {
   else {
     WSREP_WARN("TO isolation end failed for: %d, schema: %s, sql: %s",
                ret,
-               (thd->db ? thd->db : "(null)"),
+               thd->get_db(),
                (thd->query()) ? thd->query() : "void");
   }
 }
@@ -1609,7 +1606,7 @@ static int wsrep_RSU_begin(THD *thd, const char *db_, const char *table_)
   if (ret != WSREP_OK)
   {
     WSREP_WARN("RSU desync failed %d for schema: %s, query: %s",
-               ret, (thd->db ? thd->db : "(null)"), thd->query());
+               ret, thd->get_db(), thd->query());
     my_error(ER_LOCK_DEADLOCK, MYF(0));
     return(ret);
   }
@@ -1622,8 +1619,7 @@ static int wsrep_RSU_begin(THD *thd, const char *db_, const char *table_)
   {
     /* no can do, bail out from DDL */
     WSREP_WARN("RSU failed due to pending transactions, schema: %s, query %s",
-               (thd->db ? thd->db : "(null)"),
-               thd->query());
+               thd->get_db(), thd->query());
     mysql_mutex_lock(&LOCK_wsrep_replaying);
     wsrep_replaying--;
     mysql_mutex_unlock(&LOCK_wsrep_replaying);
@@ -1632,7 +1628,7 @@ static int wsrep_RSU_begin(THD *thd, const char *db_, const char *table_)
     if (ret != WSREP_OK)
     {
       WSREP_WARN("resync failed %d for schema: %s, query: %s",
-                 ret, (thd->db ? thd->db : "(null)"), thd->query());
+                 ret, thd->get_db(), thd->query());
     }
 
     my_error(ER_LOCK_DEADLOCK, MYF(0));
@@ -1643,8 +1639,7 @@ static int wsrep_RSU_begin(THD *thd, const char *db_, const char *table_)
   if (seqno == WSREP_SEQNO_UNDEFINED)
   {
     WSREP_WARN("pause failed %lld for schema: %s, query: %s", (long long)seqno,
-               (thd->db ? thd->db : "(null)"),
-               thd->query());
+               thd->get_db(), thd->query());
     return(1);
   }
   WSREP_DEBUG("paused at %lld", (long long)seqno);
@@ -1667,15 +1662,14 @@ static void wsrep_RSU_end(THD *thd)
   if (ret != WSREP_OK)
   {
     WSREP_WARN("resume failed %d for schema: %s, query: %s", ret,
-               (thd->db ? thd->db : "(null)"),
-               thd->query());
+               thd->get_db(), thd->query());
   }
 
   ret = wsrep->resync(wsrep);
   if (ret != WSREP_OK)
   {
     WSREP_WARN("resync failed %d for schema: %s, query: %s", ret,
-               (thd->db ? thd->db : "(null)"), thd->query());
+               thd->get_db(), thd->query());
     return;
   }
 
@@ -1693,18 +1687,16 @@ int wsrep_to_isolation_begin(THD *thd, const char *db_, const char *table_,
   if (thd->wsrep_exec_mode == REPL_RECV)
     return 0;
 
-  mysql_mutex_lock(&thd->LOCK_wsrep_thd);
+  mysql_mutex_lock(&thd->LOCK_thd_data);
 
   if (thd->wsrep_conflict_state == MUST_ABORT)
   {
     WSREP_INFO("thread: %lld  schema: %s  query: %s has been aborted due to multi-master conflict",
-               (longlong) thd->thread_id,
-               (thd->db ? thd->db : "(null)"),
-               thd->query());
-    mysql_mutex_unlock(&thd->LOCK_wsrep_thd);
+               (longlong) thd->thread_id, thd->get_db(), thd->query());
+    mysql_mutex_unlock(&thd->LOCK_thd_data);
     return WSREP_TRX_FAIL;
   }
-  mysql_mutex_unlock(&thd->LOCK_wsrep_thd);
+  mysql_mutex_unlock(&thd->LOCK_thd_data);
 
   DBUG_ASSERT(thd->wsrep_exec_mode == LOCAL_STATE);
   DBUG_ASSERT(thd->wsrep_trx_meta.gtid.seqno == WSREP_SEQNO_UNDEFINED);
@@ -1819,7 +1811,7 @@ bool wsrep_grant_mdl_exception(MDL_context *requestor_ctx,
   const char* schema= key->db_name();
   int schema_len= key->db_name_length();
 
-  mysql_mutex_lock(&request_thd->LOCK_wsrep_thd);
+  mysql_mutex_lock(&request_thd->LOCK_thd_data);
 
   /*
     We consider granting MDL exceptions only for appliers (BF THD) and ones
@@ -1843,19 +1835,19 @@ bool wsrep_grant_mdl_exception(MDL_context *requestor_ctx,
   if (request_thd->wsrep_exec_mode == TOTAL_ORDER ||
       request_thd->wsrep_exec_mode == REPL_RECV)
   {
-    mysql_mutex_unlock(&request_thd->LOCK_wsrep_thd);
+    mysql_mutex_unlock(&request_thd->LOCK_thd_data);
     WSREP_MDL_LOG(DEBUG, "MDL conflict ", schema, schema_len,
                   request_thd, granted_thd);
     ticket->wsrep_report(wsrep_debug);
 
-    mysql_mutex_lock(&granted_thd->LOCK_wsrep_thd);
+    mysql_mutex_lock(&granted_thd->LOCK_thd_data);
     if (granted_thd->wsrep_exec_mode == TOTAL_ORDER ||
         granted_thd->wsrep_exec_mode == REPL_RECV)
     {
       WSREP_MDL_LOG(INFO, "MDL BF-BF conflict", schema, schema_len,
                     request_thd, granted_thd);
       ticket->wsrep_report(true);
-      mysql_mutex_unlock(&granted_thd->LOCK_wsrep_thd);
+      mysql_mutex_unlock(&granted_thd->LOCK_thd_data);
       ret= true;
     }
     else if (granted_thd->lex->sql_command == SQLCOM_FLUSH ||
@@ -1863,7 +1855,7 @@ bool wsrep_grant_mdl_exception(MDL_context *requestor_ctx,
     {
       WSREP_DEBUG("BF thread waiting for FLUSH");
       ticket->wsrep_report(wsrep_debug);
-      mysql_mutex_unlock(&granted_thd->LOCK_wsrep_thd);
+      mysql_mutex_unlock(&granted_thd->LOCK_thd_data);
       ret= false;
     }
     else
@@ -1888,14 +1880,14 @@ bool wsrep_grant_mdl_exception(MDL_context *requestor_ctx,
         ticket->wsrep_report(true);
       }
 
-      mysql_mutex_unlock(&granted_thd->LOCK_wsrep_thd);
+      mysql_mutex_unlock(&granted_thd->LOCK_thd_data);
       wsrep_abort_thd((void *) request_thd, (void *) granted_thd, 1);
       ret= false;
     }
   }
   else
   {
-    mysql_mutex_unlock(&request_thd->LOCK_wsrep_thd);
+    mysql_mutex_unlock(&request_thd->LOCK_thd_data);
   }
 
   return ret;
@@ -2052,9 +2044,9 @@ static inline bool is_replaying_connection(THD *thd)
 {
   bool ret;
 
-  mysql_mutex_lock(&thd->LOCK_wsrep_thd);
+  mysql_mutex_lock(&thd->LOCK_thd_data);
   ret=  (thd->wsrep_conflict_state == REPLAYING) ? true : false;
-  mysql_mutex_unlock(&thd->LOCK_wsrep_thd);
+  mysql_mutex_unlock(&thd->LOCK_thd_data);
 
   return ret;
 }
@@ -2064,9 +2056,9 @@ static inline bool is_committing_connection(THD *thd)
 {
   bool ret;
 
-  mysql_mutex_lock(&thd->LOCK_wsrep_thd);
+  mysql_mutex_lock(&thd->LOCK_thd_data);
   ret=  (thd->wsrep_query_state == QUERY_COMMITTING) ? true : false;
-  mysql_mutex_unlock(&thd->LOCK_wsrep_thd);
+  mysql_mutex_unlock(&thd->LOCK_thd_data);
 
   return ret;
 }
@@ -2339,7 +2331,7 @@ static int wsrep_create_sp(THD *thd, uchar** buf, size_t* buf_len)
                      saved_mode))
   {
     WSREP_WARN("SP create string failed: schema: %s, query: %s",
-               (thd->db ? thd->db : "(null)"), thd->query());
+               thd->get_db(), thd->query());
     return 1;
   }
 
@@ -2380,7 +2372,7 @@ extern "C" void wsrep_thd_set_query_state(
 
 void wsrep_thd_set_conflict_state(THD *thd, enum wsrep_conflict_state state)
 {
-  thd->wsrep_conflict_state= state;
+  if (WSREP(thd)) thd->wsrep_conflict_state= state;
 }
 
 
@@ -2447,13 +2439,13 @@ wsrep_ws_handle_t* wsrep_thd_ws_handle(THD *thd)
 
 void wsrep_thd_LOCK(THD *thd)
 {
-  mysql_mutex_lock(&thd->LOCK_wsrep_thd);
+  mysql_mutex_lock(&thd->LOCK_thd_data);
 }
 
 
 void wsrep_thd_UNLOCK(THD *thd)
 {
-  mysql_mutex_unlock(&thd->LOCK_wsrep_thd);
+  mysql_mutex_unlock(&thd->LOCK_thd_data);
 }
 
 
@@ -2585,8 +2577,8 @@ bool wsrep_create_like_table(THD* thd, TABLE_LIST* table,
   }
   else if (!(thd->find_temporary_table(src_table)))
   {
-    /* this is straight CREATE TABLE LIKE... eith no tmp tables */
-    WSREP_TO_ISOLATION_BEGIN(table->db, table->table_name, NULL);
+    /* this is straight CREATE TABLE LIKE... with no tmp tables */
+    WSREP_TO_ISOLATION_BEGIN(table->db.str, table->table_name.str, NULL);
   }
   else
   {
@@ -2609,7 +2601,7 @@ bool wsrep_create_like_table(THD* thd, TABLE_LIST* table,
     thd->wsrep_TOI_pre_query=     query.ptr();
     thd->wsrep_TOI_pre_query_len= query.length();
 
-    WSREP_TO_ISOLATION_BEGIN(table->db, table->table_name, NULL);
+    WSREP_TO_ISOLATION_BEGIN(table->db.str, table->table_name.str, NULL);
 
     thd->wsrep_TOI_pre_query=      NULL;
     thd->wsrep_TOI_pre_query_len= 0;
@@ -2667,11 +2659,10 @@ static int wsrep_create_trigger_query(THD *thd, uchar** buf, size_t* buf_len)
   append_definer(thd, &stmt_query, &definer_user, &definer_host);
 
   LEX_CSTRING stmt_definition;
-  uint not_used;
   stmt_definition.str= (char*) thd->lex->stmt_definition_begin;
   stmt_definition.length= thd->lex->stmt_definition_end
     - thd->lex->stmt_definition_begin;
-  trim_whitespace(thd->charset(), &stmt_definition, &not_used);
+  trim_whitespace(thd->charset(), &stmt_definition);
 
   stmt_query.append(stmt_definition.str, stmt_definition.length);
 

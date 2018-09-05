@@ -938,7 +938,7 @@ void ha_myisam::setup_vcols_for_repair(HA_CHECK *param)
     {
       uint vf_end= (*vf)->offset(table->record[0]) + (*vf)->pack_length_in_rec();
       set_if_bigger(new_vreclength, vf_end);
-      indexed_vcols|= (*vf)->flags & PART_KEY_FLAG;
+      indexed_vcols|= ((*vf)->flags & PART_KEY_FLAG) != 0;
     }
     if (!indexed_vcols)
       return;
@@ -2118,7 +2118,7 @@ void ha_myisam::update_create_info(HA_CREATE_INFO *create_info)
 }
 
 
-int ha_myisam::create(const char *name, register TABLE *table_arg,
+int ha_myisam::create(const char *name, TABLE *table_arg,
 		      HA_CREATE_INFO *ha_create_info)
 {
   int error;
@@ -2308,19 +2308,19 @@ ha_myisam::check_if_supported_inplace_alter(TABLE *new_table,
 {
   DBUG_ENTER("ha_myisam::check_if_supported_inplace_alter");
 
-  const Alter_inplace_info::HA_ALTER_FLAGS readd_index=
-                          Alter_inplace_info::ADD_INDEX |
-                          Alter_inplace_info::DROP_INDEX;
-  const Alter_inplace_info::HA_ALTER_FLAGS readd_unique=
-                          Alter_inplace_info::ADD_UNIQUE_INDEX |
-                          Alter_inplace_info::DROP_UNIQUE_INDEX;
-  const Alter_inplace_info::HA_ALTER_FLAGS readd_pk=
-                          Alter_inplace_info::ADD_PK_INDEX |
-                          Alter_inplace_info::DROP_PK_INDEX;
+  const alter_table_operations readd_index=
+                          ALTER_ADD_NON_UNIQUE_NON_PRIM_INDEX |
+                          ALTER_DROP_NON_UNIQUE_NON_PRIM_INDEX;
+  const alter_table_operations readd_unique=
+                          ALTER_ADD_UNIQUE_INDEX |
+                          ALTER_DROP_UNIQUE_INDEX;
+  const alter_table_operations readd_pk=
+                          ALTER_ADD_PK_INDEX |
+                          ALTER_DROP_PK_INDEX;
 
-  const  Alter_inplace_info::HA_ALTER_FLAGS op= alter_info->handler_flags;
+  const  alter_table_operations op= alter_info->handler_flags;
 
-  if (op & Alter_inplace_info::ALTER_COLUMN_VCOL)
+  if (op & ALTER_COLUMN_VCOL)
     DBUG_RETURN(HA_ALTER_INPLACE_NOT_SUPPORTED);
 
   /*

@@ -1,7 +1,7 @@
 /*****************************************************************************
 
 Copyright (c) 2013, 2016, Oracle and/or its affiliates. All Rights Reserved.
-Copyright (c) 2017, MariaDB Corporation.
+Copyright (c) 2017, 2018, MariaDB Corporation.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -50,7 +50,7 @@ public:
 			m_mutex(),
 			m_filename(),
 			m_line(),
-			m_thread_id(os_thread_id_t(ULINT_UNDEFINED))
+			m_thread_id(ULINT_UNDEFINED)
 		{
 			/* No op */
 		}
@@ -76,7 +76,8 @@ public:
 		{
 			m_mutex = mutex;
 
-			my_atomic_storelint(&m_thread_id, os_thread_get_curr_id());
+			my_atomic_storelint(&m_thread_id,
+					    ulint(os_thread_get_curr_id()));
 
 			m_filename = filename;
 
@@ -105,7 +106,7 @@ public:
 
 			msg << m_mutex->policy().to_string();
 
-			if (os_thread_pf(m_thread_id) != ULINT_UNDEFINED) {
+			if (m_thread_id != ULINT_UNDEFINED) {
 
 				msg << " addr: " << m_mutex
 				    << " acquired: " << locked_from().c_str();
@@ -167,8 +168,7 @@ public:
 	/** Called when the mutex is "created". Note: Not from the constructor
 	but when the mutex is initialised.
 	@param[in]	id              Mutex ID */
-	void init(latch_id_t id)
-		UNIV_NOTHROW;
+	void init(latch_id_t id) UNIV_NOTHROW;
 
 	/** Called when an attempt is made to lock the mutex
 	@param[in]	mutex		Mutex instance to be locked
@@ -241,7 +241,7 @@ struct NoPolicy {
 	void init(const Mutex&, latch_id_t, const char*, uint32_t)
 		UNIV_NOTHROW { }
 	void destroy() UNIV_NOTHROW { }
-	void enter(const Mutex&, const char*, unsigned line) UNIV_NOTHROW { }
+	void enter(const Mutex&, const char*, unsigned) UNIV_NOTHROW { }
 	void add(uint32_t, uint32_t) UNIV_NOTHROW { }
 	void locked(const Mutex&, const char*, ulint) UNIV_NOTHROW { }
 	void release(const Mutex&) UNIV_NOTHROW { }
@@ -275,12 +275,11 @@ public:
 
 	/** Called when the mutex is "created". Note: Not from the constructor
 	but when the mutex is initialised.
-	@param[in]	mutex		Mutex instance to track
 	@param[in]	id              Mutex ID
 	@param[in]	filename	File where mutex was created
 	@param[in]	line		Line in filename */
 	void init(
-		const MutexType&	mutex,
+		const Mutex&,
 		latch_id_t		id,
 		const char*		filename,
 		uint32_t		line)
@@ -423,15 +422,8 @@ public:
 
 	/** Called when the mutex is "created". Note: Not from the constructor
 	but when the mutex is initialised.
-	@param[in]	mutex		Mutex instance to track
-	@param[in]	id              Mutex ID
-	@param[in]	filename	File where mutex was created
-	@param[in]	line		Line in filename */
-	void init(
-		const MutexType&	mutex,
-		latch_id_t		id,
-		const char*		filename,
-		uint32_t		line)
+	@param[in]	id              Mutex ID */
+	void init(const Mutex&, latch_id_t id, const char*, uint32)
 		UNIV_NOTHROW
 	{
 		/* It can be LATCH_ID_BUF_BLOCK_MUTEX or
@@ -454,14 +446,7 @@ public:
 	void destroy()
 		UNIV_NOTHROW
 	{
-		latch_meta_t&	meta = sync_latch_get_meta(m_id);
-
-		ut_ad(meta.get_id() == m_id);
-
-		meta.get_counter()->sum_deregister(m_count);
-
 		m_count = NULL;
-
 		ut_d(MutexDebug<MutexType>::destroy());
 	}
 

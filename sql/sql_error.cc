@@ -337,7 +337,7 @@ Diagnostics_area::set_ok_status(ulonglong affected_rows,
     In production, refuse to overwrite an error or a custom response
     with an OK packet.
   */
-  if (is_error() || is_disabled())
+  if (unlikely(is_error() || is_disabled()))
     return;
   /*
     When running a bulk operation, m_status will be DA_OK for the first
@@ -377,7 +377,7 @@ Diagnostics_area::set_eof_status(THD *thd)
     In production, refuse to overwrite an error or a custom response
     with an EOF packet.
   */
-  if (is_error() || is_disabled())
+  if (unlikely(is_error() || is_disabled()))
     return;
 
   /*
@@ -506,7 +506,7 @@ void Warning_info::init()
 {
   /* Initialize sub structures */
   DBUG_ASSERT(initialized == 0);
-  init_sql_alloc(&m_warn_root, WARN_ALLOC_BLOCK_SIZE,
+  init_sql_alloc(&m_warn_root, "Warning_info", WARN_ALLOC_BLOCK_SIZE,
                  WARN_ALLOC_PREALLOC_SIZE, MYF(MY_THREAD_SPECIFIC));
   initialized= 1;
 }
@@ -523,8 +523,7 @@ Warning_info::~Warning_info()
 }
 
 
-bool Warning_info::has_sql_condition(const char *message_str,
-                                     ulong message_length) const
+bool Warning_info::has_sql_condition(const char *message_str, size_t message_length) const
 {
   Diagnostics_area::Sql_condition_iterator it(m_warn_list);
   const Sql_condition *err;
@@ -769,12 +768,12 @@ void push_warning_printf(THD *thd, Sql_condition::enum_warning_level level,
     TRUE  Error sending data to client
 */
 
-const LEX_STRING warning_level_names[]=
+const LEX_CSTRING warning_level_names[]=
 {
-  { C_STRING_WITH_LEN("Note") },
-  { C_STRING_WITH_LEN("Warning") },
-  { C_STRING_WITH_LEN("Error") },
-  { C_STRING_WITH_LEN("?") }
+  { STRING_WITH_LEN("Note") },
+  { STRING_WITH_LEN("Warning") },
+  { STRING_WITH_LEN("Error") },
+  { STRING_WITH_LEN("?") }
 };
 
 bool mysqld_show_warnings(THD *thd, ulong levels_to_show)
@@ -918,11 +917,11 @@ char *err_conv(char *buff, uint to_length, const char *from,
    length of converted string
 */
 
-uint32 convert_error_message(char *to, uint32 to_length, CHARSET_INFO *to_cs,
-                             const char *from, uint32 from_length,
+size_t convert_error_message(char *to, size_t to_length, CHARSET_INFO *to_cs,
+                             const char *from, size_t from_length,
                              CHARSET_INFO *from_cs, uint *errors)
 {
-  int         cnvres;
+  int  cnvres;
   my_wc_t     wc;
   const uchar *from_end= (const uchar*) from+from_length;
   char *to_start= to;
@@ -930,7 +929,7 @@ uint32 convert_error_message(char *to, uint32 to_length, CHARSET_INFO *to_cs,
   my_charset_conv_mb_wc mb_wc= from_cs->cset->mb_wc;
   my_charset_conv_wc_mb wc_mb;
   uint error_count= 0;
-  uint length;
+  size_t length;
 
   DBUG_ASSERT(to_length > 0);
   /* Make room for the null terminator. */
@@ -969,7 +968,7 @@ uint32 convert_error_message(char *to, uint32 to_length, CHARSET_INFO *to_cs,
       length= (wc <= 0xFFFF) ? 6/* '\1234' format*/ : 9 /* '\+123456' format*/;
       if ((uchar*)(to + length) >= to_end)
         break;
-      cnvres= my_snprintf(to, 9,
+      cnvres= (int)my_snprintf(to, 9,
                           (wc <= 0xFFFF) ? "\\%04X" : "\\+%06X", (uint) wc);
       to+= cnvres;
     }
@@ -979,7 +978,7 @@ uint32 convert_error_message(char *to, uint32 to_length, CHARSET_INFO *to_cs,
 
   *to= 0;
   *errors= error_count;
-  return (uint32) (to - to_start);
+  return (size_t) (to - to_start);
 }
 
 

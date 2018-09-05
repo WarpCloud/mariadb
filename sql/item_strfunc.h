@@ -35,7 +35,7 @@ protected:
      character set. No memory is allocated.
      @retval A pointer to the str_value member.
    */
-  String *make_empty_result()
+  virtual String *make_empty_result()
   {
     /*
       Reset string length to an empty string. We don't use str_value.set() as
@@ -62,6 +62,8 @@ public:
   longlong val_int();
   double val_real();
   my_decimal *val_decimal(my_decimal *);
+  bool get_date(MYSQL_TIME *ltime, ulonglong fuzzydate)
+  { return get_date_from_string(ltime, fuzzydate); }
   const Type_handler *type_handler() const { return string_type_handler(); }
   void left_right_max_length();
   bool fix_fields(THD *thd, Item **ref);
@@ -213,6 +215,7 @@ class Item_aes_crypt :public Item_str_binary_checksum_func
 
 protected:
   int what;
+  String tmp_value;
 public:
   Item_aes_crypt(THD *thd, Item *a, Item *b)
    :Item_str_binary_checksum_func(thd, a, b) {}
@@ -222,8 +225,8 @@ public:
 class Item_func_aes_encrypt :public Item_aes_crypt
 {
 public:
-  Item_func_aes_encrypt(THD *thd, Item *a, Item *b):
-    Item_aes_crypt(thd, a, b) {}
+  Item_func_aes_encrypt(THD *thd, Item *a, Item *b)
+   :Item_aes_crypt(thd, a, b) {}
   void fix_length_and_dec();
   const char *func_name() const { return "aes_encrypt"; }
   Item *get_copy(THD *thd)
@@ -247,37 +250,14 @@ class Item_func_concat :public Item_str_func
 protected:
   String tmp_value;
   /*
-     Get the i-th argument val_str() and its const_item()
-     @param i[IN]            - The argument number
-     @param str[IN]          - The buffer for val_str()
-     @param is_const[IN/OUT] - If args[i]->val_str() returned a non-null value,
-                               then args[i]->const_item() is returned here.
-                               Otherwise, the value of is_const is not touched.
-     @retval                 - the result of val_str().
-  */
-  String *arg_val_str(uint i, String *str, bool *is_const)
-  {
-    String *res= args[i]->val_str(str);
-    if (res)
-      *is_const= args[i]->const_item();
-    return res;
-  }
-  /*
     Append a non-NULL value to the result.
     @param [IN]     thd          - The current thread.
     @param [IN/OUT] res          - The current val_str() return value.
-    @param [IN]     res_is_const - If "false", then OK to append to "res"
-    @param [IN/OUT] str          - The val_str() argument.
-    @param [IN]     res2         - The value to be appended.
-    @param [IN/OUT] use_as_buff  - Which buffer to use for the next argument:
-                                     args[next_arg]->val_str(use_as_buff)
+    @param [IN]     app          - The value to be appended.
+    @retval                      - false on success, true on error
   */
-  String *append_value(THD *thd,
-                       String *res,
-                       bool res_is_const,
-                       String *str,
-                       String **use_as_buff,
-                       const String *res2);
+  bool append_value(THD *thd, String *res, const String *app);
+  bool realloc_result(String *str, uint length) const;
 public:
   Item_func_concat(THD *thd, List<Item> &list): Item_str_func(thd, list) {}
   Item_func_concat(THD *thd, Item *a, Item *b): Item_str_func(thd, a, b) {}
@@ -524,11 +504,18 @@ class Item_func_substr_oracle :public Item_func_substr
 protected:
   longlong get_position()
   { longlong pos= args[1]->val_int(); return pos == 0 ? 1 : pos; }
+  String *make_empty_result()
+  { null_value= 1; return NULL; }
 public:
   Item_func_substr_oracle(THD *thd, Item *a, Item *b):
     Item_func_substr(thd, a, b) {}
   Item_func_substr_oracle(THD *thd, Item *a, Item *b, Item *c):
     Item_func_substr(thd, a, b, c) {}
+  void fix_length_and_dec()
+  {
+    Item_func_substr::fix_length_and_dec();
+    maybe_null= true;
+  }
   const char *func_name() const { return "substr_oracle"; }
   Item *get_copy(THD *thd)
   { return get_item_copy<Item_func_substr_oracle>(thd, this); }
@@ -556,6 +543,9 @@ protected:
   String remove;
   String *trimmed_value(String *res, uint32 offset, uint32 length)
   {
+    if (length == 0)
+      return make_empty_result();
+
     tmp_value.set(*res, offset, length);
     /*
       Make sure to return correct charset and collation:
@@ -569,6 +559,7 @@ protected:
   {
     return trimmed_value(res, 0, res->length());
   }
+  virtual const char *func_name_ext() const { return ""; }
 public:
   Item_func_trim(THD *thd, Item *a, Item *b): Item_str_func(thd, a, b) {}
   Item_func_trim(THD *thd, Item *a): Item_str_func(thd, a) {}
@@ -579,6 +570,27 @@ public:
   virtual const char *mode_name() const { return "both"; }
   Item *get_copy(THD *thd)
   { return get_item_copy<Item_func_trim>(thd, this); }
+};
+
+
+class Item_func_trim_oracle :public Item_func_trim
+{
+protected:
+  String *make_empty_result()
+  { null_value= 1; return NULL; }
+  const char *func_name_ext() const { return "_oracle"; }
+public:
+  Item_func_trim_oracle(THD *thd, Item *a, Item *b):
+    Item_func_trim(thd, a, b) {}
+  Item_func_trim_oracle(THD *thd, Item *a): Item_func_trim(thd, a) {}
+  const char *func_name() const { return "trim_oracle"; }
+  void fix_length_and_dec()
+  {
+    Item_func_trim::fix_length_and_dec();
+    maybe_null= true;
+  }
+  Item *get_copy(THD *thd)
+  { return get_item_copy<Item_func_trim_oracle>(thd, this); }
 };
 
 
@@ -595,6 +607,27 @@ public:
 };
 
 
+class Item_func_ltrim_oracle :public Item_func_ltrim
+{
+protected:
+  String *make_empty_result()
+  { null_value= 1; return NULL; }
+  const char *func_name_ext() const { return "_oracle"; }
+public:
+  Item_func_ltrim_oracle(THD *thd, Item *a, Item *b):
+    Item_func_ltrim(thd, a, b) {}
+  Item_func_ltrim_oracle(THD *thd, Item *a): Item_func_ltrim(thd, a) {}
+  const char *func_name() const { return "ltrim_oracle"; }
+  void fix_length_and_dec()
+  {
+    Item_func_ltrim::fix_length_and_dec();
+    maybe_null= true;
+  }
+  Item *get_copy(THD *thd)
+  { return get_item_copy<Item_func_ltrim_oracle>(thd, this); }
+};
+
+
 class Item_func_rtrim :public Item_func_trim
 {
 public:
@@ -607,6 +640,26 @@ public:
   { return get_item_copy<Item_func_rtrim>(thd, this); }
 };
 
+
+class Item_func_rtrim_oracle :public Item_func_rtrim
+{
+protected:
+  String *make_empty_result()
+  { null_value= 1; return NULL; }
+  const char *func_name_ext() const { return "_oracle"; }
+public:
+  Item_func_rtrim_oracle(THD *thd, Item *a, Item *b):
+    Item_func_rtrim(thd, a, b) {}
+  Item_func_rtrim_oracle(THD *thd, Item *a): Item_func_rtrim(thd, a) {}
+  const char *func_name() const { return "rtrim_oracle"; }
+  void fix_length_and_dec()
+  {
+    Item_func_rtrim::fix_length_and_dec();
+    maybe_null= true;
+  }
+  Item *get_copy(THD *thd)
+  { return get_item_copy<Item_func_rtrim_oracle>(thd, this); }
+};
 
 /*
   Item_func_password -- new (4.1.1) PASSWORD() function implementation.
@@ -1071,6 +1124,26 @@ public:
 };
 
 
+class Item_func_rpad_oracle :public Item_func_rpad
+{
+  String *make_empty_result()
+  { null_value= 1; return NULL; }
+public:
+  Item_func_rpad_oracle(THD *thd, Item *arg1, Item *arg2, Item *arg3):
+    Item_func_rpad(thd, arg1, arg2, arg3) {}
+  Item_func_rpad_oracle(THD *thd, Item *arg1, Item *arg2):
+    Item_func_rpad(thd, arg1, arg2) {}
+  void fix_length_and_dec()
+  {
+    Item_func_rpad::fix_length_and_dec();
+    maybe_null= true;
+  }
+  const char *func_name() const { return "rpad_oracle"; }
+  Item *get_copy(THD *thd)
+  { return get_item_copy<Item_func_rpad_oracle>(thd, this); }
+};
+
+
 class Item_func_lpad :public Item_func_pad
 {
 public:
@@ -1082,6 +1155,26 @@ public:
   const char *func_name() const { return "lpad"; }
   Item *get_copy(THD *thd)
   { return get_item_copy<Item_func_lpad>(thd, this); }
+};
+
+
+class Item_func_lpad_oracle :public Item_func_lpad
+{
+  String *make_empty_result()
+  { null_value= 1; return NULL; }
+public:
+  Item_func_lpad_oracle(THD *thd, Item *arg1, Item *arg2, Item *arg3):
+    Item_func_lpad(thd, arg1, arg2, arg3) {}
+  Item_func_lpad_oracle(THD *thd, Item *arg1, Item *arg2):
+    Item_func_lpad(thd, arg1, arg2) {}
+  void fix_length_and_dec()
+  {
+    Item_func_lpad::fix_length_and_dec();
+    maybe_null= true;
+  }
+  const char *func_name() const { return "lpad_oracle"; }
+  Item *get_copy(THD *thd)
+  { return get_item_copy<Item_func_lpad_oracle>(thd, this); }
 };
 
 
@@ -1372,9 +1465,10 @@ public:
 
 class Item_func_set_collation :public Item_str_func
 {
+  CHARSET_INFO *m_set_collation;
 public:
-  Item_func_set_collation(THD *thd, Item *a, Item *b):
-    Item_str_func(thd, a, b) {}
+  Item_func_set_collation(THD *thd, Item *a, CHARSET_INFO *set_collation):
+    Item_str_func(thd, a), m_set_collation(set_collation) {}
   String *val_str(String *);
   void fix_length_and_dec();
   bool eq(const Item *item, bool binary_cmp) const;
@@ -1539,6 +1633,8 @@ public:
                   DERIVATION_COERCIBLE, MY_REPERTOIRE_ASCII);
     fix_char_length(MY_UUID_STRING_LENGTH);
   }
+  bool const_item() const { return false; }
+  table_map used_tables() const { return RAND_TABLE_BIT; }
   const char *func_name() const{ return "uuid"; }
   String *val_str(String *);
   bool check_vcol_func_processor(void *arg)
@@ -1658,5 +1754,25 @@ public:
   { return get_item_copy<Item_func_dyncol_list>(thd, this); }
 };
 
-#endif /* ITEM_STRFUNC_INCLUDED */
+/*
+  this is used by JOIN_TAB::keep_current_rowid
+  and stores handler::position().
+  It has nothing to do with _rowid pseudo-column, that the parser supports.
+*/
+class Item_temptable_rowid :public Item_str_func
+{
+public:
+  TABLE *table;
+  Item_temptable_rowid(TABLE *table_arg);
+  const Type_handler *type_handler() const { return &type_handler_string; }
+  Field *create_tmp_field(bool group, TABLE *table)
+  { return create_table_field_from_handler(table); }
+  String *val_str(String *str);
+  enum Functype functype() const { return  TEMPTABLE_ROWID; }
+  const char *func_name() const { return "<rowid>"; }
+  void fix_length_and_dec();
+  Item *get_copy(THD *thd)
+  { return get_item_copy<Item_temptable_rowid>(thd, this); }
+};
 
+#endif /* ITEM_STRFUNC_INCLUDED */

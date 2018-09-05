@@ -21,6 +21,7 @@
 */
 
 #include "mariadb.h"
+#include "mysqld.h"
 #include "sql_priv.h"
 #ifndef __WIN__
 #include <netdb.h>        // getservbyname, servent
@@ -85,7 +86,7 @@ int get_or_create_user_conn(THD *thd, const char *user,
     uc->user=(char*) (uc+1);
     memcpy(uc->user,temp_user,temp_len+1);
     uc->host= uc->user + user_len +  1;
-    uc->len= temp_len;
+    uc->len= (uint)temp_len;
     uc->connections= uc->questions= uc->updates= uc->conn_per_hour= 0;
     uc->user_resources= *mqh;
     uc->reset_utime= thd->thr_create_utime;
@@ -166,7 +167,7 @@ int check_for_max_user_connections(THD *thd, USER_CONN *uc)
   error= 0;
 
 end:
-  if (error)
+  if (unlikely(error))
   {
     uc->connections--; // no need for decrease_user_connections() here
     /*
@@ -177,7 +178,7 @@ end:
     thd->user_connect= NULL;
   }
   mysql_mutex_unlock(&LOCK_user_conn);
-  if (error)
+  if (unlikely(error))
   {
     inc_host_errors(thd->main_security_ctx.ip, &errors);
   }
@@ -338,7 +339,7 @@ void reset_mqh(LEX_USER *lu, bool get_them= 0)
   if (lu)  // for GRANT
   {
     USER_CONN *uc;
-    uint temp_len=lu->user.length+lu->host.length+2;
+    size_t temp_len=lu->user.length+lu->host.length+2;
     char temp_user[USER_HOST_BUFF_SIZE];
 
     memcpy(temp_user,lu->user.str,lu->user.length);
@@ -444,7 +445,7 @@ void init_user_stats(USER_STATS *user_stats,
   user_length= MY_MIN(user_length, sizeof(user_stats->user)-1);
   memcpy(user_stats->user, user, user_length);
   user_stats->user[user_length]= 0;
-  user_stats->user_name_length= user_length;
+  user_stats->user_name_length= (uint)user_length;
   strmake_buf(user_stats->priv_user, priv_user);
 
   user_stats->total_connections= total_connections;
@@ -978,7 +979,7 @@ static int check_connection(THD *thd)
                       struct in_addr *ip4= &((struct sockaddr_in *) sa)->sin_addr;
                       /* See RFC 5737, 192.0.2.0/24 is reserved. */
                       const char* fake= "192.0.2.4";
-                      ip4->s_addr= inet_addr(fake);
+                      inet_pton(AF_INET,fake, ip4);
                       strcpy(ip, fake);
                       peer_rc= 0;
                     }
@@ -1048,7 +1049,7 @@ static int check_connection(THD *thd)
   vio_keepalive(net->vio, TRUE);
   vio_set_keepalive_options(net->vio, &opt_vio_keepalive);
 
-  if (thd->packet.alloc(thd->variables.net_buffer_length))
+  if (unlikely(thd->packet.alloc(thd->variables.net_buffer_length)))
   {
     /*
       Important note:
@@ -1138,7 +1139,7 @@ bool login_connection(THD *thd)
   error= check_connection(thd);
   thd->protocol->end_statement();
 
-  if (error)
+  if (unlikely(error))
   {						// Wrong permissions
 #ifdef _WIN32
     if (vio_type(net->vio) == VIO_TYPE_NAMEDPIPE)
@@ -1205,13 +1206,13 @@ void end_connection(THD *thd)
     thd->user_connect= NULL;
   }
 
-  if (thd->killed || (net->error && net->vio != 0))
+  if (unlikely(thd->killed) || (net->error && net->vio != 0))
   {
     statistic_increment(aborted_threads,&LOCK_status);
     status_var_increment(thd->status_var.lost_connections);
   }
 
-  if (!thd->killed && (net->error && net->vio != 0))
+  if (likely(!thd->killed) && (net->error && net->vio != 0))
     thd->print_aborted_warning(1, thd->get_stmt_da()->is_error()
              ? thd->get_stmt_da()->message() : ER_THD(thd, ER_UNKNOWN_ERROR));
 }
@@ -1240,7 +1241,7 @@ void prepare_new_connection_state(THD* thd)
   if (opt_init_connect.length && !(sctx->master_access & SUPER_ACL))
   {
     execute_init_command(thd, &opt_init_connect, &LOCK_sys_init_connect);
-    if (thd->is_error())
+    if (unlikely(thd->is_error()))
     {
       Host_errors errors;
       thd->set_killed(KILL_CONNECTION);
@@ -1264,7 +1265,7 @@ void prepare_new_connection_state(THD* thd)
       if (packet_length != packet_error)
         my_error(ER_NEW_ABORTING_CONNECTION, MYF(0),
                  thd->thread_id,
-                 thd->db ? thd->db : "unconnected",
+                 thd->db.str ? thd->db.str : "unconnected",
                  sctx->user ? sctx->user : "unauthenticated",
                  sctx->host_or_ip, "init_connect command failed");
       thd->server_status&= ~SERVER_STATUS_CLEAR_SET;
@@ -1329,9 +1330,9 @@ bool thd_prepare_connection(THD *thd)
 bool thd_is_connection_alive(THD *thd)
 {
   NET *net= &thd->net;
-  if (!net->error &&
-      net->vio != 0 &&
-      thd->killed < KILL_CONNECTION)
+  if (likely(!net->error &&
+             net->vio != 0 &&
+             thd->killed < KILL_CONNECTION))
     return TRUE;
   return FALSE;
 }
@@ -1406,9 +1407,9 @@ void do_handle_one_connection(CONNECT *connect)
 #ifdef WITH_WSREP
   if (WSREP(thd))
   {
-    mysql_mutex_lock(&thd->LOCK_wsrep_thd);
+    mysql_mutex_lock(&thd->LOCK_thd_data);
     thd->wsrep_query_state= QUERY_EXITING;
-    mysql_mutex_unlock(&thd->LOCK_wsrep_thd);
+    mysql_mutex_unlock(&thd->LOCK_thd_data);
   }
 #endif
 end_thread:
@@ -1509,7 +1510,7 @@ THD *CONNECT::create_thd(THD *thd)
   res= my_net_init(&thd->net, vio, thd, MYF(MY_THREAD_SPECIFIC));
   vio= 0;                              // Vio now handled by thd
 
-  if (res || thd->is_error())
+  if (unlikely(res || thd->is_error()))
   {
     if (!thd_reused)
       delete thd;

@@ -39,7 +39,7 @@ typedef struct st_date_time_format {
   uchar positions[8];
   char  time_separator;			/* Separator between hour and minute */
   uint flag;				/* For future */
-  LEX_STRING format;
+  LEX_CSTRING format;
 } DATE_TIME_FORMAT;
 
 
@@ -330,7 +330,7 @@ typedef struct st_user_stats
 typedef struct st_table_stats
 {
   char table[NAME_LEN * 2 + 2];  // [db] + '\0' + [table] + '\0'
-  uint table_name_length;
+  size_t table_name_length;
   ulonglong rows_read, rows_changed;
   ulonglong rows_changed_x_indexes;
   /* Stores enum db_type, but forward declarations cannot be done */
@@ -341,7 +341,7 @@ typedef struct st_index_stats
 {
   // [db] + '\0' + [table] + '\0' + [index] + '\0'
   char index[NAME_LEN * 3 + 3];
-  uint index_name_length;                       /* Length of 'index' */
+  size_t index_name_length;                       /* Length of 'index' */
   ulonglong rows_read;
 } INDEX_STATS;
 
@@ -723,9 +723,70 @@ public:
 };
 
 
-struct Lex_string_with_pos_st: public LEX_CSTRING
+enum trim_spec { TRIM_LEADING, TRIM_TRAILING, TRIM_BOTH };
+
+struct Lex_trim_st
 {
-  const char *m_pos;
+  Item *m_remove;
+  Item *m_source;
+  trim_spec m_spec;
+public:
+  void set(trim_spec spec, Item *remove, Item *source)
+  {
+    m_spec= spec;
+    m_remove= remove;
+    m_source= source;
+  }
+  void set(trim_spec spec, Item *source)
+  {
+    set(spec, NULL, source);
+  }
+  Item *make_item_func_trim_std(THD *thd) const;
+  Item *make_item_func_trim_oracle(THD *thd) const;
+  Item *make_item_func_trim(THD *thd) const;
+};
+
+
+class Lex_trim: public Lex_trim_st
+{
+public:
+  Lex_trim(trim_spec spec, Item *source) { set(spec, source); }
+};
+
+
+class Load_data_param
+{
+protected:
+  CHARSET_INFO *m_charset;   // Character set of the file
+  ulonglong m_fixed_length;  // Sum of target field lengths for fixed format
+  bool m_is_fixed_length;
+  bool m_use_blobs;
+public:
+  Load_data_param(CHARSET_INFO *cs, bool is_fixed_length):
+    m_charset(cs),
+    m_fixed_length(0),
+    m_is_fixed_length(is_fixed_length),
+    m_use_blobs(false)
+  { }
+  bool add_outvar_field(THD *thd, const Field *field);
+  bool add_outvar_user_var(THD *thd);
+  CHARSET_INFO *charset() const { return m_charset; }
+  bool is_fixed_length() const { return m_is_fixed_length; }
+  bool use_blobs() const { return m_use_blobs; }
+};
+
+
+class Load_data_outvar
+{
+public:
+  virtual ~Load_data_outvar() {}
+  virtual bool load_data_set_null(THD *thd, const Load_data_param *param)= 0;
+  virtual bool load_data_set_value(THD *thd, const char *pos, uint length,
+                                   const Load_data_param *param)= 0;
+  virtual bool load_data_set_no_data(THD *thd, const Load_data_param *param)= 0;
+  virtual void load_data_print_for_log_event(THD *thd, class String *to) const= 0;
+  virtual bool load_data_add_outvar(THD *thd, Load_data_param *param) const= 0;
+  virtual uint load_data_fixed_length() const= 0;
 };
 
 

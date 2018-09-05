@@ -181,6 +181,10 @@ public:
     str->set(nr, collation.collation);
     return str;
   }
+  bool get_date(MYSQL_TIME *ltime, ulonglong fuzzydate)
+  {
+    return get_date_from_int(ltime, fuzzydate);
+  }
   const char *func_name() const { return "month"; }
   const Type_handler *type_handler() const { return &type_handler_long; }
   void fix_length_and_dec()
@@ -440,6 +444,10 @@ public:
   const char *func_name() const
   {
      return (odbc_type ? "dayofweek" : "weekday");
+  }
+  bool get_date(MYSQL_TIME *ltime, ulonglong fuzzydate)
+  {
+    return type_handler()->Item_get_date(this, ltime, fuzzydate);
   }
   const Type_handler *type_handler() const { return &type_handler_long; }
   void fix_length_and_dec()
@@ -839,6 +847,11 @@ public:
 
 class Item_func_date_format :public Item_str_func
 {
+  bool check_arguments() const
+  {
+    return args[0]->check_type_can_return_date(func_name()) ||
+           check_argument_types_can_return_text(1, arg_count);
+  }
   const MY_LOCALE *locale;
   int fixed_length;
   String value;
@@ -1091,10 +1104,10 @@ class Item_char_typecast :public Item_str_func
   String tmp_value;
   bool m_suppress_warning_to_error_escalation;
   bool has_explicit_length() const { return cast_length != ~0U; }
-  String *reuse(String *src, uint32 length);
+  String *reuse(String *src, size_t length);
   String *copy(String *src, CHARSET_INFO *cs);
   uint adjusted_length_with_warn(uint length);
-  void check_truncation_with_warn(String *src, uint dstlen);
+  void check_truncation_with_warn(String *src, size_t dstlen);
   void fix_length_and_dec_internal(CHARSET_INFO *fromcs);
 public:
   Item_char_typecast(THD *thd, Item *a, uint length_arg, CHARSET_INFO *cs_arg):

@@ -23,7 +23,7 @@ Copyright (c) 2006, 2015, Percona and/or its affiliates. All rights reserved.
 
 #ident "Copyright (c) 2006, 2015, Percona and/or its affiliates. All rights reserved."
 
-#if TOKU_INCLUDE_UPSERT
+#if defined(TOKU_INCLUDE_UPSERT)
 
 // Point updates and upserts
 
@@ -918,7 +918,7 @@ int ha_tokudb::send_update_message(
         marshall_update(update_message, lhs_item, rhs_item, table, share);
     }
 
-    share->_num_DBs_lock.lock_read();
+    rwlock_t_lock_read(share->_num_DBs_lock);
 
     // hot index in progress
     if (share->num_DBs > table->s->keys + tokudb_test(hidden_primary_key)) {
@@ -1108,7 +1108,7 @@ int ha_tokudb::send_upsert_message(
         marshall_update(update_message, lhs_item, rhs_item, table, share);
     }
 
-    share->_num_DBs_lock.lock_read();
+    rwlock_t_lock_read(share->_num_DBs_lock);
 
     // hot index in progress
     if (share->num_DBs > table->s->keys + tokudb_test(hidden_primary_key)) {

@@ -488,47 +488,49 @@ fts_trx_free(
 /*=========*/
 	fts_trx_t*	fts_trx);		/*!< in, own: FTS trx */
 
-/******************************************************************//**
-Creates the common ancillary tables needed for supporting an FTS index
-on the given table. row_mysql_lock_data_dictionary must have been
-called before this.
-@return DB_SUCCESS or error code */
+/** Creates the common auxiliary tables needed for supporting an FTS index
+on the given table. row_mysql_lock_data_dictionary must have been called
+before this.
+The following tables are created.
+CREATE TABLE $FTS_PREFIX_DELETED
+	(doc_id BIGINT UNSIGNED, UNIQUE CLUSTERED INDEX on doc_id)
+CREATE TABLE $FTS_PREFIX_DELETED_CACHE
+	(doc_id BIGINT UNSIGNED, UNIQUE CLUSTERED INDEX on doc_id)
+CREATE TABLE $FTS_PREFIX_BEING_DELETED
+	(doc_id BIGINT UNSIGNED, UNIQUE CLUSTERED INDEX on doc_id)
+CREATE TABLE $FTS_PREFIX_BEING_DELETED_CACHE
+	(doc_id BIGINT UNSIGNED, UNIQUE CLUSTERED INDEX on doc_id)
+CREATE TABLE $FTS_PREFIX_CONFIG
+	(key CHAR(50), value CHAR(200), UNIQUE CLUSTERED INDEX on key)
+@param[in,out]	trx			transaction
+@param[in]	table			table with FTS index
+@param[in]	skip_doc_id_index	Skip index on doc id
+@return DB_SUCCESS if succeed */
 dberr_t
 fts_create_common_tables(
-/*=====================*/
-	trx_t*		trx,			/*!< in: transaction handle */
-	const dict_table_t*
-			table,			/*!< in: table with one FTS
-						index */
-	const char*	name,			/*!< in: table name */
-	bool		skip_doc_id_index)	/*!< in: Skip index on doc id */
-	MY_ATTRIBUTE((warn_unused_result));
-/******************************************************************//**
-Wrapper function of fts_create_index_tables_low(), create auxiliary
-tables for an FTS index
-@return DB_SUCCESS or error code */
-dberr_t
-fts_create_index_tables(
-/*====================*/
-	trx_t*			trx,		/*!< in: transaction handle */
-	const dict_index_t*	index)		/*!< in: the FTS index
-						instance */
-	MY_ATTRIBUTE((warn_unused_result));
-/******************************************************************//**
-Creates the column specific ancillary tables needed for supporting an
+	trx_t*		trx,
+	dict_table_t*	table,
+	bool		skip_doc_id_index)
+	MY_ATTRIBUTE((nonnull, warn_unused_result));
+/** Creates the column specific ancillary tables needed for supporting an
 FTS index on the given table. row_mysql_lock_data_dictionary must have
 been called before this.
+
+All FTS AUX Index tables have the following schema.
+CREAT TABLE $FTS_PREFIX_INDEX_[1-6](
+	word		VARCHAR(FTS_MAX_WORD_LEN),
+	first_doc_id	INT NOT NULL,
+	last_doc_id	UNSIGNED NOT NULL,
+	doc_count	UNSIGNED INT NOT NULL,
+	ilist		VARBINARY NOT NULL,
+	UNIQUE CLUSTERED INDEX ON (word, first_doc_id))
+@param[in,out]	trx	dictionary transaction
+@param[in]	index	fulltext index
+@param[in]	id	table id
 @return DB_SUCCESS or error code */
 dberr_t
-fts_create_index_tables_low(
-/*========================*/
-	trx_t*		trx,			/*!< in: transaction handle */
-	const dict_index_t*
-			index,			/*!< in: the FTS index
-						instance */
-	const char*	table_name,		/*!< in: the table name */
-	table_id_t	table_id)		/*!< in: the table id */
-	MY_ATTRIBUTE((warn_unused_result));
+fts_create_index_tables(trx_t* trx, const dict_index_t* index, table_id_t id)
+	MY_ATTRIBUTE((nonnull, warn_unused_result));
 /******************************************************************//**
 Add the FTS document id hidden column. */
 void
@@ -559,7 +561,6 @@ fts_commit(
 	MY_ATTRIBUTE((warn_unused_result));
 
 /** FTS Query entry point.
-@param[in]	trx		transaction
 @param[in]	index		fts index to search
 @param[in]	flags		FTS search mode
 @param[in]	query_str	FTS query
@@ -568,7 +569,6 @@ fts_commit(
 @return DB_SUCCESS if successful otherwise error code */
 dberr_t
 fts_query(
-	trx_t*		trx,
 	dict_index_t*	index,
 	uint		flags,
 	const byte*	query_str,
@@ -734,7 +734,6 @@ Take a FTS savepoint. */
 void
 fts_savepoint_take(
 /*===============*/
-	trx_t*		trx,			/*!< in: transaction */
 	fts_trx_t*	fts_trx,		/*!< in: fts transaction */
 	const char*	name);			/*!< in: savepoint name */
 
@@ -1015,5 +1014,27 @@ fts_check_corrupt(
 	dict_table_t*	base_table,
 	trx_t*		trx);
 
+/** Fetch the document from tuple, tokenize the text data and
+insert the text data into fts auxiliary table and
+its cache. Moreover this tuple fields doesn't contain any information
+about externally stored field. This tuple contains data directly
+converted from mysql.
+@param[in]     ftt     FTS transaction table
+@param[in]     doc_id  doc id
+@param[in]     tuple   tuple from where data can be retrieved
+                       and tuple should be arranged in table
+                       schema order. */
+void
+fts_add_doc_from_tuple(
+	fts_trx_table_t*ftt,
+	doc_id_t        doc_id,
+	const dtuple_t* tuple);
+
+/** Create an FTS trx.
+@param[in,out] trx     InnoDB Transaction
+@return FTS transaction. */
+fts_trx_t*
+fts_trx_create(
+	trx_t*  trx);
 
 #endif /*!< fts0fts.h */

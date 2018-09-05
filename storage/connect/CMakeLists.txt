@@ -69,6 +69,10 @@ ELSE(NOT UNIX)
   # Add exception handling to the CONNECT project)
   SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /EHsc")
   SET(IPHLPAPI_LIBRARY iphlpapi.lib)
+  IF(MSVC AND (CMAKE_CXX_COMPILER_ID MATCHES Clang))
+    # Connect does not work with clang-cl
+    RETURN()
+  ENDIF()
 ENDIF(UNIX)
 
 
@@ -326,8 +330,14 @@ IF(NOT TARGET connect)
   RETURN()
 ENDIF()
 
-# Install some extra files that belong to connect engine
 IF(WIN32)
+  IF (libmongoc-1.0_FOUND)
+	  SET_TARGET_PROPERTIES(connect PROPERTIES LINK_FLAGS
+	    "/DELAYLOAD:libbson-1.0.dll /DELAYLOAD:libmongoc-1.0.dll")
+  ENDIF(libmongoc-1.0_FOUND)
+
+# Install some extra files that belong to connect engine
+
   # install ha_connect.lib
   GET_TARGET_PROPERTY(CONNECT_LOCATION connect LOCATION)
   STRING(REPLACE "dll" "lib" CONNECT_LIB ${CONNECT_LOCATION})
@@ -339,22 +349,14 @@ IF(WIN32)
     DESTINATION ${INSTALL_PLUGINDIR} COMPONENT connect-engine)
 ENDIF(WIN32)
 
-IF(NOT TARGET connect)
-  RETURN()
+IF(MSVC)
+  # Temporarily disable "conversion from size_t .."
+  IF(CMAKE_SIZEOF_VOID_P EQUAL 8)
+    SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /wd4267")
+  ENDIF()
+  SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /wd4996")
+  string(REPLACE "/permissive-" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
 ENDIF()
-
-# Install some extra files that belong to connect engine
-IF(WIN32)
-  # install ha_connect.lib
-  GET_TARGET_PROPERTY(CONNECT_LOCATION connect LOCATION)
-  STRING(REPLACE "dll" "lib" CONNECT_LIB ${CONNECT_LOCATION})
-  IF(CMAKE_CONFIGURATION_TYPES)
-    STRING(REPLACE "${CMAKE_CFG_INTDIR}" "\${CMAKE_INSTALL_CONFIG_NAME}"
-      CONNECT_LIB ${CONNECT_LIB})
-  ENDIF()
-  INSTALL(FILES ${CONNECT_LIB}
-    DESTINATION ${INSTALL_PLUGINDIR} COMPONENT connect-engine)
-ENDIF(WIN32)
 
 IF(CONNECT_WITH_JDBC AND JAVA_FOUND AND JNI_FOUND)
   # TODO: Find how to compile and install the java wrapper classes

@@ -57,8 +57,6 @@ Place, Suite 330, Boston, MA 02111-1307 USA
 #include "backup_copy.h"
 #include "backup_mysql.h"
 #include <btr0btr.h>
-#include "xb0xb.h"
-
 
 /* list of files to sync for --rsync mode */
 static std::set<std::string> rsync_list;
@@ -966,6 +964,9 @@ copy_file(ds_ctxt_t *datasink,
 	ds_file_t		*dstfile = NULL;
 	datafile_cur_t		 cursor;
 	xb_fil_cur_result_t	 res;
+	const char	*dst_path =
+		(xtrabackup_copy_back || xtrabackup_move_back)?
+		dst_file_path : trim_dotslash(dst_file_path);
 
 	if (!datafile_open(src_file_path, &cursor, thread_n)) {
 		goto error_close;
@@ -973,8 +974,7 @@ copy_file(ds_ctxt_t *datasink,
 
 	strncpy(dst_name, cursor.rel_path, sizeof(dst_name));
 
-	dstfile = ds_open(datasink, trim_dotslash(dst_file_path),
-			  &cursor.statinfo);
+	dstfile = ds_open(datasink, dst_path, &cursor.statinfo);
 	if (dstfile == NULL) {
 		msg("[%02u] error: "
 			"cannot open the destination stream for %s\n",
@@ -1428,6 +1428,10 @@ void backup_release()
 		history_lock_time = time(NULL) - history_lock_time;
 	}
 
+	if (opt_lock_ddl_per_table) {
+		mdl_unlock_all();
+	}
+
 	if (opt_safe_slave_backup && sql_thread_started) {
 		msg("Starting slave SQL thread\n");
 		xb_mysql_query(mysql_connection,
@@ -1464,11 +1468,9 @@ bool backup_finish()
 		return(false);
 	}
 
-	if (!write_xtrabackup_info(mysql_connection)) {
+	if (!write_xtrabackup_info(mysql_connection, XTRABACKUP_INFO, opt_history != 0)) {
 		return(false);
 	}
-
-
 
 	return(true);
 }
@@ -1814,7 +1816,8 @@ copy_back()
 		is_ibdata_file = false;
 		for (Tablespace::const_iterator iter(srv_sys_space.begin()),
 		       end(srv_sys_space.end()); iter != end; ++iter) {
-			if (strcmp(iter->name(), filename) == 0) {
+			const char *ibfile = base_name(iter->name());
+			if (strcmp(ibfile, filename) == 0) {
 				is_ibdata_file = true;
 				break;
 			}

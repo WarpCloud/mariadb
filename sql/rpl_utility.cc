@@ -42,6 +42,12 @@ max_display_length_for_temporal2_field(uint32 int_display_length,
    @param sql_type Type of the field
    @param metadata The metadata from the master for the field.
    @return Maximum length of the field in bytes.
+
+   The precise values calculated by field->max_display_length() and
+   calculated by max_display_length_for_field() can differ (by +1 or -1)
+   for integer data types (TINYINT, SMALLINT, MEDIUMINT, INT, BIGINT).
+   This slight difference is not important here, because we call
+   this function only for two *different* integer data types.
  */
 static uint32
 max_display_length_for_field(enum_field_types sql_type, unsigned int metadata)
@@ -414,7 +420,7 @@ void show_sql_type(enum_field_types type, uint16 metadata, String *str, CHARSET_
   case MYSQL_TYPE_VARCHAR_COMPRESSED:
     {
       CHARSET_INFO *cs= str->charset();
-      uint32 length=
+      size_t length=
         cs->cset->snprintf(cs, (char*) str->ptr(), str->alloced_length(),
                            "varchar(%u)%s", metadata,
                            type == MYSQL_TYPE_VARCHAR_COMPRESSED ? " compressed"
@@ -427,7 +433,7 @@ void show_sql_type(enum_field_types type, uint16 metadata, String *str, CHARSET_
     {
       CHARSET_INFO *cs= str->charset();
       int bit_length= 8 * (metadata >> 8) + (metadata & 0xFF);
-      uint32 length=
+      size_t length=
         cs->cset->snprintf(cs, (char*) str->ptr(), str->alloced_length(),
                            "bit(%d)", bit_length);
       str->length(length);
@@ -437,7 +443,7 @@ void show_sql_type(enum_field_types type, uint16 metadata, String *str, CHARSET_
   case MYSQL_TYPE_DECIMAL:
     {
       CHARSET_INFO *cs= str->charset();
-      uint32 length=
+      size_t length=
         cs->cset->snprintf(cs, (char*) str->ptr(), str->alloced_length(),
                            "decimal(%d,?)/*old*/", metadata);
       str->length(length);
@@ -447,7 +453,7 @@ void show_sql_type(enum_field_types type, uint16 metadata, String *str, CHARSET_
   case MYSQL_TYPE_NEWDECIMAL:
     {
       CHARSET_INFO *cs= str->charset();
-      uint32 length=
+      size_t length=
         cs->cset->snprintf(cs, (char*) str->ptr(), str->alloced_length(),
                            "decimal(%d,%d)", metadata >> 8, metadata & 0xff);
       str->length(length);
@@ -503,7 +509,7 @@ void show_sql_type(enum_field_types type, uint16 metadata, String *str, CHARSET_
       */
       CHARSET_INFO *cs= str->charset();
       uint bytes= (((metadata >> 4) & 0x300) ^ 0x300) + (metadata & 0x00ff);
-      uint32 length=
+      size_t length=
         cs->cset->snprintf(cs, (char*) str->ptr(), str->alloced_length(),
                            "char(%d)", bytes / field_cs->mbmaxlen);
       str->length(length);
@@ -737,6 +743,16 @@ can_convert_field_to(Field *field,
     case MYSQL_TYPE_INT24:
     case MYSQL_TYPE_LONG:
     case MYSQL_TYPE_LONGLONG:
+      /*
+        max_display_length_for_field() is not fully precise for the integer
+        data types. So its result cannot be compared to the result of
+        field->max_dispay_length() when the table field and the binlog field
+        are of the same type.
+        This code should eventually be rewritten not to use
+        compare_lengths(), to detect subtype/supetype relations
+        just using the type codes.
+      */
+      DBUG_ASSERT(source_type != field->real_type());
       *order_var= compare_lengths(field, source_type, metadata);
       DBUG_ASSERT(*order_var != 0);
       DBUG_RETURN(is_conversion_ok(*order_var, rli));

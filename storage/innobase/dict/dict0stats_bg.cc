@@ -32,7 +32,6 @@ Created Apr 25, 2012 Vasil Dimov
 #include "srv0start.h"
 #include "ut0new.h"
 #include "fil0fil.h"
-#include "trx0trx.h"
 
 #include <vector>
 
@@ -111,6 +110,7 @@ dict_stats_recalc_pool_deinit()
 	recalc_pool->clear();
 
 	UT_DELETE(recalc_pool);
+	recalc_pool = NULL;
 }
 
 /*****************************************************************//**
@@ -181,7 +181,7 @@ dict_stats_update_if_needed(dict_table_t* table)
 
 	if (counter > threshold) {
 		/* this will reset table->stat_modified_counter to 0 */
-		dict_stats_update(table, DICT_STATS_RECALC_TRANSIENT, NULL);
+		dict_stats_update(table, DICT_STATS_RECALC_TRANSIENT);
 	}
 }
 
@@ -308,6 +308,10 @@ dict_stats_thread_deinit()
 	ut_a(!srv_read_only_mode);
 	ut_ad(!srv_dict_stats_thread_active);
 
+	if (recalc_pool == NULL) {
+		return;
+	}
+
 	dict_stats_recalc_pool_deinit();
 	dict_defrag_pool_deinit();
 
@@ -324,7 +328,8 @@ Get the first table that has been added for auto recalc and eventually
 update its stats. */
 static
 void
-dict_stats_process_entry_from_recalc_pool(trx_t* trx)
+dict_stats_process_entry_from_recalc_pool()
+/*=======================================*/
 {
 	table_id_t	table_id;
 
@@ -349,7 +354,7 @@ dict_stats_process_entry_from_recalc_pool(trx_t* trx)
 		return;
 	}
 
-	ut_ad(!dict_table_is_temporary(table));
+	ut_ad(!table->is_temporary());
 
 	if (!fil_table_accessible(table)) {
 		dict_table_close(table, TRUE, FALSE);
@@ -378,12 +383,8 @@ dict_stats_process_entry_from_recalc_pool(trx_t* trx)
 		dict_stats_recalc_pool_add(table);
 
 	} else {
-		trx->error_state = DB_SUCCESS;
-		++trx->will_lock;
-		dict_stats_update(table, DICT_STATS_RECALC_PERSISTENT, trx);
-		if (trx->state != TRX_STATE_NOT_STARTED) {
-			trx_commit_for_mysql(trx);
-		}
+
+		dict_stats_update(table, DICT_STATS_RECALC_PERSISTENT);
 	}
 
 	mutex_enter(&dict_sys->mutex);
@@ -398,16 +399,9 @@ dict_stats_process_entry_from_recalc_pool(trx_t* trx)
 #ifdef UNIV_DEBUG
 /** Disables dict stats thread. It's used by:
 	SET GLOBAL innodb_dict_stats_disabled_debug = 1 (0).
-@param[in]	thd		thread handle
-@param[in]	var		pointer to system variable
-@param[out]	var_ptr		where the formal string goes
 @param[in]	save		immediate result from check function */
-void
-dict_stats_disabled_debug_update(
-	THD*				thd,
-	struct st_mysql_sys_var*	var,
-	void*				var_ptr,
-	const void*			save)
+void dict_stats_disabled_debug_update(THD*, st_mysql_sys_var*, void*,
+				      const void* save)
 {
 	/* This method is protected by mutex, as every SET GLOBAL .. */
 	ut_ad(dict_stats_disabled_event != NULL);
@@ -444,9 +438,6 @@ DECLARE_THREAD(dict_stats_thread)(void*)
 	*/
 #endif /* UNIV_PFS_THREAD */
 
-	trx_t* trx = trx_allocate_for_background();
-	ut_d(trx->persistent_stats = true);
-
 	while (!dict_stats_start_shutdown) {
 
 		/* Wake up periodically even if not signaled. This is
@@ -472,14 +463,12 @@ DECLARE_THREAD(dict_stats_thread)(void*)
 			break;
 		}
 
-		dict_stats_process_entry_from_recalc_pool(trx);
-		dict_defrag_process_entries_from_defrag_pool(trx);
+		dict_stats_process_entry_from_recalc_pool();
+		dict_defrag_process_entries_from_defrag_pool();
 
 		os_event_reset(dict_stats_event);
 	}
 
-	ut_d(trx->persistent_stats = false);
-	trx_free_for_background(trx);
 	srv_dict_stats_thread_active = false;
 
 	os_event_set(dict_stats_shutdown_event);

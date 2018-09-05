@@ -23,7 +23,7 @@
 #include "sp_head.h"
 
 static mysql_mutex_t Cversion_lock;
-static ulong volatile Cversion= 0;
+static ulong volatile Cversion= 1;
 
 
 /*
@@ -48,7 +48,7 @@ public:
     return my_hash_insert(&m_hashtable, (const uchar *)sp);
   }
 
-  inline sp_head *lookup(char *name, uint namelen)
+  inline sp_head *lookup(char *name, size_t namelen)
   {
     return (sp_head *) my_hash_search(&m_hashtable, (const uchar *)name,
                                       namelen);
@@ -237,7 +237,6 @@ void sp_cache_flush_obsolete(sp_cache **cp, sp_head **sp)
     *sp= NULL;
   }
 }
-
 
 /**
   Return the current global version of the cache.

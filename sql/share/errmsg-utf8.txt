@@ -952,10 +952,10 @@ ER_OUT_OF_RESOURCES
         cze "Málo prostoru/paměti pro thread"
         dan "Udgået for tråde/hukommelse"
         nla "Geen thread geheugen meer; controleer of mysqld of andere processen al het beschikbare geheugen gebruikt. Zo niet, dan moet u wellicht 'ulimit' gebruiken om mysqld toe te laten meer geheugen te benutten, of u kunt extra swap ruimte toevoegen"
-        eng "Out of memory; check if mysqld or some other process uses all available memory; if not, you may have to use 'ulimit' to allow mysqld to use more memory or you can add more swap space"
+        eng "Out of memory."
         est "Mälu sai otsa. Võimalik, et aitab swap-i lisamine või käsu 'ulimit' abil MariaDB-le rohkema mälu kasutamise lubamine"
         fre "Manque de 'threads'/mémoire"
-        ger "Kein Speicher mehr vorhanden. Prüfen Sie, ob mysqld oder ein anderer Prozess den gesamten Speicher verbraucht. Wenn nicht, sollten Sie mit 'ulimit' dafür sorgen, dass mysqld mehr Speicher benutzen darf, oder mehr Swap-Speicher einrichten"
+        ger "Kein Speicher mehr vorhanden."
         greek "Πρόβλημα με τη διαθέσιμη μνήμη (Out of thread space/memory)"
         hun "Elfogyott a thread-memoria"
         ita "Fine dello spazio/memoria per i thread"
@@ -964,14 +964,14 @@ ER_OUT_OF_RESOURCES
         nor "Tomt for tråd plass/minne"
         norwegian-ny "Tomt for tråd plass/minne"
         pol "Zbyt mało miejsca/pamięci dla w?tku"
-        por "Sem memória. Verifique se o mysqld ou algum outro processo está usando toda memória disponível. Se não, você pode ter que usar 'ulimit' para permitir ao mysqld usar mais memória ou você pode adicionar mais área de 'swap'"
-        rum "Out of memory;  Verifica daca mysqld sau vreun alt proces foloseste toate memoria disponbila. Altfel, trebuie sa folosesi 'ulimit' ca sa permiti lui memoria disponbila. Altfel, trebuie sa folosesi 'ulimit' ca sa permiti lui mysqld sa foloseasca mai multa memorie ori adauga mai mult spatiu pentru swap (swap space)"
-        rus "Недостаточно памяти; удостоверьтесь, что mysqld или какой-либо другой процесс не занимает всю доступную память. Если нет, то вы можете использовать ulimit, чтобы выделить для mysqld больше памяти, или увеличить объем файла подкачки"
-        serbian "Nema memorije; Proverite da li MariaDB server ili neki drugi proces koristi svu slobodnu memoriju. (UNIX: Ako ne, probajte da upotrebite 'ulimit' komandu da biste dozvolili daemon-u da koristi više memorije ili probajte da dodate više swap memorije)"
+        por "Sem memória."
+        rum "Out of memory."
+        rus "Недостаточно памяти."
+        serbian "Nema memorije."
         slo "Málo miesta-pamäti pre vlákno"
         spa "Memoria/espacio de tranpaso insuficiente"
-        swe "Fick slut på minnet.  Kontrollera om mysqld eller någon annan process använder allt tillgängligt minne. Om inte, försök använda 'ulimit' eller allokera mera swap"
-        ukr "Брак пам'яті;  Перевірте чи mysqld або якісь інші процеси використовують усю доступну пам'ять. Як ні, то ви можете скористатися 'ulimit', аби дозволити mysqld використовувати більше пам'яті або ви можете додати більше місця під свап"
+        swe "Fick slut på minnet."
+        ukr "Брак пам'яті."
 ER_BAD_HOST_ERROR 08S01 
         cze "Nemohu zjistit jméno stroje pro Vaši adresu"
         dan "Kan ikke få værtsnavn for din adresse"
@@ -1807,7 +1807,7 @@ ER_NORMAL_SHUTDOWN
         cze "%s (%s): normální ukončení"
         dan "%s (%s): Normal nedlukning"
         nla "%s (%s): Normaal afgesloten "
-        eng "%s (%s): Normal shutdown"
+        eng "%s (initiated by: %s): Normal shutdown"
         est "%s (%s): MariaDB lõpetas"
         fre "%s (%s): Arrêt normal du serveur"
         ger "%s (%s): Normal heruntergefahren"
@@ -1822,7 +1822,7 @@ ER_NORMAL_SHUTDOWN
         pol "%s (%s): Standardowe zakończenie działania"
         por "%s (%s): 'Shutdown' normal"
         rum "%s (%s): Terminare normala"
-        rus "%s (%s): Корректная остановка"
+        rus "%s (инициирована пользователем: %s): Корректная остановка"
         serbian "%s (%s): Normalno gašenje"
         slo "%s (%s): normálne ukončenie"
         spa "%s (%s): Apagado normal"
@@ -4528,18 +4528,18 @@ ER_TABLE_CANT_HANDLE_FT
         spa "El tipo de tabla usada (%s) no soporta índices FULLTEXT"
         swe "Tabelltypen (%s) har inte hantering av FULLTEXT-index"
         ukr "Використаний тип таблиці (%s) не підтримує FULLTEXT індексів"
-ER_CANNOT_ADD_FOREIGN  
-        nla "Kan foreign key beperking niet toevoegen"
-        eng "Cannot add foreign key constraint"
-        fre "Impossible d'ajouter des contraintes d'index externe"
-        ger "Fremdschlüssel-Beschränkung kann nicht hinzugefügt werden"
-        ita "Impossibile aggiungere il vincolo di integrita' referenziale (foreign key constraint)"
-        jpn "外部キー制約を追加できません。"
-        por "Não pode acrescentar uma restrição de chave estrangeira"
-        rus "Невозможно добавить ограничения внешнего ключа"
-        serbian "Ne mogu da dodam proveru spoljnog ključa"
-        spa "No puede adicionar clave extranjera constraint"
-        swe "Kan inte lägga till 'FOREIGN KEY constraint'"
+ER_CANNOT_ADD_FOREIGN
+        nla "Kan foreign key beperking niet toevoegen vor `%s`"
+        eng "Cannot add foreign key constraint for `%s`"
+        fre "Impossible d'ajouter des contraintes d'index externe à `%s`"
+        ger "Fremdschlüssel-Beschränkung kann nicht hinzugefügt werden für `%s`"
+        ita "Impossibile aggiungere il vincolo di integrita' referenziale (foreign key constraint) a `%s`"
+        jpn "`%s` 外部キー制約を追加できません。"
+        por "Não pode acrescentar uma restrição de chave estrangeira para `%s`"
+        rus "Невозможно добавить ограничения внешнего ключа для `%s`"
+        serbian "Ne mogu da dodam proveru spoljnog ključa na `%s`"
+        spa "No puede adicionar clave extranjera constraint para `%s`"
+        swe "Kan inte lägga till 'FOREIGN KEY constraint' för `%s`'"
 ER_NO_REFERENCED_ROW 23000 
         nla "Kan onderliggende rij niet toevoegen: foreign key beperking gefaald"
         eng "Cannot add or update a child row: a foreign key constraint fails"
@@ -5749,11 +5749,11 @@ ER_SP_NO_AGGREGATE 42000
         eng "AGGREGATE is not supported for stored functions"
         ger "AGGREGATE wird bei gespeicherten Funktionen nicht unterstützt"
 ER_MAX_PREPARED_STMT_COUNT_REACHED 42000
-        eng "Can't create more than max_prepared_stmt_count statements (current value: %lu)"
-        ger "Kann nicht mehr Anweisungen als max_prepared_stmt_count erzeugen (aktueller Wert: %lu)"
+        eng "Can't create more than max_prepared_stmt_count statements (current value: %u)"
+        ger "Kann nicht mehr Anweisungen als max_prepared_stmt_count erzeugen (aktueller Wert: %u)"
 ER_VIEW_RECURSIVE
-        eng "`%-.192s`.`%-.192s` contains view recursion"
-        ger "`%-.192s`.`%-.192s` enthält View-Rekursion"
+        eng "%`s.%`s contains view recursion"
+        ger "%`s.%`s enthält View-Rekursion"
 ER_NON_GROUPING_FIELD_USED 42000
         eng "Non-grouping field '%-.192s' is used in %-.64s clause"
         ger "In der %-.192s-Klausel wird das die Nicht-Gruppierungsspalte '%-.64s' verwendet"
@@ -6249,37 +6249,37 @@ ER_BINLOG_LOGGING_IMPOSSIBLE
   eng "Binary logging not possible. Message: %s"
   ger "Binärlogging nicht möglich. Meldung: %s"
 ER_VIEW_NO_CREATION_CTX
-  eng "View `%-.64s`.`%-.64s` has no creation context"
-  ger "View `%-.64s`.`%-.64s` hat keinen Erzeugungskontext"
+  eng "View %`s.%`s has no creation context"
+  ger "View %`s.%`s hat keinen Erzeugungskontext"
 ER_VIEW_INVALID_CREATION_CTX
-  eng "Creation context of view `%-.64s`.`%-.64s' is invalid"
-  ger "Erzeugungskontext des Views`%-.64s`.`%-.64s' ist ungültig"
+  eng "Creation context of view %`s.%`s is invalid"
+  ger "Erzeugungskontext des Views%`s.%`s ist ungültig"
 ER_SR_INVALID_CREATION_CTX
-  eng "Creation context of stored routine `%-.64s`.`%-.64s` is invalid"
-  ger "Erzeugungskontext der gespeicherten Routine`%-.64s`.`%-.64s` ist ungültig"
+  eng "Creation context of stored routine %`s.%`s is invalid"
+  ger "Erzeugungskontext der gespeicherten Routine%`s.%`s ist ungültig"
 ER_TRG_CORRUPTED_FILE
-  eng "Corrupted TRG file for table `%-.64s`.`%-.64s`"
-  ger "Beschädigte TRG-Datei für Tabelle `%-.64s`.`%-.64s`"
+  eng "Corrupted TRG file for table %`s.%`s"
+  ger "Beschädigte TRG-Datei für Tabelle %`s.%`s"
 ER_TRG_NO_CREATION_CTX
-  eng "Triggers for table `%-.64s`.`%-.64s` have no creation context"
-  ger "Trigger für Tabelle `%-.64s`.`%-.64s` haben keinen Erzeugungskontext"
+  eng "Triggers for table %`s.%`s have no creation context"
+  ger "Trigger für Tabelle %`s.%`s haben keinen Erzeugungskontext"
 ER_TRG_INVALID_CREATION_CTX
-  eng "Trigger creation context of table `%-.64s`.`%-.64s` is invalid"
-  ger "Trigger-Erzeugungskontext der Tabelle `%-.64s`.`%-.64s` ist ungültig"
+  eng "Trigger creation context of table %`s.%`s is invalid"
+  ger "Trigger-Erzeugungskontext der Tabelle %`s.%`s ist ungültig"
 ER_EVENT_INVALID_CREATION_CTX
-  eng "Creation context of event `%-.64s`.`%-.64s` is invalid"
-  ger "Erzeugungskontext des Events `%-.64s`.`%-.64s` ist ungültig"
+  eng "Creation context of event %`s.%`s is invalid"
+  ger "Erzeugungskontext des Events %`s.%`s ist ungültig"
 ER_TRG_CANT_OPEN_TABLE
-  eng "Cannot open table for trigger `%-.64s`.`%-.64s`"
-  ger "Kann Tabelle für den Trigger `%-.64s`.`%-.64s` nicht öffnen"
+  eng "Cannot open table for trigger %`s.%`s"
+  ger "Kann Tabelle für den Trigger %`s.%`s nicht öffnen"
 ER_CANT_CREATE_SROUTINE
-  eng "Cannot create stored routine `%-.64s`. Check warnings"
-  ger "Kann gespeicherte Routine `%-.64s` nicht erzeugen. Beachten Sie die Warnungen"
+  eng "Cannot create stored routine %`s. Check warnings"
+  ger "Kann gespeicherte Routine %`s nicht erzeugen. Beachten Sie die Warnungen"
 ER_UNUSED_11
         eng "You should never see it"
 ER_NO_FORMAT_DESCRIPTION_EVENT_BEFORE_BINLOG_STATEMENT
-  eng "The BINLOG statement of type `%s` was not preceded by a format description BINLOG statement"
-  ger "Der BINLOG-Anweisung vom Typ `%s` ging keine BINLOG-Anweisung zur Formatbeschreibung voran"
+  eng "The BINLOG statement of type %s was not preceded by a format description BINLOG statement"
+  ger "Der BINLOG-Anweisung vom Typ %s ging keine BINLOG-Anweisung zur Formatbeschreibung voran"
 ER_SLAVE_CORRUPT_EVENT
   eng "Corrupted replication event was detected"
   ger "Beschädigtes Replikationsereignis entdeckt"
@@ -6596,7 +6596,7 @@ ER_MULTI_UPDATE_KEY_CONFLICT
 # When translating this error message make sure to include "ALTER TABLE" in the
 # message as mysqlcheck parses the error message looking for ALTER TABLE.
 ER_TABLE_NEEDS_REBUILD
-        eng "Table rebuild required. Please do \"ALTER TABLE `%-.32s` FORCE\" or dump/reload to fix it!"
+        eng "Table rebuild required. Please do \"ALTER TABLE %`s FORCE\" or dump/reload to fix it!"
 
 WARN_OPTION_BELOW_LIMIT
   eng "The value of '%s' should be no less than the value of '%s'"
@@ -6899,8 +6899,8 @@ ER_COL_COUNT_DOESNT_MATCH_CORRUPTED_V2
 ER_SLAVE_SILENT_RETRY_TRANSACTION
   eng "Slave must silently retry current transaction"
 
-ER_DISCARD_FK_CHECKS_RUNNING
-  eng "There is a foreign key check running on table '%-.192s'. Cannot discard the table"
+ER_UNUSED_22
+  eng "You should never see it"
 
 ER_TABLE_SCHEMA_MISMATCH
   eng "Schema mismatch (%s)"
@@ -7089,7 +7089,7 @@ ER_IDENT_CAUSES_TOO_LONG_PATH
   eng "Long database name and identifier for object resulted in path length exceeding %d characters. Path: '%s'"
 
 ER_ALTER_OPERATION_NOT_SUPPORTED_REASON_NOT_NULL
-  eng "cannot silently convert NULL values, as required in this SQL_MODE"
+  eng "cannot convert NULL to non-constant DEFAULT"
 
 ER_MUST_CHANGE_PASSWORD_LOGIN
   eng "Your password has expired. To log in you must change it using a client that supports expired passwords"
@@ -7788,6 +7788,10 @@ ER_WRONG_INSERT_INTO_SEQUENCE
         eng "Wrong INSERT into a SEQUENCE. One can only do single table INSERT into a sequence object (like with mysqldump).  If you want to change the SEQUENCE, use ALTER SEQUENCE instead."
 ER_SP_STACK_TRACE
         eng "At line %u in %s"
+ER_PACKAGE_ROUTINE_IN_SPEC_NOT_DEFINED_IN_BODY
+        eng "Subroutine '%-.192s' is declared in the package specification but is not defined in the package body"
+ER_PACKAGE_ROUTINE_FORWARD_DECLARATION_NOT_DEFINED
+        eng "Subroutine '%-.192s' has a forward declaration but is not defined"
 ER_COMPRESSED_COLUMN_USED_AS_KEY
   eng "Compressed column '%-.192s' can't be used in key specification"
 ER_UNKNOWN_COMPRESSION_METHOD
@@ -7812,3 +7816,106 @@ ER_INVALID_VALUE_TO_LIMIT
         eng "Limit only accepts integer values"
 ER_INVISIBLE_NOT_NULL_WITHOUT_DEFAULT
         eng "Invisible column %`s must have a default value"
+
+
+# MariaDB error numbers related to System Versioning
+
+ER_UPDATE_INFO_WITH_SYSTEM_VERSIONING
+        eng "Rows matched: %ld  Changed: %ld  Inserted: %ld  Warnings: %ld"
+
+ER_VERS_FIELD_WRONG_TYPE
+        eng "%`s must be of type %s for system-versioned table %`s"
+
+ER_VERS_ENGINE_UNSUPPORTED
+        eng "Transaction system versioning for %`s is not supported"
+
+ER_UNUSED_23
+        eng "You should never see it"
+
+ER_PARTITION_WRONG_TYPE
+        eng "Wrong partitioning type, expected type: %`s"
+
+WARN_VERS_PART_FULL
+        eng "Versioned table %`s.%`s: partition %`s is full, add more HISTORY partitions"
+
+WARN_VERS_PARAMETERS
+        eng "Maybe missing parameters: %s"
+
+ER_VERS_DROP_PARTITION_INTERVAL
+        eng "Can only drop oldest partitions when rotating by INTERVAL"
+
+ER_UNUSED_25
+        eng "You should never see it"
+
+WARN_VERS_PART_NON_HISTORICAL
+        eng "Partition %`s contains non-historical data"
+
+ER_VERS_ALTER_NOT_ALLOWED
+        eng "Not allowed for system-versioned %`s.%`s. Change @@system_versioning_alter_history to proceed with ALTER."
+
+ER_VERS_ALTER_ENGINE_PROHIBITED
+        eng "Not allowed for system-versioned %`s.%`s. Change to/from native system versioning engine is not supported."
+
+ER_VERS_RANGE_PROHIBITED
+        eng "SYSTEM_TIME range selector is not allowed"
+
+ER_CONFLICTING_FOR_SYSTEM_TIME
+        eng "Conflicting FOR SYSTEM_TIME clauses in WITH RECURSIVE"
+
+ER_VERS_TABLE_MUST_HAVE_COLUMNS
+        eng "Table %`s must have at least one versioned column"
+
+ER_VERS_NOT_VERSIONED
+        eng "Table %`s is not system-versioned"
+
+ER_MISSING
+        eng "Wrong parameters for %`s: missing '%s'"
+
+ER_VERS_PERIOD_COLUMNS
+        eng "PERIOD FOR SYSTEM_TIME must use columns %`s and %`s"
+
+ER_PART_WRONG_VALUE
+        eng "Wrong parameters for partitioned %`s: wrong value for '%s'"
+
+ER_VERS_WRONG_PARTS
+        eng "Wrong partitions for %`s: must have at least one HISTORY and exactly one last CURRENT"
+
+ER_VERS_NO_TRX_ID
+        eng "TRX_ID %llu not found in `mysql.transaction_registry`"
+
+ER_VERS_ALTER_SYSTEM_FIELD
+        eng "Can not change system versioning field %`s"
+
+ER_DROP_VERSIONING_SYSTEM_TIME_PARTITION
+        eng "Can not DROP SYSTEM VERSIONING for table %`s partitioned BY SYSTEM_TIME"
+
+ER_VERS_DB_NOT_SUPPORTED
+      eng "System versioning tables in the %`s database are not suported"
+
+ER_VERS_TRT_IS_DISABLED
+        eng "Transaction registry is disabled"
+
+ER_VERS_DUPLICATE_ROW_START_END
+	eng "Duplicate ROW %s column %`s"
+
+ER_VERS_ALREADY_VERSIONED
+        eng "Table %`s is already system-versioned"
+
+ER_UNUSED_24
+	eng "You should never see it"
+
+ER_VERS_TEMPORARY
+	eng "TEMPORARY tables do not support system versioning"
+
+ER_VERS_NOT_SUPPORTED
+        eng "%s is not supported for %s system-versioned tables"
+ER_INDEX_FILE_FULL
+        eng "The index file for table '%-.192s' is full"
+ER_UPDATED_COLUMN_ONLY_ONCE
+        eng "The column %`s.%`s cannot be changed more than once in a single UPDATE statement"
+ER_EMPTY_ROW_IN_TVC
+        eng "Row with no elements is not allowed in table value constructor in this context"
+ER_VERS_QUERY_IN_PARTITION
+        eng "SYSTEM_TIME partitions in table %`s does not support historical query"
+ER_KEY_DOESNT_SUPPORT
+        eng "%s index %`s does not support this operation"

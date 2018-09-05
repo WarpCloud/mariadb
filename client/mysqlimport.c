@@ -413,7 +413,7 @@ static void lock_table(MYSQL *mysql, int tablecount, char **raw_tablename)
     dynstr_append(&query, tablename);
     dynstr_append(&query, " WRITE,");
   }
-  if (mysql_real_query(mysql, query.str, query.length-1))
+  if (mysql_real_query(mysql, query.str, (ulong)query.length-1))
     db_error(mysql); /* We shall countinue here, if --force was given */
 }
 
@@ -643,8 +643,7 @@ int main(int argc, char **argv)
   MY_INIT(argv[0]);
   sf_leaking_memory=1; /* don't report memory leaks on early exits */
 
-  if (load_defaults("my",load_default_groups,&argc,&argv))
-    return 1;
+  load_defaults_or_exit("my", load_default_groups, &argc, &argv);
   /* argv is changed in the program */
   argv_to_free= argv;
   if (get_options(&argc, &argv))

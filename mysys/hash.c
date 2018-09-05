@@ -380,7 +380,7 @@ static int hashcmp(const HASH *hash, HASH_LINK *pos, const uchar *key,
 my_bool my_hash_insert(HASH *info, const uchar *record)
 {
   int flag;
-  uint idx, halfbuff, first_index;
+  size_t idx, halfbuff, first_index;
   size_t length;
   my_hash_value_type current_hash_nr, UNINIT_VAR(rec_hash_nr),
     UNINIT_VAR(rec2_hash_nr);
@@ -748,7 +748,7 @@ my_bool my_hash_update(HASH *hash, uchar *record, uchar *old_key,
 }
 
 
-uchar *my_hash_element(HASH *hash, ulong idx)
+uchar *my_hash_element(HASH *hash, size_t idx)
 {
   if (idx < hash->records)
     return dynamic_element(&hash->array,idx,HASH_LINK*)->data;

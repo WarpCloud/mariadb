@@ -52,7 +52,7 @@ static bool initialized = 0;
 static MEM_ROOT mem;
 static HASH udf_hash;
 static mysql_rwlock_t THR_LOCK_udf;
-
+static LEX_CSTRING MYSQL_FUNC_NAME= {STRING_WITH_LEN("func") };
 
 static udf_func *add_udf(LEX_CSTRING *name, Item_result ret,
                          const char *dl, Item_udftype typ);
@@ -142,7 +142,6 @@ void udf_init()
   TABLE *table;
   int error;
   DBUG_ENTER("ufd_init");
-  char db[]= "mysql"; /* A subject to casednstr, can't be constant */
 
   if (initialized || opt_noacl)
     DBUG_VOID_RETURN;
@@ -153,7 +152,7 @@ void udf_init()
 
   mysql_rwlock_init(key_rwlock_THR_LOCK_udf, &THR_LOCK_udf);
 
-  init_sql_alloc(&mem, UDF_ALLOC_BLOCK_SIZE, 0, MYF(0));
+  init_sql_alloc(&mem, "udf", UDF_ALLOC_BLOCK_SIZE, 0, MYF(0));
   THD *new_thd = new THD(0);
   if (!new_thd ||
       my_hash_init(&udf_hash,system_charset_info,32,0,0,get_hash_key, NULL, 0))
@@ -167,9 +166,9 @@ void udf_init()
   initialized = 1;
   new_thd->thread_stack= (char*) &new_thd;
   new_thd->store_globals();
-  new_thd->set_db(db, sizeof(db)-1);
+  new_thd->set_db(&MYSQL_SCHEMA_NAME);
 
-  tables.init_one_table(db, sizeof(db)-1, "func", 4, "func", TL_READ);
+  tables.init_one_table(&new_thd->db, &MYSQL_FUNC_NAME, 0, TL_READ);
 
   if (open_and_lock_tables(new_thd, &tables, FALSE, MYSQL_LOCK_IGNORE_TIMEOUT))
   {
@@ -253,7 +252,7 @@ void udf_init()
       }
     }
   }
-  if (error > 0)
+  if (unlikely(error > 0))
     sql_print_error("Got unknown error: %d", my_errno);
   end_read_record(&read_record_info);
   table->m_needs_reopen= TRUE;                  // Force close to free memory
@@ -313,7 +312,7 @@ static void del_udf(udf_func *udf)
       doesn't use it anymore
     */
     const char *name= udf->name.str;
-    uint name_length=udf->name.length;
+    size_t name_length=udf->name.length;
     udf->name.str= "*";
     udf->name.length=1;
     my_hash_update(&udf_hash,(uchar*) udf,(uchar*) name,name_length);
@@ -348,7 +347,7 @@ void free_udf(udf_func *udf)
 
 /* This is only called if using_udf_functions != 0 */
 
-udf_func *find_udf(const char *name,uint length,bool mark_used)
+udf_func *find_udf(const char *name,size_t length,bool mark_used)
 {
   udf_func *udf=0;
   DBUG_ENTER("find_udf");
@@ -433,7 +432,7 @@ static int mysql_drop_function_internal(THD *thd, udf_func *udf, TABLE *table)
   DBUG_ENTER("mysql_drop_function_internal");
 
   const char *exact_name_str= udf->name.str;
-  uint exact_name_len= udf->name.length;
+  size_t exact_name_len= udf->name.length;
 
   del_udf(udf);
   /*
@@ -454,7 +453,7 @@ static int mysql_drop_function_internal(THD *thd, udf_func *udf, TABLE *table)
                                           HA_READ_KEY_EXACT))
   {
     int error;
-    if ((error= table->file->ha_delete_row(table->record[0])))
+    if (unlikely((error= table->file->ha_delete_row(table->record[0]))))
       table->file->print_error(error, MYF(0));
   }
   DBUG_RETURN(0);
@@ -504,8 +503,7 @@ int mysql_create_function(THD *thd,udf_func *udf)
   if (check_ident_length(&udf->name))
     DBUG_RETURN(1);
 
-  tables.init_one_table(STRING_WITH_LEN("mysql"), STRING_WITH_LEN("func"),
-                        "func", TL_WRITE);
+  tables.init_one_table(&MYSQL_SCHEMA_NAME, &MYSQL_FUNC_NAME, 0, TL_WRITE);
   table= open_ltable(thd, &tables, TL_WRITE, MYSQL_LOCK_IGNORE_TIMEOUT);
 
   mysql_rwlock_wrlock(&THR_LOCK_udf);
@@ -515,7 +513,7 @@ int mysql_create_function(THD *thd,udf_func *udf)
   {
     if (thd->lex->create_info.or_replace())
     {
-      if ((error= mysql_drop_function_internal(thd, u_d, table)))
+      if (unlikely((error= mysql_drop_function_internal(thd, u_d, table))))
         goto err;
     }
     else if (thd->lex->create_info.if_not_exists())
@@ -571,7 +569,7 @@ int mysql_create_function(THD *thd,udf_func *udf)
   /* create entry in mysql.func table */
 
   /* Allow creation of functions even if we can't open func table */
-  if (!table)
+  if (unlikely(!table))
     goto err;
   table->use_all_columns();
   restore_record(table, s->default_values);	// Default values for fields
@@ -580,9 +578,9 @@ int mysql_create_function(THD *thd,udf_func *udf)
   table->field[2]->store(u_d->dl,(uint) strlen(u_d->dl), system_charset_info);
   if (table->s->fields >= 4)			// If not old func format
     table->field[3]->store((longlong) u_d->type, TRUE);
-  error = table->file->ha_write_row(table->record[0]);
+  error= table->file->ha_write_row(table->record[0]);
 
-  if (error)
+  if (unlikely(error))
   {
     my_error(ER_ERROR_ON_WRITE, MYF(0), "mysql.func", error);
     del_udf(u_d);
@@ -593,7 +591,7 @@ done:
   mysql_rwlock_unlock(&THR_LOCK_udf);
 
   /* Binlog the create function. */
-  if (write_bin_log(thd, TRUE, thd->query(), thd->query_length()))
+  if (unlikely(write_bin_log(thd, TRUE, thd->query(), thd->query_length())))
     DBUG_RETURN(1);
 
   DBUG_RETURN(0);
@@ -623,8 +621,7 @@ int mysql_drop_function(THD *thd, const LEX_CSTRING *udf_name)
     DBUG_RETURN(1);
   }
 
-  tables.init_one_table(STRING_WITH_LEN("mysql"), STRING_WITH_LEN("func"),
-                        "func", TL_WRITE);
+  tables.init_one_table(&MYSQL_SCHEMA_NAME, &MYSQL_FUNC_NAME, 0, TL_WRITE);
   table= open_ltable(thd, &tables, TL_WRITE, MYSQL_LOCK_IGNORE_TIMEOUT);
 
   mysql_rwlock_wrlock(&THR_LOCK_udf);

@@ -470,13 +470,13 @@ typedef struct st_join_table {
   Window_funcs_computation* window_funcs_step;
 
   /**
-    List of topmost expressions in the select list. The *next* JOIN TAB
+    List of topmost expressions in the select list. The *next* JOIN_TAB
     in the plan should use it to obtain correct values. Same applicable to
     all_fields. These lists are needed because after tmp tables functions
     will be turned to fields. These variables are pointing to
     tmp_fields_list[123]. Valid only for tmp tables and the last non-tmp
     table in the query plan.
-    @see JOIN::make_tmp_tables_info()
+    @see JOIN::make_aggr_tables_info()
   */
   List<Item> *fields;
   /** List of all expressions in the select list */
@@ -1438,6 +1438,9 @@ public:
   
   enum { QEP_NOT_PRESENT_YET, QEP_AVAILABLE, QEP_DELETED} have_query_plan;
 
+  // if keep_current_rowid=true, whether they should be saved in temporary table
+  bool tmp_table_keep_current_rowid;
+
   /*
     Additional WHERE and HAVING predicates to be considered for IN=>EXISTS
     subquery transformation of a JOIN object.
@@ -1543,6 +1546,7 @@ public:
     pushdown_query= 0;
     original_join_tab= 0;
     explain= NULL;
+    tmp_table_keep_current_rowid= 0;
 
     all_fields= fields_arg;
     if (&fields_list != &fields_arg)      /* Avoid valgrind-warning */
@@ -1570,6 +1574,15 @@ public:
   bool only_const_tables()  { return const_tables == table_count; }
   /* Number of tables actually joined at the top level */
   uint exec_join_tab_cnt() { return tables_list ? top_join_tab_count : 0; }
+
+  /*
+    Number of tables in the join which also includes the temporary tables
+    created for GROUP BY, DISTINCT , WINDOW FUNCTION etc.
+  */
+  uint total_join_tab_cnt()
+  {
+    return exec_join_tab_cnt() + aggr_tables - 1;
+  }
 
   int prepare(TABLE_LIST *tables, uint wind_num,
 	      COND *conds, uint og_num, ORDER *order, bool skip_order_by,
@@ -1767,7 +1780,7 @@ private:
   void cleanup_item_list(List<Item> &items) const;
   bool add_having_as_table_cond(JOIN_TAB *tab);
   bool make_aggr_tables_info();
-
+  bool add_fields_for_current_rowid(JOIN_TAB *cur, List<Item> *fields);
 };
 
 enum enum_with_bush_roots { WITH_BUSH_ROOTS, WITHOUT_BUSH_ROOTS};
@@ -2032,7 +2045,7 @@ int report_error(TABLE *table, int error);
 int safe_index_read(JOIN_TAB *tab);
 int get_quick_record(SQL_SELECT *select);
 int setup_order(THD *thd, Ref_ptr_array ref_pointer_array, TABLE_LIST *tables,
-		List<Item> &fields, List <Item> &all_fields, ORDER *order,
+                List<Item> &fields, List <Item> &all_fields, ORDER *order,
                 bool from_window_spec= false);
 int setup_group(THD *thd,  Ref_ptr_array ref_pointer_array, TABLE_LIST *tables,
 		List<Item> &fields, List<Item> &all_fields, ORDER *order,
@@ -2113,7 +2126,8 @@ public:
     @param thd         - Current thread.
   */
   static void *operator new(size_t size, THD *thd) throw();
-  static void operator delete(void *ptr, size_t size) { TRASH(ptr, size); }
+  static void operator delete(void *ptr, size_t size) { TRASH_FREE(ptr, size); }
+  static void operator delete(void *, THD *) throw(){}
 
   Virtual_tmp_table(THD *thd)
   {
@@ -2160,7 +2174,7 @@ public:
       DBUG_ASSERT(s->blob_fields <= m_alloced_field_count);
       s->blob_field[s->blob_fields - 1]= s->fields;
     }
-    s->fields++;
+    new_field->field_index= s->fields++;
     return false;
   }
 
@@ -2183,6 +2197,48 @@ public:
     @return true  - on error (e.g. could not allocate the record buffer).
   */
   bool open();
+
+  void set_all_fields_to_null()
+  {
+    for (uint i= 0; i < s->fields; i++)
+      field[i]->set_null();
+  }
+  /**
+    Set all fields from a compatible item list.
+    The number of fields in "this" must be equal to the number
+    of elements in "value".
+  */
+  bool sp_set_all_fields_from_item_list(THD *thd, List<Item> &items);
+
+  /**
+    Set all fields from a compatible item.
+    The number of fields in "this" must be the same with the number
+    of elements in "value".
+  */
+  bool sp_set_all_fields_from_item(THD *thd, Item *value);
+
+  /**
+    Find a ROW element index by its name
+    Assumes that "this" is used as a storage for a ROW-type SP variable.
+    @param [OUT] idx        - the index of the found field is returned here
+    @param [IN]  field_name - find a field with this name
+    @return      true       - on error (the field was not found)
+    @return      false      - on success (idx[0] was set to the field index)
+  */
+  bool sp_find_field_by_name(uint *idx, const LEX_CSTRING &name) const;
+
+  /**
+    Find a ROW element index by its name.
+    If the element is not found, and error is issued.
+    @param [OUT] idx        - the index of the found field is returned here
+    @param [IN]  var_name   - the name of the ROW variable (for error reporting)
+    @param [IN]  field_name - find a field with this name
+    @return      true       - on error (the field was not found)
+    @return      false      - on success (idx[0] was set to the field index)
+  */
+  bool sp_find_field_by_name_or_error(uint *idx,
+                                      const LEX_CSTRING &var_name,
+                                      const LEX_CSTRING &field_name) const;
 };
 
 
@@ -2269,6 +2325,10 @@ inline Item * and_items(THD *thd, Item* cond, Item *item)
 {
   return (cond ? (new (thd->mem_root) Item_cond_and(thd, cond, item)) : item);
 }
+inline Item * or_items(THD *thd, Item* cond, Item *item)
+{
+  return (cond ? (new (thd->mem_root) Item_cond_or(thd, cond, item)) : item);
+}
 bool choose_plan(JOIN *join, table_map join_tables);
 void optimize_wo_join_buffering(JOIN *join, uint first_tab, uint last_tab, 
                                 table_map last_remaining_tables, 
@@ -2327,10 +2387,11 @@ int append_possible_keys(MEM_ROOT *alloc, String_list &list, TABLE *table,
 #define RATIO_TO_PACK_ROWS	       2
 #define MIN_STRING_LENGTH_TO_PACK_ROWS   10
 
+void calc_group_buffer(TMP_TABLE_PARAM *param, ORDER *group);
 TABLE *create_tmp_table(THD *thd,TMP_TABLE_PARAM *param,List<Item> &fields,
 			ORDER *group, bool distinct, bool save_sum_fields,
 			ulonglong select_options, ha_rows rows_limit,
-			const char* alias, bool do_not_open=FALSE,
+                        const LEX_CSTRING *alias, bool do_not_open=FALSE,
                         bool keep_row_order= FALSE);
 void free_tmp_table(THD *thd, TABLE *entry);
 bool create_internal_tmp_table_from_heap(THD *thd, TABLE *table,
@@ -2343,8 +2404,8 @@ bool create_internal_tmp_table(TABLE *table, KEY *keyinfo,
                                TMP_ENGINE_COLUMNDEF **recinfo, 
                                ulonglong options);
 bool instantiate_tmp_table(TABLE *table, KEY *keyinfo, 
-                           MARIA_COLUMNDEF *start_recinfo,
-                           MARIA_COLUMNDEF **recinfo, 
+                           TMP_ENGINE_COLUMNDEF *start_recinfo,
+                           TMP_ENGINE_COLUMNDEF **recinfo,
                            ulonglong options);
 bool open_tmp_table(TABLE *table);
 void setup_tmp_table_column_bitmaps(TABLE *table, uchar *bitmaps);

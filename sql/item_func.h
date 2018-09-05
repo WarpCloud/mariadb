@@ -30,6 +30,9 @@ extern "C"				/* Bug in BSDI include file */
 }
 #endif
 
+#include "sql_udf.h"    // udf_handler
+#include "my_decimal.h" // string2my_decimal
+
 
 class Item_func :public Item_func_or_sum
 {
@@ -67,27 +70,31 @@ public:
 		  SP_CONTAINS_FUNC,SP_OVERLAPS_FUNC,
 		  SP_STARTPOINT,SP_ENDPOINT,SP_EXTERIORRING,
 		  SP_POINTN,SP_GEOMETRYN,SP_INTERIORRINGN, SP_RELATE_FUNC,
-                  NOT_FUNC, NOT_ALL_FUNC,
+                  NOT_FUNC, NOT_ALL_FUNC, TEMPTABLE_ROWID,
                   NOW_FUNC, NOW_UTC_FUNC, SYSDATE_FUNC, TRIG_COND_FUNC,
                   SUSERVAR_FUNC, GUSERVAR_FUNC, COLLATE_FUNC,
                   EXTRACT_FUNC, CHAR_TYPECAST_FUNC, FUNC_SP, UDF_FUNC,
-                  NEG_FUNC, GSYSVAR_FUNC, DYNCOL_FUNC, JSON_EXTRACT_FUNC };
+                  NEG_FUNC, GSYSVAR_FUNC, IN_OPTIMIZER_FUNC, DYNCOL_FUNC,
+                  JSON_EXTRACT_FUNC };
   enum Type type() const { return FUNC_ITEM; }
   virtual enum Functype functype() const   { return UNKNOWN_FUNC; }
   Item_func(THD *thd): Item_func_or_sum(thd)
   {
     with_sum_func= 0;
     with_field= 0;
+    with_param= 0;
   }
   Item_func(THD *thd, Item *a): Item_func_or_sum(thd, a)
   {
     with_sum_func= a->with_sum_func;
+    with_param= a->with_param;
     with_field= a->with_field;
   }
   Item_func(THD *thd, Item *a, Item *b):
     Item_func_or_sum(thd, a, b)
   {
     with_sum_func= a->with_sum_func || b->with_sum_func;
+    with_param= a->with_param || b->with_param;
     with_field= a->with_field || b->with_field;
   }
   Item_func(THD *thd, Item *a, Item *b, Item *c):
@@ -95,6 +102,7 @@ public:
   {
     with_sum_func= a->with_sum_func || b->with_sum_func || c->with_sum_func;
     with_field= a->with_field || b->with_field || c->with_field;
+    with_param= a->with_param || b->with_param || c->with_param;
   }
   Item_func(THD *thd, Item *a, Item *b, Item *c, Item *d):
     Item_func_or_sum(thd, a, b, c, d)
@@ -103,6 +111,8 @@ public:
                    c->with_sum_func || d->with_sum_func;
     with_field= a->with_field || b->with_field ||
                 c->with_field || d->with_field;
+    with_param= a->with_param || b->with_param ||
+                c->with_param || d->with_param;
   }
   Item_func(THD *thd, Item *a, Item *b, Item *c, Item *d, Item* e):
     Item_func_or_sum(thd, a, b, c, d, e)
@@ -111,6 +121,8 @@ public:
                    c->with_sum_func || d->with_sum_func || e->with_sum_func;
     with_field= a->with_field || b->with_field ||
                 c->with_field || d->with_field || e->with_field;
+    with_param= a->with_param || b->with_param ||
+                c->with_param || d->with_param || e->with_param;
   }
   Item_func(THD *thd, List<Item> &list):
     Item_func_or_sum(thd, list)
@@ -160,14 +172,9 @@ public:
   void print_args(String *str, uint from, enum_query_type query_type);
   inline bool get_arg0_date(MYSQL_TIME *ltime, ulonglong fuzzy_date)
   {
-    return (null_value=args[0]->get_date_with_conversion(ltime, fuzzy_date));
-  }
-  inline bool get_arg0_time(MYSQL_TIME *ltime)
-  {
-    null_value= args[0]->get_time(ltime);
-    DBUG_ASSERT(null_value ||
-                ltime->time_type != MYSQL_TIMESTAMP_TIME || ltime->day == 0);
-    return null_value;
+    DBUG_ASSERT(!(fuzzy_date & TIME_TIME_ONLY));
+    Datetime dt(current_thd, args[0], fuzzy_date);
+    return (null_value= dt.copy_to_mysql_time(ltime));
   }
   bool is_null() { 
     update_null_value();
@@ -392,6 +399,8 @@ public:
   my_decimal *val_decimal(my_decimal *decimal_value);
   longlong val_int()
     { DBUG_ASSERT(fixed == 1); return (longlong) rint(val_real()); }
+  bool get_date(MYSQL_TIME *ltime, ulonglong fuzzydate)
+  { return get_date_from_real(ltime, fuzzydate); }
   const Type_handler *type_handler() const { return &type_handler_double; }
   void fix_length_and_dec()
   { decimals= NOT_FIXED_DEC; max_length= float_length(decimals); }
@@ -451,9 +460,15 @@ class Item_func_hybrid_field_type: public Item_hybrid_func
   */
   bool date_op_with_null_check(MYSQL_TIME *ltime)
   {
-     bool rc= date_op(ltime,
-                      field_type() == MYSQL_TYPE_TIME ? TIME_TIME_ONLY : 0);
+     bool rc= date_op(ltime, 0);
      DBUG_ASSERT(!rc ^ null_value);
+     return rc;
+  }
+  bool time_op_with_null_check(MYSQL_TIME *ltime)
+  {
+     bool rc= time_op(ltime);
+     DBUG_ASSERT(!rc ^ null_value);
+     DBUG_ASSERT(rc || ltime->time_type == MYSQL_TIMESTAMP_TIME);
      return rc;
   }
   String *str_op_with_null_check(String *str)
@@ -492,32 +507,30 @@ public:
   {
     return real_op();
   }
-  bool get_date_from_date_op(MYSQL_TIME *ltime, ulonglong fuzzydate)
-  {
-    return date_op(ltime,
-                   (fuzzydate |
-                   (field_type() == MYSQL_TYPE_TIME ? TIME_TIME_ONLY : 0)));
-  }
 
   // Value methods that involve conversion
   String *val_str_from_decimal_op(String *str);
   String *val_str_from_real_op(String *str);
   String *val_str_from_int_op(String *str);
   String *val_str_from_date_op(String *str);
+  String *val_str_from_time_op(String *str);
 
   my_decimal *val_decimal_from_str_op(my_decimal *dec);
   my_decimal *val_decimal_from_real_op(my_decimal *dec);
   my_decimal *val_decimal_from_int_op(my_decimal *dec);
   my_decimal *val_decimal_from_date_op(my_decimal *dec);
+  my_decimal *val_decimal_from_time_op(my_decimal *dec);
 
   longlong val_int_from_str_op();
   longlong val_int_from_real_op();
   longlong val_int_from_decimal_op();
   longlong val_int_from_date_op();
+  longlong val_int_from_time_op();
 
   double val_real_from_str_op();
   double val_real_from_decimal_op();
   double val_real_from_date_op();
+  double val_real_from_time_op();
   double val_real_from_int_op();
 
   bool get_date_from_str_op(MYSQL_TIME *ltime, ulonglong fuzzydate);
@@ -613,10 +626,17 @@ public:
 
   /**
      @brief Performs the operation that this functions implements when
-     field type is a temporal type.
+     field type is DATETIME or DATE.
      @return The result of the operation.
   */
   virtual bool date_op(MYSQL_TIME *res, ulonglong fuzzy_date)= 0;
+
+  /**
+     @brief Performs the operation that this functions implements when
+     field type is TIME.
+     @return The result of the operation.
+  */
+  virtual bool time_op(MYSQL_TIME *res)= 0;
 
 };
 
@@ -676,6 +696,11 @@ public:
   { }
   String *str_op(String *str) { DBUG_ASSERT(0); return 0; }
   bool date_op(MYSQL_TIME *ltime, ulonglong fuzzydate)
+  {
+    DBUG_ASSERT(0);
+    return true;
+  }
+  bool time_op(MYSQL_TIME *ltime)
   {
     DBUG_ASSERT(0);
     return true;
@@ -765,6 +790,8 @@ public:
   { collation.set_numeric(); }
   double val_real();
   String *val_str(String*str);
+  bool get_date(MYSQL_TIME *ltime, ulonglong fuzzydate)
+  { return get_date_from_int(ltime, fuzzydate); }
   const Type_handler *type_handler() const= 0;
   void fix_length_and_dec() {}
 };
@@ -840,7 +867,7 @@ class Item_func_connection_id :public Item_long_func
   longlong value;
 
 public:
-  Item_func_connection_id(THD *thd): Item_long_func(thd) {}
+  Item_func_connection_id(THD *thd): Item_long_func(thd) { unsigned_flag=1; }
   const char *func_name() const { return "connection_id"; }
   void fix_length_and_dec();
   bool fix_fields(THD *thd, Item **ref);
@@ -958,6 +985,8 @@ public:
   double val_real();
   longlong val_int();
   my_decimal *val_decimal(my_decimal*);
+  bool get_date(MYSQL_TIME *ltime, ulonglong fuzzydate)
+  { return get_date_from_decimal(ltime, fuzzydate); }
   const Type_handler *type_handler() const { return &type_handler_newdecimal; }
   void fix_length_and_dec_generic() {}
   void fix_length_and_dec()
@@ -993,7 +1022,6 @@ public:
   Item *get_copy(THD *thd)
   { return get_item_copy<Item_double_typecast>(thd, this); }
 };
-
 
 
 class Item_func_additive_op :public Item_num_op
@@ -1508,6 +1536,7 @@ public:
   longlong val_int_native();
   my_decimal *val_decimal_native(my_decimal *);
   bool get_date_native(MYSQL_TIME *res, ulonglong fuzzydate);
+  bool get_time_native(MYSQL_TIME *res);
 
   double val_real()
   {
@@ -1598,10 +1627,13 @@ public:
   {
     name= a->name;
   }
-  double val_real() { return args[0]->val_real(); }
-  longlong val_int() { return args[0]->val_int(); }
-  String *val_str(String *str) { return args[0]->val_str(str); }
-  my_decimal *val_decimal(my_decimal *dec) { return args[0]->val_decimal(dec); }
+  double val_real() { return val_real_from_item(args[0]); }
+  longlong val_int() { return val_int_from_item(args[0]); }
+  String *val_str(String *str) { return val_str_from_item(args[0], str); }
+  my_decimal *val_decimal(my_decimal *dec)
+    { return val_decimal_from_item(args[0], dec); }
+  bool get_date(MYSQL_TIME *ltime, ulonglong fuzzydate)
+    { return get_date_from_item(args[0], ltime, fuzzydate); }
   const char *func_name() const { return "rollup_const"; }
   bool const_item() const { return 0; }
   const Type_handler *type_handler() const { return args[0]->type_handler(); }
@@ -1609,9 +1641,7 @@ public:
   {
     collation= args[0]->collation;
     max_length= args[0]->max_length;
-    decimals=args[0]->decimals; 
-    /* The item could be a NULL constant. */
-    null_value= args[0]->is_null();
+    decimals=args[0]->decimals;
   }
   Item *get_copy(THD *thd)
   { return get_item_copy<Item_func_rollup_const>(thd, this); }
@@ -2044,6 +2074,10 @@ public:
   {
     return mark_unsupported_function(func_name(), "()", arg, VCOL_NON_DETERMINISTIC);
   }
+  bool get_date(MYSQL_TIME *ltime, ulonglong fuzzydate)
+  {
+    return type_handler()->Item_get_date(this, ltime, fuzzydate);
+  }
   // do not push udf
   virtual String *to_str(String *str, THD *thd) const { return 0;};
 };
@@ -2343,6 +2377,8 @@ public:
   Field *create_field_for_create_select(TABLE *table)
   { return create_table_field_from_handler(table); }
   bool check_vcol_func_processor(void *arg);
+  bool get_date(MYSQL_TIME *ltime, ulonglong fuzzydate)
+  { return type_handler()->Item_get_date(this, ltime, fuzzydate); }
 };
 
 
@@ -2394,10 +2430,10 @@ public:
   String *str_result(String *str);
   my_decimal *val_decimal_result(my_decimal *);
   bool is_null_result();
-  bool update_hash(void *ptr, uint length, enum Item_result type,
+  bool update_hash(void *ptr, size_t length, enum Item_result type,
                    CHARSET_INFO *cs, bool unsigned_arg);
   bool send(Protocol *protocol, st_value *buffer);
-  void make_field(THD *thd, Send_field *tmp_field);
+  void make_send_field(THD *thd, Send_field *tmp_field);
   bool check(bool use_result_field);
   void save_item_result(Item *item);
   bool update();
@@ -2470,26 +2506,57 @@ public:
   in List<Item> and desire to place this code somewhere near other functions
   working with user variables.
 */
-class Item_user_var_as_out_param :public Item
+class Item_user_var_as_out_param :public Item,
+                                  public Load_data_outvar
 {
-  LEX_CSTRING name;
+  LEX_CSTRING org_name;
   user_var_entry *entry;
 public:
   Item_user_var_as_out_param(THD *thd, const LEX_CSTRING *a)
-  :Item(thd), name(*a)
+  :Item(thd)
   {
     DBUG_ASSERT(a->length < UINT_MAX32);
-    set_name(thd, a->str, (uint) a->length, system_charset_info);
+    org_name= *a;
+    set_name(thd, a->str, a->length, system_charset_info);
+  }
+  Load_data_outvar *get_load_data_outvar()
+  {
+    return this;
+  }
+  bool load_data_set_null(THD *thd, const Load_data_param *param)
+  {
+    set_null_value(param->charset());
+    return false;
+  }
+  bool load_data_set_no_data(THD *thd, const Load_data_param *param)
+  {
+    set_null_value(param->charset());
+    return false;
+  }
+  bool load_data_set_value(THD *thd, const char *pos, uint length,
+                           const Load_data_param *param)
+  {
+    set_value(pos, length, param->charset());
+    return false;
+  }
+  void load_data_print_for_log_event(THD *thd, String *to) const;
+  bool load_data_add_outvar(THD *thd, Load_data_param *param) const
+  {
+    return param->add_outvar_user_var(thd);
+  }
+  uint load_data_fixed_length() const
+  {
+    return 0;
   }
   /* We should return something different from FIELD_ITEM here */
   enum Type type() const { return STRING_ITEM;}
   double val_real();
   longlong val_int();
   String *val_str(String *str);
+  bool get_date(MYSQL_TIME *ltime, ulonglong fuzzydate);
   my_decimal *val_decimal(my_decimal *decimal_buffer);
   /* fix_fields() binds variable name with its entry structure */
   bool fix_fields(THD *thd, Item **ref);
-  void print_for_load(THD *thd, String *str);
   void set_null_value(CHARSET_INFO* cs);
   void set_value(const char *str, uint length, CHARSET_INFO* cs);
   const Type_handler *type_handler() const { return &type_handler_double; }
@@ -2533,6 +2600,10 @@ public:
   String* val_str(String*);
   my_decimal *val_decimal(my_decimal *dec_buf)
   { return val_decimal_from_real(dec_buf); }
+  bool get_date(MYSQL_TIME *ltime, ulonglong fuzzydate)
+  {
+    return type_handler()->Item_get_date(this, ltime, fuzzydate);
+  }
   /* TODO: fix to support views */
   const char *func_name() const { return "get_system_var"; }
   /**
@@ -2750,6 +2821,7 @@ class Item_func_sp :public Item_func,
                     public Item_sp
 {
 private:
+  const Sp_handler *m_handler;
 
   bool execute();
 
@@ -2764,10 +2836,11 @@ protected:
   } 
 public:
 
-  Item_func_sp(THD *thd, Name_resolution_context *context_arg, sp_name *name);
+  Item_func_sp(THD *thd, Name_resolution_context *context_arg,
+               sp_name *name, const Sp_handler *sph);
 
   Item_func_sp(THD *thd, Name_resolution_context *context_arg,
-               sp_name *name, List<Item> &list);
+               sp_name *name, const Sp_handler *sph, List<Item> &list);
 
   virtual ~Item_func_sp()
   {}
@@ -2784,9 +2857,9 @@ public:
   {
     return result_type() != STRING_RESULT ?
            sp_result_field :
-           tmp_table_field_from_field_type(table);
+           create_table_field_from_handler(table);
   }
-  void make_field(THD *thd, Send_field *tmp_field);
+  void make_send_field(THD *thd, Send_field *tmp_field);
 
   longlong val_int()
   {
@@ -2950,6 +3023,7 @@ public:
   Item_func_uuid_short(THD *thd): Item_longlong_func(thd) {}
   const char *func_name() const { return "uuid_short"; }
   longlong val_int();
+  bool const_item() const { return false; }
   void fix_length_and_dec()
   { max_length= 21; unsigned_flag=1; }
   table_map used_tables() const { return RAND_TABLE_BIT; }
@@ -2972,6 +3046,7 @@ public:
   longlong val_int();
   String *val_str(String *);
   my_decimal *val_decimal(my_decimal *);
+  bool get_date(MYSQL_TIME *ltime, ulonglong fuzzydate);
   void fix_length_and_dec();
   const char *func_name() const { return "last_value"; }
   const Type_handler *type_handler() const { return last_value->type_handler(); }
@@ -3077,7 +3152,6 @@ public:
 Item *get_system_var(THD *thd, enum_var_type var_type,
                      const LEX_CSTRING *name, const LEX_CSTRING *component);
 extern bool check_reserved_words(const LEX_CSTRING *name);
-Item *find_date_time_item(Item **args, uint nargs, uint col);
 double my_double_round(double value, longlong dec, bool dec_unsigned,
                        bool truncate);
 bool eval_const_cond(COND *cond);

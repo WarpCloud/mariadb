@@ -393,13 +393,22 @@ SHOW_VAR* enumerate_sys_vars(THD *thd, bool sorted, enum enum_var_type type);
 int fill_sysvars(THD *thd, TABLE_LIST *tables, COND *cond);
 
 sys_var *find_sys_var(THD *thd, const char *str, size_t length=0);
-bool find_sys_var_null_base(THD *thd, struct sys_var_with_base *tmp);
 int sql_set_variables(THD *thd, List<set_var_base> *var_list, bool free);
 
 #define SYSVAR_AUTOSIZE(VAR,VAL)                        \
   do {                                                  \
     VAR= (VAL);                                         \
     set_sys_var_value_origin(&VAR, sys_var::AUTO);      \
+  } while(0)
+
+#define SYSVAR_AUTOSIZE_IF_CHANGED(VAR,VAL,TYPE)        \
+  do {                                                  \
+    TYPE tmp= (VAL);                                    \
+    if (VAR != tmp)                                     \
+    {                                                   \
+      VAR= (VAL);                                       \
+      set_sys_var_value_origin(&VAR, sys_var::AUTO);    \
+    }                                                   \
   } while(0)
 
 void set_sys_var_value_origin(void *ptr, enum sys_var::where here);
