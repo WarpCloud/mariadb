@@ -43,5 +43,6 @@ postcommit_build:
     - 10.3_mfed@OLTP/mariadb
     - 10.3.7_mfed_no_submodule@OLTP/mariadb
     - 10.3.7_mfed@OLTP/mariadb
+    - cross_engine_test_10.3.7@OLTP/mariadb
   tags:
     - k8s

@@ -38,6 +38,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "m_string.h"
 #include "mysqld_error.h"
 #include "sql_servers.h"
+#include <sql_class.h>
 
 #ifdef USE_PRAGMA_IMPLEMENTATION
 #pragma implementation                          // gcc: Class implementation
@@ -690,6 +691,7 @@ int federatedx_io_mysql::mysql_connect()
 class federatedx_io_vitess :public federatedx_io_mysql {
     int current_scan_mode;
     bool in_shard_db;
+    DYNAMIC_STRING session;
 public:
     federatedx_io_vitess(FEDERATEDX_SERVER *);
     ~federatedx_io_vitess();
@@ -698,6 +700,9 @@ public:
     virtual void check_persistence_connect();
     int mysql_connect();
     int actual_query(const char *buffer, size_t length, void *info);
+    int actual_query(const char *buffer, size_t length, void *info, bool init_session_status);
+    int init_session();
+
 };
 
 federatedx_io *instantiate_io_vitess(MEM_ROOT *server_root, FEDERATEDX_SERVER *server) {
@@ -709,11 +714,15 @@ federatedx_io_vitess::federatedx_io_vitess(FEDERATEDX_SERVER *aserver) : federat
   DBUG_ENTER("federatedx_io_vitess::federatedx_io_vitess");
   current_scan_mode = SCAN_MODE_UNKNOWN;
   in_shard_db = false;
+  init_dynamic_string(&session, NULL, 1024, 80);
+  dynstr_set(&session, 0);
+  dynstr_append(&session, "{}");
   DBUG_VOID_RETURN;
 }
 
 federatedx_io_vitess::~federatedx_io_vitess() {
   DBUG_ENTER("federatedx_io_vitess::~federatedx_io_vitess");
+  dynstr_free(&session);
   DBUG_VOID_RETURN;
 }
 
@@ -792,6 +801,9 @@ int federatedx_io_vitess::mysql_connect()
   DBUG_ENTER("federatedx_io_vitess::mysql_connect");
 
   int error = federatedx_io_mysql::mysql_connect();
+  dynstr_set(&session, 0);
+  dynstr_append(&session, "{}");
+
   if (error) {
     DBUG_RETURN(error);
   }
@@ -897,6 +909,10 @@ const char* construct_partial_read_query(String *query, partial_read_info *pr_in
 }
 
 int federatedx_io_vitess::actual_query(const char *buffer, size_t length, void *info) {
+  return actual_query(buffer, length, info, true);
+}
+
+int federatedx_io_vitess::actual_query(const char *buffer, size_t length, void *info, bool init_session_status) {
   int error;
   DBUG_ENTER("federatedx_io_vitess::actual_query");
 
@@ -904,6 +920,12 @@ int federatedx_io_vitess::actual_query(const char *buffer, size_t length, void *
   {
     error = mysql_connect();
     if (error) {
+      DBUG_RETURN(error);
+    }
+  }
+
+  if (init_session_status) {
+    if ((error = init_session())) {
       DBUG_RETURN(error);
     }
   }
@@ -959,3 +981,37 @@ int federatedx_io_vitess::actual_query(const char *buffer, size_t length, void *
 err:
   DBUG_RETURN(error);
 }
+
+int federatedx_io_vitess::init_session()
+{
+  DBUG_ENTER("federatedx_io_vitess::init_session");
+  int error = 0;
+  if (mysql.net.thd == NULL) {
+    DBUG_RETURN(error);
+  }
+  st_mysql_const_lex_string key = {"vitess_session", strlen("vitess_session")};
+  user_var_entry* var_entry = get_variable(&((THD*)mysql.net.thd)->user_vars, &key, 0);
+  if (var_entry == NULL) {
+    DBUG_RETURN(error);
+  }
+  char* session_str = var_entry->value;
+  if (session_str == NULL || strlen(session_str) == 0) {
+    DBUG_RETURN(error);
+  }
+  if (strlen(session_str) != strlen(session.str) || memcmp(session_str, session.str, strlen(session.str))) {
+    char set_session_buffer[1024];
+    String set_session_str(set_session_buffer, sizeof(set_session_buffer), &my_charset_bin);
+    set_session_str.append(STRING_WITH_LEN("set vitess_session='"));
+    set_session_str.append(session_str, strlen(session_str));
+    set_session_str.append(STRING_WITH_LEN("'"));
+
+    error = actual_query(set_session_str.ptr(), set_session_str.length(), NULL, false);
+    if (!error) {
+      dynstr_set(&session, 0);
+      dynstr_append(&session, session_str);
+    }
+  }
+
+  DBUG_RETURN(error);
+}
+
