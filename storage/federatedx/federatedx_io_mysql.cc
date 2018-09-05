@@ -997,10 +997,13 @@ int federatedx_io_vitess::init_session()
     DBUG_RETURN(error);
   }
   if (strlen(session_str) != strlen(session.str) || memcmp(session_str, session.str, strlen(session.str))) {
-    char* set_session_str = new char[65535];
-    sprintf(set_session_str, "set vitess_session='%s'", session_str);
-    error = actual_query(set_session_str, strlen(set_session_str), NULL, false);
-    delete set_session_str;
+    char set_session_buffer[1024];
+    String set_session_str(set_session_buffer, sizeof(set_session_buffer), &my_charset_bin);
+    set_session_str.append(STRING_WITH_LEN("set vitess_session='"));
+    set_session_str.append(session_str, strlen(session_str));
+    set_session_str.append(STRING_WITH_LEN("'"));
+
+    error = actual_query(set_session_str.ptr(), set_session_str.length(), NULL, false);
     if (!error) {
       dynstr_set(&session, 0);
       dynstr_append(&session, session_str);
