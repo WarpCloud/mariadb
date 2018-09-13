@@ -363,6 +363,7 @@ typedef struct st_join_table {
   uint          used_null_fields;
   uint          used_uneven_bit_fields;
   enum join_type type;
+  enum join_type type_before_BNLH_join;
   bool          cached_eq_ref_table,eq_ref_table;
   bool          shortcut_for_distinct;
   bool          sorted;
