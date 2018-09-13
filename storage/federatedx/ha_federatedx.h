@@ -359,6 +359,12 @@ class ha_federatedx: public handler
   ha_rows records_per_shard;
   bool index_cardinality_init;
   uint field_type;
+  bool table_status_init;
+  my_time_t table_status_init_time;
+  ha_rows records_at_init_time;
+  ha_rows insert_records_since_init;
+  ha_rows update_records_since_init;
+  ha_rows delete_records_since_init;
 
 private:
   /*
@@ -548,6 +554,8 @@ public:
   uint init_vindex_info(federatedx_io *io);
   void init_pk_info();
   virtual void mark_read_columns_needed_for_update_delete(MY_BITMAP *read_map, MY_BITMAP *write_map);
+  bool need_init_table_status(THD *thd);
+  uint init_index_info(federatedx_io *io, THD *thd);
 };
 
 extern const char ident_quote_char;              // Character for quoting

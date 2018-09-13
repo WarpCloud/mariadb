@@ -2257,6 +2257,13 @@ static Sys_var_harows Sys_fedx_small_table_threshold(
         VALID_RANGE(1, HA_POS_ERROR), DEFAULT(2000), BLOCK_SIZE(1),
         NO_MUTEX_GUARD, NOT_IN_BINLOG);
 
+static Sys_var_harows Sys_fedx_reinit_table_status_threshold(
+        "fedx_reinit_table_status_threshold",
+        "the max size of a small fedx table",
+        SESSION_VAR(fedx_reinit_table_status_threshold), CMD_LINE(REQUIRED_ARG),
+        VALID_RANGE(1, 100), DEFAULT(30), BLOCK_SIZE(1),
+        NO_MUTEX_GUARD, NOT_IN_BINLOG);
+
 static Sys_var_harows Sys_fedx_valid_index_cardinality_percent(
         "fedx_valid_index_cardinality_percent",
         "the max size of a complete read for vitess table",

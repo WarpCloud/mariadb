@@ -11144,73 +11144,6 @@ static uint make_join_orderinfo(JOIN *join)
   return tab ? (uint)(tab-join->join_tab) : join->table_count;
 }
 
-/*
-  Deny usage of join buffer for the specified table
-
-  SYNOPSIS
-    set_join_cache_denial()
-      tab    join table for which join buffer usage is to be denied  
-     
-  DESCRIPTION
-    The function denies usage of join buffer when joining the table 'tab'.
-    The table is marked as not employing any join buffer. If a join cache
-    object has been already allocated for the table this object is destroyed.
-
-  RETURN
-    none    
-*/
-
-static
-void set_join_cache_denial(JOIN_TAB *join_tab)
-{
-  if (join_tab->cache)
-  {
-    /* 
-      If there is a previous cache linked to this cache through the
-      next_cache pointer: remove the link. 
-    */
-    if (join_tab->cache->prev_cache)
-      join_tab->cache->prev_cache->next_cache= 0;
-    /*
-      Same for the next_cache
-    */
-    if (join_tab->cache->next_cache)
-      join_tab->cache->next_cache->prev_cache= 0;
-
-    join_tab->cache->free();
-    join_tab->cache= 0;
-  }
-  if (join_tab->use_join_cache)
-  {
-    join_tab->use_join_cache= FALSE;
-    join_tab->used_join_cache_level= 0;
-    /*
-      It could be only sub_select(). It could not be sub_seject_sjm because we
-      don't do join buffering for the first table in sjm nest. 
-    */
-    join_tab[-1].next_select= sub_select;
-    if (join_tab->type == JT_REF && join_tab->is_ref_for_hash_join())
-    {
-      join_tab->type= JT_ALL;
-      join_tab->ref.key_parts= 0;
-    }
-    join_tab->join->return_tab= join_tab;
-  }
-}
-
-
-/**
-  The default implementation of unlock-row method of READ_RECORD,
-  used in all access methods.
-*/
-
-void rr_unlock_row(st_join_table *tab)
-{
-  READ_RECORD *info= &tab->read_record;
-  info->table->file->unlock_row();
-}
-
-
 /**
   Pick the appropriate access method functions
 
@@ -11222,7 +11155,7 @@ void rr_unlock_row(st_join_table *tab)
 static void
 pick_table_access_method(JOIN_TAB *tab)
 {
-  switch (tab->type) 
+  switch (tab->type)
   {
   case JT_REF:
     tab->read_first_record= join_read_always_key;
@@ -11254,11 +11187,84 @@ pick_table_access_method(JOIN_TAB *tab)
     tab->read_record.read_record_func= join_no_more_records;
     break;
 
-  /* keep gcc happy */  
+  /* keep gcc happy */
   default:
-    break;  
+    break;
   }
 }
+
+
+/*
+  Deny usage of join buffer for the specified table
+
+  SYNOPSIS
+    set_join_cache_denial()
+      tab    join table for which join buffer usage is to be denied  
+     
+  DESCRIPTION
+    The function denies usage of join buffer when joining the table 'tab'.
+    The table is marked as not employing any join buffer. If a join cache
+    object has been already allocated for the table this object is destroyed.
+
+  RETURN
+    none    
+*/
+
+static
+void set_join_cache_denial(JOIN_TAB *join_tab)
+{
+  bool is_BNLH = join_tab->cache && join_tab->cache->get_join_alg() == JOIN_CACHE::BNLH_JOIN_ALG;
+  if (join_tab->cache)
+  {
+    /* 
+      If there is a previous cache linked to this cache through the
+      next_cache pointer: remove the link. 
+    */
+    if (join_tab->cache->prev_cache)
+      join_tab->cache->prev_cache->next_cache= 0;
+    /*
+      Same for the next_cache
+    */
+    if (join_tab->cache->next_cache)
+      join_tab->cache->next_cache->prev_cache= 0;
+
+    join_tab->cache->free();
+    join_tab->cache= 0;
+  }
+  if (join_tab->use_join_cache)
+  {
+    join_tab->use_join_cache= FALSE;
+    join_tab->used_join_cache_level= 0;
+    /*
+      It could be only sub_select(). It could not be sub_seject_sjm because we
+      don't do join buffering for the first table in sjm nest. 
+    */
+    join_tab[-1].next_select= sub_select;
+    if (join_tab->type == JT_REF && join_tab->is_ref_for_hash_join())
+    {
+      join_tab->type= JT_ALL;
+      join_tab->ref.key_parts= 0;
+    }
+    if (is_BNLH) {
+      join_tab->type = join_tab->type_before_BNLH_join;
+      pick_table_access_method(join_tab);
+    }
+    join_tab->join->return_tab= join_tab;
+  }
+}
+
+
+/**
+  The default implementation of unlock-row method of READ_RECORD,
+  used in all access methods.
+*/
+
+void rr_unlock_row(st_join_table *tab)
+{
+  READ_RECORD *info= &tab->read_record;
+  info->table->file->unlock_row();
+}
+
 
 
 /* 
@@ -12012,8 +12018,10 @@ make_join_readinfo(JOIN *join, ulonglong options, uint no_jbuf_after)
     if (jcl)
        tab[-1].next_select=sub_select_cache;
 
-    if (tab->cache && tab->cache->get_join_alg() == JOIN_CACHE::BNLH_JOIN_ALG)
-      tab->type= JT_HASH;
+    if (tab->cache && tab->cache->get_join_alg() == JOIN_CACHE::BNLH_JOIN_ALG) {
+      tab->type_before_BNLH_join = tab->type;
+      tab->type = JT_HASH;
+    }
       
     switch (tab->type) {
     case JT_SYSTEM:				// Only happens with left join 
