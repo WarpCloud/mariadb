@@ -5482,6 +5482,8 @@ int ha_federatedx::discover_assisted(handlerton *hton, THD* thd,
   if (cut_offset > 0 && !memcmp(query.ptr() + cut_offset,
                                 cut_clause.str, cut_clause.length))
     query.length(cut_offset);
+  //add engine explicitly in case 'set sql_mode=no_table_options' does not work
+  query.append(STRING_WITH_LEN(" ENGINE=FEDERATED"), cs);
   query.append(STRING_WITH_LEN(" CONNECTION='"), cs);
   query.append_for_single_quote(table_s->connect_string.str,
                                 table_s->connect_string.length);
