@@ -5177,7 +5177,7 @@ static int test_connection(MYSQL_THD thd, federatedx_io *io,
   int retval;
 
   str.length(0);
-  str.append(STRING_WITH_LEN("SELECT * FROM "));
+  str.append(STRING_WITH_LEN("SELECT /*!99999 select for mfed ddl*/ * FROM "));
   append_identifier(thd, &str, share->table_name,
                     share->table_name_length);
   str.append(STRING_WITH_LEN(" WHERE 1=0"));
