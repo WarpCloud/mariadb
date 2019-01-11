@@ -3290,7 +3290,7 @@ int ha_federatedx::index_read_idx_with_result_set(uchar *buf, uint index,
   sql_query.append(index_string);
 
   bool force_oltp = false;
-  if (is_delete_update_target || statement_lock_type >= TL_READ_DEFAULT) {
+  if (is_delete_update_target || statement_lock_type >= TL_READ_WITH_SHARED_LOCKS) {
     if (ha_thd()->lex->sql_command == SQLCOM_DELETE && !partial_ppd
             && ha_thd()->variables.fedx_vitess_push_limit_for_simple_dml) {
       ha_rows expand_factor = ha_thd()->variables.fedx_vitess_limit_expand_factor;
@@ -3397,7 +3397,7 @@ int ha_federatedx::read_range_first(const key_range *start_key,
                         start_key, end_key, 0, eq_range_arg);
 
   bool force_oltp = false;
-  if (is_delete_update_target || statement_lock_type >= TL_READ_DEFAULT) {
+  if (is_delete_update_target || statement_lock_type >= TL_READ_WITH_SHARED_LOCKS) {
     if (ha_thd()->lex->sql_command == SQLCOM_DELETE && !partial_ppd
         && ha_thd()->variables.fedx_vitess_push_limit_for_simple_dml) {
       ha_rows expand_factor = ha_thd()->variables.fedx_vitess_limit_expand_factor;
@@ -3668,7 +3668,7 @@ int ha_federatedx::rnd_init(bool scan)
     }
 
     bool force_oltp = false;
-    if (is_delete_update_target || statement_lock_type >= TL_READ_DEFAULT) {
+    if (is_delete_update_target || statement_lock_type >= TL_READ_WITH_SHARED_LOCKS) {
       if (ha_thd()->lex->sql_command == SQLCOM_DELETE && !partial_ppd
           && ha_thd()->variables.fedx_vitess_push_limit_for_simple_dml) {
         ha_rows expand_factor = ha_thd()->variables.fedx_vitess_limit_expand_factor;
@@ -3684,7 +3684,7 @@ int ha_federatedx::rnd_init(bool scan)
       }
       if (is_delete_update_target || statement_lock_type >= TL_WRITE_DELAYED) {
           sql_query.append(STRING_WITH_LEN(" FOR UPDATE"));
-      } else if ( statement_lock_type >= TL_READ_WITH_SHARED_LOCKS ) {
+      } else {
           sql_query.append(STRING_WITH_LEN(" LOCK IN SHARE MODE"));
       }
 
@@ -3872,7 +3872,7 @@ int ha_federatedx::read_multi_in_first(String *in_filter_str)
   }
 
   bool force_oltp = false;
-  if (is_delete_update_target || statement_lock_type >= TL_READ_DEFAULT) {
+  if (is_delete_update_target || statement_lock_type >= TL_READ_WITH_SHARED_LOCKS) {
     if (statement_lock_type >= TL_WRITE_DELAYED)
         sql_query.append(STRING_WITH_LEN(" FOR UPDATE"));
     else
