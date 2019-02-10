@@ -2395,6 +2395,14 @@ help:
 /* change master */
 
 change:
+          CHANGE USER_SYM TO_SYM user
+           {
+             LEX *lex=Lex;
+             lex->sql_command= SQLCOM_CHANGE_EFFECTIVE_USER;
+             lex->grant_user=$4;
+             lex->grant_user->auth= null_clex_str;
+           }
+        |
           CHANGE MASTER_SYM optional_connection_name TO_SYM
           {
             Lex->sql_command = SQLCOM_CHANGE_MASTER;

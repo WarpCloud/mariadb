@@ -6282,6 +6282,11 @@ end_with_restore_list:
     DBUG_ASSERT(lex->m_sql_cmd != NULL);
     res= lex->m_sql_cmd->execute(thd);
     break;
+  case SQLCOM_CHANGE_EFFECTIVE_USER:
+  {
+    res = change_effective_user(thd);
+    break;
+  }
   default:
 
 #ifndef EMBEDDED_LIBRARY

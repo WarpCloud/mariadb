@@ -220,6 +220,8 @@ bool acl_getroot(Security_context *sctx, const char *user, const char *host,
 bool acl_check_host(const char *host, const char *ip);
 bool check_change_password(THD *thd, LEX_USER *user);
 bool change_password(THD *thd, LEX_USER *user);
+// support for change the effective user id
+int change_effective_user(THD *thd);
 
 bool mysql_grant_role(THD *thd, List<LEX_USER> &user_list, bool revoke);
 bool mysql_grant(THD *thd, const char *db, List <LEX_USER> &user_list,
