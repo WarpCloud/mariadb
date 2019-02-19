@@ -13636,8 +13636,8 @@ int change_effective_user(THD *thd) {
     // the proxied host should always be set to '%'
     proxied_host = proxy_user->get_proxied_host();
   } else {
-    // if the user want to change to himself, the host would always be the one
-    // that he has been authenticated for
+    // if the user want to change to oneself, the host would be the one
+    // for which has been authenticated
     proxied_host = sctx->host_or_ip;
   }
   acl_user = find_user_exact(safe_str(proxied_host), target_user->user.str);
