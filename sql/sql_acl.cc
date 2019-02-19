@@ -13664,19 +13664,20 @@ int change_effective_user(THD *thd) {
   mysql_mutex_unlock(&acl_cache->lock);
 
   // set the db access privilege for this new user
+  ulong db_access = 0;
   if (thd->db.str) {
     if (is_infoschema_db(&(thd->db))) {
-      sctx->db_access = SELECT_ACL;
+      db_access = sctx->db_access = SELECT_ACL;
     }
     else {
       if (test_all_bits(sctx->master_access, DB_ACLS))
-        sctx->db_access = DB_ACLS;
-      else {
-        sctx->db_access = acl_get(sctx->host, sctx->ip, sctx->priv_user,
-                                  thd->db.str, FALSE) | sctx->master_access;
-      }
+        db_access = DB_ACLS;
+      else
+        db_access = acl_get(sctx->host, sctx->ip, sctx->priv_user,
+                            thd->db.str, FALSE) | sctx->master_access;
     }
   }
+  sctx->db_access = db_access;
 
   my_ok(thd);
   DBUG_RETURN(0);
