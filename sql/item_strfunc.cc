@@ -2421,6 +2421,13 @@ bool Item_func_current_user::fix_fields(THD *thd, Item **ref)
   return init(ctx->priv_user, ctx->priv_host);
 }
 
+bool Item_func_priv_user::fix_fields(THD *thd, Item **ref)
+{
+  return (Item_func_sysconst::fix_fields(thd, ref) ||
+          init(thd->main_security_ctx.priv_user,
+               thd->main_security_ctx.priv_host));
+}
+
 bool Item_func_current_role::fix_fields(THD *thd, Item **ref)
 {
   if (Item_func_sysconst::fix_fields(thd, ref))
