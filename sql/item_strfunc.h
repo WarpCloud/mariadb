@@ -927,6 +927,20 @@ public:
 };
 
 
+class Item_func_priv_user :public Item_func_user
+{
+    Name_resolution_context *context;
+
+public:
+    explicit Item_func_priv_user(THD *thd):Item_func_user(thd) {}
+
+    bool fix_fields(THD *thd, Item **ref);
+
+    const char *func_name() const { return "priv_user"; }
+    const char *fully_qualified_func_name() const { return "priv_user()"; }
+};
+
+
 class Item_func_current_role :public Item_func_sysconst
 {
   Name_resolution_context *context;
