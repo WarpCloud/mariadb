@@ -6245,3 +6245,9 @@ static Sys_var_enum Sys_secure_timestamp(
        "historical behavior, anyone can modify session timestamp",
        READ_ONLY GLOBAL_VAR(opt_secure_timestamp), CMD_LINE(REQUIRED_ARG),
        secure_timestamp_levels, DEFAULT(SECTIME_NO));
+
+static Sys_var_mybool Sys_debug_change_user(
+        "debug_change_effective_user",
+        "print debug info into error log for change effective user",
+        GLOBAL_VAR(opt_debug_change_user),
+        CMD_LINE(OPT_ARG), DEFAULT(FALSE));
