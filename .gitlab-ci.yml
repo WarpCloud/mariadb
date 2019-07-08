@@ -1,5 +1,7 @@
 image: 172.16.1.99/kundb/builder:centos7
 
+variables:
+  GIT_SUBMODULE_STRATEGY: normal
 before_script:
   - time=`date "+%Y-%m-%d-%H-%M-%S"`
   - export MARIA_SRC=`pwd`
