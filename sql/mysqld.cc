@@ -536,6 +536,8 @@ ulonglong denied_connections;
 my_decimal decimal_zero;
 long opt_secure_timestamp;
 
+my_bool opt_debug_change_user;
+
 /*
   Maximum length of parameter value which can be set through
   mysql_send_long_data() call.
