@@ -7,7 +7,7 @@ before_script:
   - export DEPLOY_JAR="N"
   - export KunDB_Version="kundb_1.1"
   - if [ "${CI_COMMIT_REF_NAME}" = "10.3.7_mfed" ]; then
-  -   export BRANCH_NAME="maria_for_$KunDB_Version"
+  -   export BRANCH_NAME="mariadb_for_$KunDB_Version"
   - else
   -   export BRANCH_NAME="${CI_COMMIT_REF_NAME}"
   - fi
