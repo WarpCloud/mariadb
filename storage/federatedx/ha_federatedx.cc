@@ -4372,7 +4372,7 @@ uint ha_federatedx::init_shard_info(federatedx_io *io) {
   char shard_buffer[FEDERATEDX_QUERY_BUFFER_SIZE];
   String shard_query(shard_buffer, sizeof(shard_buffer), &my_charset_bin);
   shard_query.length(0);
-  shard_query.append(STRING_WITH_LEN("SHOW VITESS_SHARDS "));
+  shard_query.append(STRING_WITH_LEN("SHOW KUNDB_SHARDS "));
   shard_query.append(STRING_WITH_LEN("`"));
   shard_query.append(share->s->database);
   shard_query.append(STRING_WITH_LEN("`"));
@@ -4439,7 +4439,7 @@ uint ha_federatedx::init_global_range_info(federatedx_io *io) {
   char range_info_query_buffer[FEDERATEDX_QUERY_BUFFER_SIZE];
   String query(range_info_query_buffer, sizeof(range_info_query_buffer), &my_charset_bin);
   query.length(0);
-  query.append(STRING_WITH_LEN("SHOW VITESS_RANGE_INFO "));
+  query.append(STRING_WITH_LEN("SHOW KUNDB_RANGE_INFO "));
   query.append(STRING_WITH_LEN("`"));
   query.append(share->table_name, share->table_name_length);
   query.append(STRING_WITH_LEN("`"));
@@ -4510,7 +4510,7 @@ uint ha_federatedx::init_local_range_info(federatedx_io *io) {
   char range_info_query_buffer[FEDERATEDX_QUERY_BUFFER_SIZE];
   String query(range_info_query_buffer, sizeof(range_info_query_buffer), &my_charset_bin);
   query.length(0);
-  query.append(STRING_WITH_LEN("SHOW VITESS_RANGE_INFO "));
+  query.append(STRING_WITH_LEN("SHOW KUNDB_RANGE_INFO "));
   query.append(STRING_WITH_LEN("`"));
   query.append(share->table_name, share->table_name_length);
   query.append(STRING_WITH_LEN("`"));
@@ -4578,7 +4578,7 @@ uint ha_federatedx::init_vindex_info(federatedx_io *io) {
   char vindex_query_buffer[FEDERATEDX_QUERY_BUFFER_SIZE];
   String query(vindex_query_buffer, sizeof(vindex_query_buffer), &my_charset_bin);
   query.length(0);
-  query.append(STRING_WITH_LEN("SHOW VITESS_VINDEXES in "));
+  query.append(STRING_WITH_LEN("SHOW KUNDB_VINDEXES in "));
   query.append(STRING_WITH_LEN("`"));
   query.append(share->table_name, share->table_name_length);
   query.append(STRING_WITH_LEN("`"));
