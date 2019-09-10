@@ -3665,6 +3665,10 @@ int ha_federatedx::rnd_init(bool scan)
     if (additionalFilter.length > 0) {
       sql_query.append(STRING_WITH_LEN(" WHERE "));
       sql_query.append(additionalFilter.str, additionalFilter.length);
+    } else if (table_share->sequence && table_share->sequence->remote) {
+      sql_query.append(STRING_WITH_LEN(" WHERE _kundb_dummy_next_val = 1 and _kundb_dummy_seq_name = "));
+      append_ident(&sql_query, share->table_name,
+                   share->table_name_length, value_quote_char);
     }
 
     bool force_oltp = false;

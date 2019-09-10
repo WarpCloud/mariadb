@@ -1519,6 +1519,7 @@ bool my_yyoverflow(short **a, YYSTYPE **b, size_t *yystacksize);
 %token  <kwd>  RELAY_LOG_POS_SYM
 %token  <kwd>  RELAY_THREAD
 %token  <kwd>  RELOAD
+%token  <kwd>  REMOTE_SEQ_SYM
 %token  <kwd>  REMOVE_SYM
 %token  <kwd>  REORGANIZE_SYM
 %token  <kwd>  REPAIR
@@ -6318,6 +6319,10 @@ create_table_option:
 	    Lex->create_info.used_fields|= HA_CREATE_USED_SEQUENCE;
             Lex->create_info.sequence= ($3 == HA_CHOICE_YES);
 	  }
+	    | REMOTE_SEQ_SYM opt_equal choice
+          {
+            Lex->create_info.remote_sequence= ($3 == HA_CHOICE_YES);
+          }
         | versioning_option
         ;
 

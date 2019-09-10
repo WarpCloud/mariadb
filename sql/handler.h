@@ -2039,6 +2039,7 @@ struct Table_scope_and_contents_source_st
   enum_stats_auto_recalc stats_auto_recalc;
   bool varchar;                         ///< 1 if table has a VARCHAR
   bool sequence;                        // If SEQUENCE=1 was used
+  bool remote_sequence;                 // If REMOTE_SEQ=1 was used
 
   List<Virtual_column_info> *check_constraint_list;
 
