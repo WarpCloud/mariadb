@@ -6319,7 +6319,7 @@ create_table_option:
 	    Lex->create_info.used_fields|= HA_CREATE_USED_SEQUENCE;
             Lex->create_info.sequence= ($3 == HA_CHOICE_YES);
 	  }
-	    | REMOTE_SEQ_SYM opt_equal choice
+        | REMOTE_SEQ_SYM opt_equal choice
           {
             Lex->create_info.remote_sequence= ($3 == HA_CHOICE_YES);
           }
