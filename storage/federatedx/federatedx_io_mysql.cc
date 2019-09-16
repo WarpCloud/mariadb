@@ -673,6 +673,7 @@ int federatedx_io_mysql::mysql_connect()
   mysql_options(&mysql, MYSQL_SET_CHARSET_NAME, get_charsetname());
   mysql_options(&mysql, MYSQL_OPT_USE_THREAD_SPECIFIC_MEMORY,
                 (char*) &my_true);
+  mysql_options(&mysql, MYSQL_ENABLE_CLEARTEXT_PLUGIN, (char*) &my_true);
 
   if (!mysql_real_connect(&mysql,
                           get_hostname(),
