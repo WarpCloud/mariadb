@@ -1365,6 +1365,8 @@ int TABLE_SHARE::init_from_binary_frm_image(THD *thd, bool write,
     {
       share->table_type= TABLE_TYPE_SEQUENCE;
       share->sequence= new (&share->mem_root) SEQUENCE();
+      share->sequence->remote =
+              enum_value_with_check(thd, share, "remote sequence", frm_image[59] & 3, HA_CHOICE_MAX);
       share->non_determinstic_insert= true;
     }
     share->row_type= (enum row_type)
@@ -3885,6 +3887,9 @@ void prepare_frm_header(THD *thd, uint reclength, uchar *fileinfo,
     59-60 is unused since 10.2.4
     61 for default_part_db_type
   */
+  // use 59 for the remote sequence option
+  fileinfo[59] = (create_info->remote_sequence ? HA_CHOICE_YES : 0);
+
   int2store(fileinfo+62, create_info->key_block_size);
   DBUG_VOID_RETURN;
 } /* prepare_fileinfo */
@@ -3907,6 +3912,7 @@ void update_create_info_from_table(HA_CREATE_INFO *create_info, TABLE *table)
   create_info->page_checksum= share->page_checksum;
   create_info->option_list= share->option_list;
   create_info->sequence= MY_TEST(share->sequence);
+  create_info->remote_sequence = create_info->sequence ? MY_TEST(share->sequence->remote) : 0;
 
   DBUG_VOID_RETURN;
 }

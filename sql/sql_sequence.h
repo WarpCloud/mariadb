@@ -40,7 +40,7 @@ class sequence_definition :public Sql_alloc
 public:
   sequence_definition():
     min_value(1), max_value(LONGLONG_MAX-1), start(1), increment(1),
-      cache(1000), round(0), restart(0), cycle(0), used_fields(0)
+      cache(1000), round(0), restart(0), cycle(0), used_fields(0), remote(0)
   {}
   longlong reserved_until;
   longlong min_value;
@@ -52,6 +52,8 @@ public:
   longlong restart;              // alter sequence restart value
   bool     cycle;
   uint used_fields;              // Which fields where used in CREATE
+
+  bool     remote;
 
   bool check_and_adjust(bool set_reserved_until);
   void store_fields(TABLE *table);
@@ -105,6 +107,7 @@ public:
     all_values_used= 0;
   }
   longlong next_value(TABLE *table, bool second_round, int *error);
+  longlong next_value_remote(TABLE *table, int *error);
   int set_value(TABLE *table, longlong next_value, ulonglong round_arg,
                 bool is_used);
   longlong increment_value(longlong value)

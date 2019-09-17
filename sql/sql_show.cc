@@ -2022,6 +2022,8 @@ static void add_table_options(THD *thd, TABLE *table,
   }
   if (share->table_type == TABLE_TYPE_SEQUENCE)
     packet->append(STRING_WITH_LEN(" SEQUENCE=1"));
+  if (share->table_type == TABLE_TYPE_SEQUENCE && share->sequence->remote)
+    packet->append(STRING_WITH_LEN(" REMOTE_SEQ=1"));
   if (table->s->key_block_size)
   {
     packet->append(STRING_WITH_LEN(" KEY_BLOCK_SIZE="));

@@ -287,6 +287,10 @@ bool sequence_insert(THD *thd, LEX *lex, TABLE_LIST *org_table_list)
   TABLE_LIST table_list;                        // For sequence table
   DBUG_ENTER("sequence_insert");
 
+  if (lex->create_info.remote_sequence) {
+    DBUG_RETURN(FALSE);
+  }
+
   /*
     seq is 0 if sequence was created with CREATE TABLE instead of
     CREATE SEQUENCE
@@ -429,6 +433,10 @@ int SEQUENCE::read_initial_values(TABLE *table)
   MDL_request mdl_request;                      // Empty constructor!
   DBUG_ENTER("SEQUENCE::read_initial_values");
 
+  if (remote) {
+    DBUG_RETURN(0);
+  }
+
   if (likely(initialized != SEQ_UNINTIALIZED))
     DBUG_RETURN(0);
   write_lock(table);
@@ -534,6 +542,9 @@ int SEQUENCE::read_stored_values(TABLE *table)
 void sequence_definition::adjust_values(longlong next_value)
 {
   next_free_value= next_value;
+  if (remote)
+    return;
+
   if (!(real_increment= increment))
   {
     longlong offset= 0;
@@ -681,6 +692,10 @@ longlong SEQUENCE::next_value(TABLE *table, bool second_round, int *error)
   bool out_of_values;
   DBUG_ENTER("SEQUENCE::next_value");
 
+  if (remote) {
+    DBUG_RETURN(next_value_remote(table,error));
+  }
+
   *error= 0;
   if (!second_round)
     write_lock(table);
@@ -762,6 +777,17 @@ err:
   DBUG_RETURN(0);
 }
 
+longlong SEQUENCE::next_value_remote(TABLE *table, int *error)
+{
+  DBUG_ENTER("SEQUENCE::next_value_remote");
+
+  *error = 0;
+  *error = read_stored_values(table);
+  if (*error)
+    DBUG_RETURN(0);
+
+  DBUG_RETURN(next_free_value);
+}
 
 /*
    The following functions is to detect if a table has been dropped

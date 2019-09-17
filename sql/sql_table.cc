@@ -3430,7 +3430,7 @@ mysql_prepare_create_table(THD *thd, HA_CREATE_INFO *create_info,
   /* Handle creation of sequences */
   if (create_info->sequence)
   {
-    if (!(file->ha_table_flags() & HA_CAN_TABLES_WITHOUT_ROLLBACK))
+    if (!(file->ha_table_flags() & HA_CAN_TABLES_WITHOUT_ROLLBACK) && !(create_info->remote_sequence))
     {
       my_error(ER_ILLEGAL_HA_CREATE_OPTION, MYF(0), file->table_type(),
                "SEQUENCE");
