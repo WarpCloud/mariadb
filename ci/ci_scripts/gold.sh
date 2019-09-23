@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set -e
 echo "tag postcommit image to gold image."
 ${CI_SRC}/startdocker.sh &
 mkdir -p ~/.docker && cp /root/.docker/config.json ~/.docker/ || true
