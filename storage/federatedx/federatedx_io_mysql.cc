@@ -1000,8 +1000,11 @@ int federatedx_io_vitess::init_session()
     DBUG_RETURN(error);
   }
   if (strlen(session_str) != strlen(session.str) || memcmp(session_str, session.str, strlen(session.str))) {
-    char set_session_buffer[1024];
-    String set_session_str(set_session_buffer, sizeof(set_session_buffer), &my_charset_bin);
+    // modified by klkyy2018(fei.long@transwarp.io)
+    String set_session_str(1024);
+//    char set_session_buffer[1024];
+//    String set_session_str(set_session_buffer, sizeof(set_session_buffer), &my_charset_bin);
+    // end
     set_session_str.append(STRING_WITH_LEN("set vitess_session='"));
     set_session_str.append(session_str, strlen(session_str));
     set_session_str.append(STRING_WITH_LEN("'"));
