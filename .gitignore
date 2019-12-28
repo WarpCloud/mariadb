@@ -509,3 +509,5 @@ compile_commands.json
 # Clion
 .idea
 cmake-build-debug
+cmk-bld
+cmk-inst
