@@ -1,4 +1,4 @@
-FROM 172.16.1.99/kundb/x86_64/mysql-compiler:v1 AS compile
+FROM 172.16.1.99/kundb/x86_64/mysql-compiler:v2 AS compile
 
 COPY . /root/mariadb_src
 RUN mkdir /root/mariadb_bld && \
@@ -8,7 +8,7 @@ RUN mkdir /root/mariadb_bld && \
     make install && \
     cd /root && rm -fr mariadb_bld mariadb_srcs
 
-FROM 172.16.1.99/kundb/x86_64/ubuntu:16.04 AS release
+FROM 172.16.1.99/kundb/x86_64/mysql_base:v2
 
 COPY --from=compile /usr/local/mariadb /usr/local/mariadb
 
